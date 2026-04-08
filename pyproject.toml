@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qsp-inference"
+version = "0.1.0"
+description = "Bayesian inference tools for QSP models: submodel MCMC calibration, simulation-based inference, sensitivity analysis, and parameter audit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Joel Eliason", email = "jeliaso2@jh.edu"}
+]
+keywords = ["qsp", "sbi", "inference", "bayesian", "mcmc", "calibration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "maple",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.4",
+    "seaborn>=0.11",
+    "pint>=0.25",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+submodel = [
+    "numpyro>=0.15",
+    "jax>=0.4",
+    "jaxlib>=0.4",
+    "diffrax>=0.6",
+]
+sbi = [
+    "torch>=1.9",
+    "sbi>=0.19",
+]
+audit = [
+    "graphviz>=0.20",
+    "Pillow>=9.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "black>=22.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jeliason/qsp-inference"
+Repository = "https://github.com/jeliason/qsp-inference"
+Issues = "https://github.com/jeliason/qsp-inference/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["qsp_inference*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = ["-v"]
