@@ -11,8 +11,9 @@ Tests cover:
 """
 
 import pytest
-import torch
 import numpy as np
+
+torch = pytest.importorskip("torch")
 import tempfile
 import csv
 from pathlib import Path

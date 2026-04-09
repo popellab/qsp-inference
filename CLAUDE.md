@@ -116,7 +116,10 @@ report = run_audit(config, output=Path("audit_report.md"))
 
 CLI:
 ```bash
-python -m qsp_inference.audit.report --project-root /path/to/project --output report.md
+qsp-audit -r /path/to/project report -o report.md
+qsp-audit -r /path/to/project status
+qsp-audit -r /path/to/project invalidate k_CD8_kill k_Treg_act
+qsp-audit -r /path/to/project dag -o ./figures
 ```
 
 ## Testing
