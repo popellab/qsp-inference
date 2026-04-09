@@ -6,7 +6,12 @@ from qsp_inference.priors.load_sbi_priors import (
     transform_lognormal_prior_to_normal
 )
 from qsp_inference.priors.truncated_distributions import TruncatedDistribution
-from qsp_inference.priors.copula_prior import GaussianCopulaPrior, load_copula_prior, load_copula_prior_log
+from qsp_inference.priors.copula_prior import (
+    GaussianCopulaPrior,
+    load_copula_prior,
+    load_copula_prior_log,
+    load_composite_prior_log,
+)
 
 __all__ = [
     "load_prior",
@@ -16,4 +21,5 @@ __all__ = [
     "GaussianCopulaPrior",
     "load_copula_prior",
     "load_copula_prior_log",
+    "load_composite_prior_log",
 ]

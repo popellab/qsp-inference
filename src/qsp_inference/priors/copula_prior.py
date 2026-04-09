@@ -175,6 +175,80 @@ def _log_transform_marginal(marginal_spec: dict):
         )
 
 
+def load_composite_prior_log(
+    yaml_path: str | Path,
+    csv_path: str | Path,
+) -> tuple[GaussianCopulaPrior, list[str]]:
+    """Load a composite log-space prior: copula for submodel params, independent for the rest.
+
+    Parameters in submodel_priors.yaml get their fitted marginals and copula
+    correlations. Parameters only in the CSV get independent normal priors
+    (from lognormal mu/sigma). The returned prior covers all CSV parameters
+    in CSV order.
+
+    Args:
+        yaml_path: Path to submodel_priors.yaml from the audit pipeline.
+        csv_path: Path to the full priors CSV (e.g. pdac_priors.csv).
+
+    Returns:
+        (prior, param_names) where prior operates in log-space and covers
+        all parameters from the CSV.
+    """
+    import csv as csv_mod
+    from ruamel.yaml import YAML
+
+    # Load YAML params
+    yaml = YAML()
+    with open(yaml_path) as f:
+        yaml_data = yaml.load(f)
+
+    yaml_entries = {p["name"]: p for p in yaml_data["parameters"]}
+
+    # Load CSV params (preserves ordering)
+    csv_params = []
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv_mod.DictReader(f)
+        for row in reader:
+            csv_params.append({
+                "name": row["name"],
+                "mu": float(row["dist_param1"]),
+                "sigma": float(row["dist_param2"]),
+            })
+
+    param_names = [p["name"] for p in csv_params]
+    n = len(param_names)
+
+    # Build marginals: YAML entries override CSV
+    marginals = []
+    for p in csv_params:
+        if p["name"] in yaml_entries:
+            marginals.append(_log_transform_marginal(yaml_entries[p["name"]]["marginal"]))
+        else:
+            # CSV lognormal -> log-space normal
+            marginals.append(stats.norm(loc=p["mu"], scale=p["sigma"]))
+
+    # Build correlation matrix: identity everywhere, copula block for YAML params
+    R = np.eye(n)
+    copula = yaml_data.get("copula")
+    if copula and copula.get("correlation"):
+        copula_params = copula["parameters"]
+        R_sub = np.array(copula["correlation"])
+        for i, pi in enumerate(copula_params):
+            for j, pj in enumerate(copula_params):
+                if pi in param_names and pj in param_names:
+                    fi = param_names.index(pi)
+                    fj = param_names.index(pj)
+                    R[fi, fj] = R_sub[i, j]
+
+    prior = GaussianCopulaPrior(
+        marginals=marginals,
+        correlation=R,
+        param_names=param_names,
+    )
+
+    return prior, param_names
+
+
 def load_copula_prior(
     yaml_path: str | Path,
     device: str = "cpu",

@@ -293,3 +293,105 @@ class TestLoadCopulaPriorLog:
             path = self._write_yaml(tmpdir, data)
             with pytest.raises(ValueError, match="not supported"):
                 load_copula_prior_log(path)
+
+
+class TestLoadCompositePriorLog:
+    def _write_yaml(self, tmpdir, data):
+        from ruamel.yaml import YAML
+
+        yaml = YAML()
+        path = Path(tmpdir) / "submodel_priors.yaml"
+        with open(path, "w") as f:
+            yaml.dump(data, f)
+        return path
+
+    def _write_csv(self, tmpdir, rows):
+        path = Path(tmpdir) / "priors.csv"
+        with open(path, "w") as f:
+            f.write("name,expected_value,units,distribution,dist_param1,dist_param2\n")
+            for r in rows:
+                f.write(f"{r['name']},{r['ev']},{r['units']},{r['dist']},{r['p1']},{r['p2']}\n")
+        return path
+
+    def test_composite_covers_all_csv_params(self):
+        from qsp_inference.priors.copula_prior import load_composite_prior_log
+
+        yaml_data = {
+            "metadata": {"n_parameters": 1, "n_samples": 1000},
+            "parameters": [
+                {"name": "k1", "marginal": {"distribution": "lognormal", "mu": 0.0, "sigma": 0.5, "median": 1.0, "cv": 0.5}},
+            ],
+        }
+        csv_rows = [
+            {"name": "k1", "ev": 1.0, "units": "1/day", "dist": "lognormal", "p1": -0.5, "p2": 0.8},
+            {"name": "k2", "ev": 0.5, "units": "1/day", "dist": "lognormal", "p1": -1.0, "p2": 0.3},
+            {"name": "k3", "ev": 2.0, "units": "1/day", "dist": "lognormal", "p1": 0.5, "p2": 0.4},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = self._write_yaml(tmpdir, yaml_data)
+            csv_path = self._write_csv(tmpdir, csv_rows)
+            prior, names = load_composite_prior_log(yaml_path, csv_path)
+
+            assert names == ["k1", "k2", "k3"]
+            samples = prior.sample((1000,))
+            assert samples.shape == (1000, 3)
+            assert torch.isfinite(prior.log_prob(samples)).all()
+
+    def test_yaml_overrides_csv_marginals(self):
+        from qsp_inference.priors.copula_prior import load_composite_prior_log
+
+        # YAML has tight sigma=0.1 for k1, CSV has wide sigma=2.0
+        yaml_data = {
+            "metadata": {"n_parameters": 1, "n_samples": 1000},
+            "parameters": [
+                {"name": "k1", "marginal": {"distribution": "lognormal", "mu": 0.0, "sigma": 0.1, "median": 1.0, "cv": 0.1}},
+            ],
+        }
+        csv_rows = [
+            {"name": "k1", "ev": 1.0, "units": "1/day", "dist": "lognormal", "p1": 0.0, "p2": 2.0},
+            {"name": "k2", "ev": 0.5, "units": "1/day", "dist": "lognormal", "p1": -1.0, "p2": 0.3},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = self._write_yaml(tmpdir, yaml_data)
+            csv_path = self._write_csv(tmpdir, csv_rows)
+            prior, _ = load_composite_prior_log(yaml_path, csv_path)
+
+            samples = prior.sample((10000,))
+            # k1 (col 0) should have tight spread from YAML (sigma=0.1), not CSV (sigma=2.0)
+            assert samples[:, 0].std().item() == pytest.approx(0.1, abs=0.05)
+
+    def test_copula_applied_to_yaml_params_only(self):
+        from qsp_inference.priors.copula_prior import load_composite_prior_log
+
+        yaml_data = {
+            "metadata": {"n_parameters": 2, "n_samples": 1000},
+            "parameters": [
+                {"name": "k1", "marginal": {"distribution": "lognormal", "mu": 0.0, "sigma": 0.5, "median": 1.0, "cv": 0.5}},
+                {"name": "k2", "marginal": {"distribution": "lognormal", "mu": 0.0, "sigma": 0.5, "median": 1.0, "cv": 0.5}},
+            ],
+            "copula": {
+                "type": "gaussian",
+                "parameters": ["k1", "k2"],
+                "correlation": [[1.0, 0.8], [0.8, 1.0]],
+            },
+        }
+        csv_rows = [
+            {"name": "k1", "ev": 1.0, "units": "1/day", "dist": "lognormal", "p1": 0.0, "p2": 0.5},
+            {"name": "k2", "ev": 1.0, "units": "1/day", "dist": "lognormal", "p1": 0.0, "p2": 0.5},
+            {"name": "k3", "ev": 2.0, "units": "1/day", "dist": "lognormal", "p1": 0.5, "p2": 0.4},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yaml_path = self._write_yaml(tmpdir, yaml_data)
+            csv_path = self._write_csv(tmpdir, csv_rows)
+            prior, _ = load_composite_prior_log(yaml_path, csv_path)
+
+            samples = prior.sample((10000,))
+            # k1-k2 should be correlated
+            corr_12 = np.corrcoef(samples[:, 0].numpy(), samples[:, 1].numpy())[0, 1]
+            assert corr_12 > 0.5
+            # k1-k3 should be independent
+            corr_13 = np.corrcoef(samples[:, 0].numpy(), samples[:, 2].numpy())[0, 1]
+            assert abs(corr_13) < 0.1
