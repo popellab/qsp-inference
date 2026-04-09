@@ -288,3 +288,37 @@ class TestWriteSubmodelPriors:
             path = Path(tmpdir) / "submodel_priors.yaml"
             _write_submodel_priors({}, {"k": ["t1"]}, {}, path)
             assert not path.exists()
+
+    def test_differing_sample_sizes(self):
+        """Parameters with different sample counts (from different components) should not crash."""
+        import yaml
+
+        from qsp_inference.audit.report import _write_submodel_priors
+
+        rng = np.random.default_rng(99)
+        # Simulate two components with different sample counts
+        joint_samples = {
+            "k_A": rng.lognormal(0, 0.5, 8000).tolist(),  # NUTS 2-chain
+            "k_B": rng.lognormal(-1, 0.7, 8000).tolist(),  # same component as A
+            "k_C": rng.lognormal(1, 0.3, 4000).tolist(),  # NPE component
+        }
+        targets = {"k_A": ["t1"], "k_B": ["t1"], "k_C": ["t2"]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "submodel_priors.yaml"
+            _write_submodel_priors(joint_samples, targets, {}, path)
+            assert path.exists()
+
+            with open(path) as f:
+                loaded = yaml.safe_load(f)
+
+            assert len(loaded["parameters"]) == 3
+
+            # k_A and k_B are from the same component (8000 samples) —
+            # they may have nonzero copula correlation
+            # k_C is from a different component — cross-component
+            # correlations should be ~0 (below threshold)
+            param_names_out = [p["name"] for p in loaded["parameters"]]
+            assert "k_A" in param_names_out
+            assert "k_B" in param_names_out
+            assert "k_C" in param_names_out
