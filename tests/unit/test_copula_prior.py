@@ -5,7 +5,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from qsp_inference.priors.copula_prior import GaussianCopulaPrior, load_copula_prior
 
