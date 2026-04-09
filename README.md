@@ -4,10 +4,10 @@ Bayesian inference tools for quantitative systems pharmacology (QSP) models. Dec
 
 ## What it does
 
-- **Submodel inference**: Joint NumPyro NUTS MCMC across SubmodelTarget YAMLs, with translation sigma weighting data sources by relevance
+- **Submodel inference**: Joint NumPyro NUTS MCMC across SubmodelTarget and CalibrationTarget YAMLs, with translation sigma weighting data sources by relevance
 - **Parameter audit**: Coverage reporting, priority scoring, diagnostics, and DAG visualization via the `qsp-audit` CLI
 - **Copula priors**: Posterior parameterization as marginal distributions + Gaussian copula, loadable as PyTorch distributions for SBI workflows
-- **SBI diagnostics**: Recovery, calibration, posterior predictive checks, OBED, and learning curves for neural posterior estimation
+- **SBI diagnostics**: Recovery, calibration, posterior predictive checks, optimal Bayesian experimental design (OBED), and learning curves for neural posterior estimation
 
 ## Installation
 
@@ -24,7 +24,7 @@ uv pip install -e ".[sbi]"
 uv pip install -e ".[audit]"
 ```
 
-Requires [maple](https://github.com/popellab/maple) for SubmodelTarget schemas.
+Requires [maple](https://github.com/popellab/maple) for SubmodelTarget and CalibrationTarget schemas.
 
 ## Quick start
 
