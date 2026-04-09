@@ -211,3 +211,80 @@ class TestWritePriorsYaml:
 
             assert "copula" in loaded
             assert loaded["copula"]["type"] == "gaussian"
+
+
+# =============================================================================
+# Tests: Audit report submodel priors export
+# =============================================================================
+
+
+class TestWriteSubmodelPriors:
+    def test_writes_yaml_with_marginals_and_copula(self):
+        from qsp_inference.audit.report import _write_submodel_priors
+
+        s1, s2 = _make_correlated_lognormal_samples(n=5000)
+        joint_samples = {
+            "k_kill": s1.tolist(),
+            "k_growth": s2.tolist(),
+        }
+        targets = {
+            "k_kill": ["target_immune"],
+            "k_growth": ["target_tumor", "target_immune"],
+        }
+        groups = {"k_kill": "killing_rates"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "submodel_priors.yaml"
+            _write_submodel_priors(joint_samples, targets, groups, path)
+
+            assert path.exists()
+
+            from ruamel.yaml import YAML
+
+            yaml = YAML()
+            loaded = yaml.load(path)
+
+            assert loaded["metadata"]["n_parameters"] == 2
+            assert len(loaded["parameters"]) == 2
+
+            # Check provenance fields
+            by_name = {p["name"]: p for p in loaded["parameters"]}
+            assert by_name["k_kill"]["source_targets"] == ["target_immune"]
+            assert by_name["k_kill"]["group"] == "killing_rates"
+            assert "group" not in by_name["k_growth"]
+
+            # Should have copula for correlated params
+            assert "copula" in loaded
+
+    def test_filters_nuisance_and_hyperparams(self):
+        from qsp_inference.audit.report import _write_submodel_priors
+
+        joint_samples = {
+            "k_real": _make_lognormal_samples(mu=0.0, sigma=0.5).tolist(),
+            "k_nuisance": _make_lognormal_samples(mu=0.0, sigma=0.5, seed=2).tolist(),
+            "grp__base": _make_lognormal_samples(mu=0.0, sigma=0.3, seed=3).tolist(),
+            "grp__tau": _make_lognormal_samples(mu=0.0, sigma=0.2, seed=4).tolist(),
+        }
+        # Only k_real is in the targets dict (non-nuisance)
+        targets = {"k_real": ["target_1"]}
+        groups = {}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "submodel_priors.yaml"
+            _write_submodel_priors(joint_samples, targets, groups, path)
+
+            from ruamel.yaml import YAML
+
+            yaml = YAML()
+            loaded = yaml.load(path)
+
+            assert len(loaded["parameters"]) == 1
+            assert loaded["parameters"][0]["name"] == "k_real"
+
+    def test_skips_when_no_samples(self):
+        from qsp_inference.audit.report import _write_submodel_priors
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "submodel_priors.yaml"
+            _write_submodel_priors({}, {"k": ["t1"]}, {}, path)
+            assert not path.exists()
