@@ -98,6 +98,26 @@ class GaussianCopulaPrior(Distribution):
     def param_names(self) -> list[str]:
         return self._param_names
 
+    def subset(self, indices: list[int]) -> "GaussianCopulaPrior":
+        """Return a new GaussianCopulaPrior over a subset of parameters.
+
+        Extracts the corresponding marginals and correlation submatrix.
+
+        Args:
+            indices: Parameter indices to keep.
+
+        Returns:
+            A new GaussianCopulaPrior with only the selected parameters.
+        """
+        marginals = [self._marginals[i] for i in indices]
+        R_sub = self._R[np.ix_(indices, indices)]
+        names = [self._param_names[i] for i in indices]
+        return GaussianCopulaPrior(
+            marginals=marginals,
+            correlation=R_sub,
+            param_names=names,
+        )
+
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
         n = len(self._marginals)
         shape = torch.Size(sample_shape) if not isinstance(sample_shape, torch.Size) else sample_shape
@@ -162,17 +182,18 @@ class GaussianCopulaPrior(Distribution):
 def _log_transform_marginal(marginal_spec: dict):
     """Convert a marginal spec to its log-space equivalent.
 
-    Lognormal(mu, sigma) -> Normal(mu, sigma)
-    Gamma/InvGamma -> no simple closed form, use empirical transform
+    Lognormal(mu, sigma) -> Normal(mu, sigma) exactly.
+    Gamma/InvGamma -> fit Normal to log-samples (empirical approximation).
     """
     dist_name = marginal_spec["distribution"]
     if dist_name == "lognormal":
         return stats.norm(loc=marginal_spec["mu"], scale=marginal_spec["sigma"])
     else:
-        raise ValueError(
-            f"Log-space transform not supported for '{dist_name}' marginals. "
-            f"Only lognormal marginals can be analytically transformed."
-        )
+        # Empirical: sample, log-transform, fit normal
+        orig = _build_scipy_marginal(marginal_spec)
+        log_samples = np.log(orig.rvs(size=50_000, random_state=42))
+        mu, sigma = float(np.mean(log_samples)), float(np.std(log_samples))
+        return stats.norm(loc=mu, scale=sigma)
 
 
 def load_composite_prior_log(
