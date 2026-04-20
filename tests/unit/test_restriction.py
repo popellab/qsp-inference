@@ -1,13 +1,8 @@
-"""Unit tests for the classifier-based prior restriction module.
-
-Imports directly from ``qsp_inference.inference.restriction`` to avoid the
-package __init__ which transitively imports torch (CI installs
-``.[dev,submodel]`` without the sbi extra).
-"""
+"""Unit tests for the classifier-based prior restriction module."""
 import numpy as np
 import pytest
 
-from qsp_inference.inference.restriction import (
+from qsp_inference.inference import (
     RestrictionClassifier,
     train_restriction_classifier,
     sample_restricted,
