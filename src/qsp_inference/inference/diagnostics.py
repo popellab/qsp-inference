@@ -211,6 +211,53 @@ def sbi_z_score_contraction(samples, theta_test, prior, param_names, figsize=(16
     return fig, axes, z_scores, contractions
 
 
+def compute_per_param_calibration(samples, theta_test, z_scores=None):
+    """Per-parameter calibration metrics reduced across test points.
+
+    Complements ``sbi_z_score_contraction`` (which returns per-test-point arrays)
+    by producing a single number per parameter for tabulation/sweeps.
+
+    Args:
+        samples: Posterior samples, shape (n_samples, n_test, n_params). Assumed to
+            live in whatever space ``theta_test`` lives in (typically log-space when
+            priors are log-transformed — callers are responsible for consistency).
+        theta_test: True parameter values, shape (n_test, n_params).
+        z_scores: Optional pre-computed z-scores of shape (n_test, n_params) from
+            ``sbi_z_score_contraction``. If None, recomputed from ``samples``.
+
+    Returns:
+        dict with keys (each a ``(n_params,)`` array):
+            - ``zscore_mean``: mean across test points (should be ~0; bias detector)
+            - ``zscore_std``: std across test points (should be ~1; under/overconfidence)
+            - ``coverage95``: fraction of test points where ``theta_test`` falls within
+              the central 95% percentile interval of ``samples`` (target 0.95)
+            - ``post_sd``: median across test points of posterior std per test point
+              (absolute width, in whatever space ``samples`` is in)
+    """
+    if torch.is_tensor(samples):
+        samples = samples.detach().cpu().numpy()
+    if torch.is_tensor(theta_test):
+        theta_test = theta_test.detach().cpu().numpy()
+
+    if z_scores is None:
+        mean_post = np.mean(samples, axis=0)
+        std_post = np.std(samples, axis=0)
+        z_scores = (mean_post - theta_test) / (std_post + 1e-10)
+    elif torch.is_tensor(z_scores):
+        z_scores = z_scores.detach().cpu().numpy()
+
+    q_lo, q_hi = np.percentile(samples, [2.5, 97.5], axis=0)
+    coverage = ((q_lo <= theta_test) & (theta_test <= q_hi)).mean(axis=0)
+    post_sd = np.median(np.std(samples, axis=0), axis=0)
+
+    return {
+        "zscore_mean": np.mean(z_scores, axis=0),
+        "zscore_std": np.std(z_scores, axis=0),
+        "coverage95": coverage,
+        "post_sd": post_sd,
+    }
+
+
 def sbi_calibration_ecdf(samples, theta_test, param_names, figsize=(16, 12), max_cols=4, difference=True, param_indices=None, plot=True):
     """
     Calibration check using empirical CDF (rank statistics).
