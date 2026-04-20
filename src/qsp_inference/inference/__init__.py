@@ -19,6 +19,11 @@ from qsp_inference.inference.diagnostics import (
     sbi_dimensionality_sweep,
     save_diagnostics,
 )
+from qsp_inference.inference.restriction import (
+    RestrictionClassifier,
+    train_restriction_classifier,
+    sample_restricted,
+)
 from qsp_inference.inference.plot_distributions import (
     plot_posterior_marginals,
     plot_posterior_pairs,
@@ -83,6 +88,10 @@ __all__ = [
     "sbi_seed_stability",
     "sbi_dimensionality_sweep",
     "save_diagnostics",
+    # Prior restriction
+    "RestrictionClassifier",
+    "train_restriction_classifier",
+    "sample_restricted",
     # Plotting
     "plot_posterior_marginals",
     "plot_posterior_pairs",
