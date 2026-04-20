@@ -7,6 +7,13 @@ Empirically: post_mean ≈ theta + offset, post_std ≈ post_sd, so
     z = (post_mean - theta) / post_std ≈ offset / post_sd ~ N(0, 1)
 and coverage95 is the Gaussian tail probability.
 """
+import pytest
+
+# torch is required transitively by qsp_inference.inference (via diagnostics.py).
+# CI installs .[dev,submodel] without the sbi extra, so skip this whole module
+# when torch isn't available.
+pytest.importorskip("torch")
+
 import numpy as np
 import torch
 
