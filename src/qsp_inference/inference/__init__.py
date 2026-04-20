@@ -3,6 +3,7 @@
 from qsp_inference.inference.diagnostics import (
     sbi_recovery,
     sbi_z_score_contraction,
+    compute_per_param_calibration,
     sbi_calibration_ecdf,
     sbi_coverage_check,
     sbi_boundary_piling,
@@ -67,6 +68,7 @@ __all__ = [
     # Diagnostics
     "sbi_recovery",
     "sbi_z_score_contraction",
+    "compute_per_param_calibration",
     "sbi_calibration_ecdf",
     "sbi_coverage_check",
     "sbi_boundary_piling",
