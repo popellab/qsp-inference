@@ -99,6 +99,22 @@ These scores combine (added in quadrature) into a single `translation_sigma` tha
 
 You fill in the relevance assessment when creating the SubmodelTarget YAML in maple. The inference pipeline handles the math.
 
+### Nuisance parameters
+
+Some submodels need parameters that are part of the *experimental* description but not of the full QSP model — a proliferation rate that shapes a time course, a convertible-subpopulation fraction that bounds an asymptote, an APC contact area that converts pMHC counts to densities. Mark these with `nuisance: true` on the parameter and attach an `InlinePrior` directly (they are not in the priors CSV because the full model doesn't know about them):
+
+```yaml
+- name: F_inf
+  units: dimensionless
+  nuisance: true
+  prior:
+    distribution: uniform
+    lower: 0.5
+    upper: 1.0
+```
+
+Nuisance parameters are sampled alongside the QSP parameters during MCMC but are excluded from the output marginals and copula — they do their job in stage 1 and then disappear, leaving only the QSP parameter posteriors for downstream SBI. `InlinePrior` supports `lognormal` (use `mu`/`sigma`), `normal` (`mu`/`sigma`), and `uniform` (`lower`/`upper`). Pick whichever matches the physical constraint — bounded fractions get `uniform`, log-normally distributed rates get `lognormal`, approximately symmetric measurements get `normal`.
+
 ### Parameter groups
 
 Some parameters are biologically related — for example, all the killing rates of different immune cell types. Parameter groups declare this relationship:
