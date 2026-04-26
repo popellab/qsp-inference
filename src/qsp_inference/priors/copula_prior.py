@@ -263,14 +263,26 @@ def load_composite_prior_log(
     param_names = [p["name"] for p in csv_params]
     n = len(param_names)
 
-    # Build marginals: YAML entries override CSV
+    # Build marginals: YAML entries override CSV. Fall back to the CSV's
+    # lognormal if the YAML marginal is degenerate (e.g. parameterizer fit a
+    # gamma with scale=0 from a posterior pinned at zero).
     marginals = []
+    fallback_params: list[str] = []
     for p in csv_params:
         if p["name"] in yaml_entries:
-            marginals.append(_log_transform_marginal(yaml_entries[p["name"]]["marginal"]))
-        else:
-            # CSV lognormal -> log-space normal
-            marginals.append(stats.norm(loc=p["mu"], scale=p["sigma"]))
+            try:
+                marginals.append(_log_transform_marginal(yaml_entries[p["name"]]["marginal"]))
+                continue
+            except (ValueError, ZeroDivisionError, FloatingPointError):
+                fallback_params.append(p["name"])
+        marginals.append(stats.norm(loc=p["mu"], scale=p["sigma"]))
+    if fallback_params:
+        import warnings
+        warnings.warn(
+            f"load_composite_prior_log: {len(fallback_params)} YAML marginal(s) "
+            f"failed log-domain fit; falling back to CSV lognormal: {fallback_params}",
+            stacklevel=2,
+        )
 
     # Build correlation matrix: identity everywhere, copula block for YAML params
     R = np.eye(n)
