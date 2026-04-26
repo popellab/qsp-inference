@@ -202,9 +202,20 @@ def _log_transform_marginal(marginal_spec: dict):
     if dist_name == "lognormal":
         return stats.norm(loc=marginal_spec["mu"], scale=marginal_spec["sigma"])
     else:
-        # Empirical: sample, log-transform, fit normal
+        # Empirical: sample, log-transform, fit normal. The MCMC posterior
+        # parameterizer can fit Normal/Gamma/InvGamma marginals whose support
+        # crosses or touches zero; rejection-truncate to log's domain before
+        # fitting. Oversample so the truncation doesn't starve the fit.
         orig = _build_scipy_marginal(marginal_spec)
-        log_samples = np.log(orig.rvs(size=50_000, random_state=42))
+        samples = orig.rvs(size=200_000, random_state=42)
+        samples = samples[np.isfinite(samples) & (samples > 0)]
+        if samples.size < 100:
+            raise ValueError(
+                f"_log_transform_marginal: marginal '{dist_name}' yielded "
+                f"only {samples.size} positive samples out of 200k; cannot "
+                "fit log-space normal."
+            )
+        log_samples = np.log(samples)
         mu, sigma = float(np.mean(log_samples)), float(np.std(log_samples))
         return stats.norm(loc=mu, scale=sigma)
 
