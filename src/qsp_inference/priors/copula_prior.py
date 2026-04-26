@@ -78,6 +78,19 @@ class GaussianCopulaPrior(Distribution):
         else:
             R = np.eye(n)
 
+        # Sample correlation matrices from MCMC posteriors can have tiny
+        # negative eigenvalues from numerical noise, breaking Cholesky.
+        # Project onto PSD cone via eigenvalue clipping if needed, then
+        # renormalize to a correlation matrix (unit diagonal).
+        try:
+            np.linalg.cholesky(R)
+        except np.linalg.LinAlgError:
+            w, V = np.linalg.eigh((R + R.T) / 2.0)
+            w_clipped = np.clip(w, a_min=1e-8, a_max=None)
+            R = V @ np.diag(w_clipped) @ V.T
+            d = np.sqrt(np.diag(R))
+            R = R / np.outer(d, d)
+
         self._R = R
         self._L = torch.tensor(
             np.linalg.cholesky(R), dtype=torch.float64
