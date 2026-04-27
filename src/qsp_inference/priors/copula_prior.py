@@ -78,6 +78,19 @@ class GaussianCopulaPrior(Distribution):
         else:
             R = np.eye(n)
 
+        # Sample correlation matrices from MCMC posteriors can have tiny
+        # negative eigenvalues from numerical noise, breaking Cholesky.
+        # Project onto PSD cone via eigenvalue clipping if needed, then
+        # renormalize to a correlation matrix (unit diagonal).
+        try:
+            np.linalg.cholesky(R)
+        except np.linalg.LinAlgError:
+            w, V = np.linalg.eigh((R + R.T) / 2.0)
+            w_clipped = np.clip(w, a_min=1e-8, a_max=None)
+            R = V @ np.diag(w_clipped) @ V.T
+            d = np.sqrt(np.diag(R))
+            R = R / np.outer(d, d)
+
         self._R = R
         self._L = torch.tensor(
             np.linalg.cholesky(R), dtype=torch.float64
@@ -189,9 +202,20 @@ def _log_transform_marginal(marginal_spec: dict):
     if dist_name == "lognormal":
         return stats.norm(loc=marginal_spec["mu"], scale=marginal_spec["sigma"])
     else:
-        # Empirical: sample, log-transform, fit normal
+        # Empirical: sample, log-transform, fit normal. The MCMC posterior
+        # parameterizer can fit Normal/Gamma/InvGamma marginals whose support
+        # crosses or touches zero; rejection-truncate to log's domain before
+        # fitting. Oversample so the truncation doesn't starve the fit.
         orig = _build_scipy_marginal(marginal_spec)
-        log_samples = np.log(orig.rvs(size=50_000, random_state=42))
+        samples = orig.rvs(size=200_000, random_state=42)
+        samples = samples[np.isfinite(samples) & (samples > 0)]
+        if samples.size < 100:
+            raise ValueError(
+                f"_log_transform_marginal: marginal '{dist_name}' yielded "
+                f"only {samples.size} positive samples out of 200k; cannot "
+                "fit log-space normal."
+            )
+        log_samples = np.log(samples)
         mu, sigma = float(np.mean(log_samples)), float(np.std(log_samples))
         return stats.norm(loc=mu, scale=sigma)
 
@@ -239,14 +263,26 @@ def load_composite_prior_log(
     param_names = [p["name"] for p in csv_params]
     n = len(param_names)
 
-    # Build marginals: YAML entries override CSV
+    # Build marginals: YAML entries override CSV. Fall back to the CSV's
+    # lognormal if the YAML marginal is degenerate (e.g. parameterizer fit a
+    # gamma with scale=0 from a posterior pinned at zero).
     marginals = []
+    fallback_params: list[str] = []
     for p in csv_params:
         if p["name"] in yaml_entries:
-            marginals.append(_log_transform_marginal(yaml_entries[p["name"]]["marginal"]))
-        else:
-            # CSV lognormal -> log-space normal
-            marginals.append(stats.norm(loc=p["mu"], scale=p["sigma"]))
+            try:
+                marginals.append(_log_transform_marginal(yaml_entries[p["name"]]["marginal"]))
+                continue
+            except (ValueError, ZeroDivisionError, FloatingPointError):
+                fallback_params.append(p["name"])
+        marginals.append(stats.norm(loc=p["mu"], scale=p["sigma"]))
+    if fallback_params:
+        import warnings
+        warnings.warn(
+            f"load_composite_prior_log: {len(fallback_params)} YAML marginal(s) "
+            f"failed log-domain fit; falling back to CSV lognormal: {fallback_params}",
+            stacklevel=2,
+        )
 
     # Build correlation matrix: identity everywhere, copula block for YAML params
     R = np.eye(n)
