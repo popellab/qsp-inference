@@ -110,3 +110,52 @@ def test_identity_transform():
     pos = clf.score(np.array([[2.0, 0.0]]))
     neg = clf.score(np.array([[-2.0, 0.0]]))
     assert pos[0] > neg[0]
+
+
+def test_project_drops_extra_columns():
+    theta, valid = _synthetic_pool(1000, seed=10)
+    clf = train_restriction_classifier(theta, valid, ["a", "b", "c"], cv_folds=0)
+    # Caller has 4 columns: a, b, c, d_extra. Projection should drop d_extra.
+    rng = np.random.default_rng(11)
+    extra_col = rng.lognormal(size=(theta.shape[0], 1))
+    theta_extra = np.concatenate([theta, extra_col], axis=1)
+    proj = clf.project(theta_extra, ["a", "b", "c", "d_extra"])
+    np.testing.assert_array_equal(proj, theta)
+
+
+def test_project_fills_missing_columns():
+    theta, valid = _synthetic_pool(1000, seed=12)
+    clf = train_restriction_classifier(theta, valid, ["a", "b", "c"], cv_folds=0)
+    # Caller is missing column "b"; supply via fills.
+    theta_drop = theta[:, [0, 2]]
+    proj = clf.project(theta_drop, ["a", "c"], fills={"b": 7.5})
+    np.testing.assert_array_equal(proj[:, 0], theta[:, 0])
+    np.testing.assert_array_equal(proj[:, 2], theta[:, 2])
+    assert (proj[:, 1] == 7.5).all()
+
+
+def test_project_reorders_columns():
+    theta, valid = _synthetic_pool(1000, seed=13)
+    clf = train_restriction_classifier(theta, valid, ["a", "b", "c"], cv_folds=0)
+    # Caller hands theta in scrambled order [c, a, b].
+    theta_scrambled = theta[:, [2, 0, 1]]
+    proj = clf.project(theta_scrambled, ["c", "a", "b"])
+    np.testing.assert_array_equal(proj, theta)
+
+
+def test_project_raises_on_unfilled_missing():
+    theta, valid = _synthetic_pool(500, seed=14)
+    clf = train_restriction_classifier(theta, valid, ["a", "b", "c"], cv_folds=0)
+    with pytest.raises(ValueError, match="absent from theta_feature_names"):
+        clf.project(theta[:, :2], ["a", "b"])  # "c" missing, no fill provided
+
+
+def test_accept_named_matches_accept_after_project():
+    theta, valid = _synthetic_pool(2000, seed=15)
+    clf = train_restriction_classifier(theta, valid, ["a", "b", "c"], cv_folds=0)
+    rng = np.random.default_rng(16)
+    extra = rng.lognormal(size=(theta.shape[0], 1))
+    theta_extra = np.concatenate([theta, extra], axis=1)
+    direct = clf.accept(theta)
+    via_named = clf.accept_named(theta_extra, ["a", "b", "c", "d_extra"])
+    np.testing.assert_array_equal(direct, via_named)

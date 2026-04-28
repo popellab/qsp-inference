@@ -24,7 +24,7 @@ import json
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -79,6 +79,79 @@ class RestrictionClassifier:
         """Boolean mask: rows with ``P(valid | theta) >= threshold``."""
         tau = self.default_threshold if threshold is None else threshold
         return self.score(theta) >= tau
+
+    def project(
+        self,
+        theta: np.ndarray,
+        theta_feature_names: Sequence[str],
+        fills: Optional[Mapping[str, float]] = None,
+    ) -> np.ndarray:
+        """Project ``theta`` (in caller-side feature order) onto ``feature_order``.
+
+        Drops caller-side columns that the classifier doesn't know, fills
+        classifier-side features missing from the caller using ``fills``.
+        Use this when the live prior has drifted relative to the classifier
+        (added/retired params) but is still close enough that the classifier
+        retains predictive value.
+
+        Args:
+            theta: ``(n, n_caller_features)`` in caller-side column order.
+            theta_feature_names: parameter names matching ``theta`` columns.
+            fills: ``{name: value}`` for classifier features missing from
+                ``theta_feature_names``. Required if any classifier features
+                aren't in ``theta_feature_names``.
+
+        Returns:
+            ``(n, n_features)`` ndarray in ``feature_order`` column layout,
+            ready for ``score`` or ``accept``.
+        """
+        theta = np.asarray(theta, dtype=np.float64)
+        if theta.ndim != 2:
+            raise ValueError(f"theta must be 2D, got shape {theta.shape}")
+        if theta.shape[1] != len(theta_feature_names):
+            raise ValueError(
+                f"theta has {theta.shape[1]} columns; theta_feature_names has "
+                f"{len(theta_feature_names)} entries"
+            )
+        name_to_col = {n: i for i, n in enumerate(theta_feature_names)}
+        fills = dict(fills) if fills is not None else {}
+        out = np.empty((theta.shape[0], len(self.feature_order)), dtype=np.float64)
+        missing: list[str] = []
+        for j, feat in enumerate(self.feature_order):
+            col = name_to_col.get(feat)
+            if col is not None:
+                out[:, j] = theta[:, col]
+            elif feat in fills:
+                out[:, j] = float(fills[feat])
+            else:
+                missing.append(feat)
+        if missing:
+            raise ValueError(
+                "classifier feature(s) absent from theta_feature_names and not in "
+                f"fills: {missing!r}"
+            )
+        return out
+
+    def score_named(
+        self,
+        theta: np.ndarray,
+        theta_feature_names: Sequence[str],
+        fills: Optional[Mapping[str, float]] = None,
+    ) -> np.ndarray:
+        """``score`` with automatic projection. See :meth:`project`."""
+        return self.score(self.project(theta, theta_feature_names, fills))
+
+    def accept_named(
+        self,
+        theta: np.ndarray,
+        theta_feature_names: Sequence[str],
+        fills: Optional[Mapping[str, float]] = None,
+        threshold: Optional[float] = None,
+    ) -> np.ndarray:
+        """``accept`` with automatic projection. See :meth:`project`."""
+        return self.accept(
+            self.project(theta, theta_feature_names, fills), threshold=threshold
+        )
 
     # ------------------------------------------------------------------
     # Persistence
