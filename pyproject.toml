@@ -61,9 +61,9 @@ dev = [
 qsp-audit = "qsp_inference.audit.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jeliason/qsp-inference"
-Repository = "https://github.com/jeliason/qsp-inference"
-Issues = "https://github.com/jeliason/qsp-inference/issues"
+Homepage = "https://github.com/popellab/qsp-inference"
+Repository = "https://github.com/popellab/qsp-inference"
+Issues = "https://github.com/popellab/qsp-inference/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
