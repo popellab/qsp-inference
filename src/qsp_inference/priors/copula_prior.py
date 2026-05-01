@@ -24,7 +24,13 @@ from torch.distributions import Distribution
 
 
 def _build_scipy_marginal(marginal: dict):
-    """Build a scipy frozen distribution from a marginal spec dict."""
+    """Build a scipy frozen distribution from a marginal spec dict.
+
+    Supports lognormal/normal/gamma/invgamma (used by submodel-prior YAML
+    fits) plus uniform/beta (used by CSV priors). Beta parameterization
+    follows qsp-inference's convention: ``alpha``/``beta`` keys map to
+    scipy's ``a``/``b`` (concentration1, concentration0).
+    """
     dist_name = marginal["distribution"]
     if dist_name == "lognormal":
         return stats.lognorm(s=marginal["sigma"], scale=np.exp(marginal["mu"]))
@@ -34,6 +40,10 @@ def _build_scipy_marginal(marginal: dict):
         return stats.invgamma(marginal["shape"], scale=marginal["scale"])
     elif dist_name == "normal":
         return stats.norm(loc=marginal["mu"], scale=marginal["sigma"])
+    elif dist_name == "uniform":
+        return stats.uniform(loc=marginal["low"], scale=marginal["high"] - marginal["low"])
+    elif dist_name == "beta":
+        return stats.beta(marginal["alpha"], marginal["beta"])
     else:
         raise ValueError(f"Unknown marginal distribution: {dist_name}")
 
@@ -192,6 +202,42 @@ class GaussianCopulaPrior(Distribution):
         return result.squeeze(0) if squeeze else result
 
 
+def _csv_log_marginal(csv_row: dict):
+    """Build a log-space normal marginal from a priors CSV row.
+
+    Lognormal(mu, sigma) → Normal(mu, sigma) in log-space, exact.
+    Other distributions → empirical fit: sample, log-transform, fit Normal.
+    """
+    dist = csv_row["distribution"]
+    p1 = csv_row["p1"]
+    p2 = csv_row["p2"]
+    if dist == "lognormal":
+        return stats.norm(loc=p1, scale=p2)
+    if dist == "normal":
+        marginal_spec = {"distribution": "normal", "mu": p1, "sigma": p2}
+    elif dist == "uniform":
+        marginal_spec = {"distribution": "uniform", "low": p1, "high": p2}
+    elif dist == "beta":
+        marginal_spec = {"distribution": "beta", "alpha": p1, "beta": p2}
+    else:
+        raise ValueError(
+            f"_csv_log_marginal: unsupported CSV distribution '{dist}' "
+            f"for parameter '{csv_row.get('name', '?')}'"
+        )
+    orig = _build_scipy_marginal(marginal_spec)
+    samples = orig.rvs(size=200_000, random_state=42)
+    samples = samples[np.isfinite(samples) & (samples > 0)]
+    if samples.size < 100:
+        raise ValueError(
+            f"_csv_log_marginal: CSV distribution '{dist}' for "
+            f"'{csv_row.get('name', '?')}' yielded only {samples.size} "
+            "positive samples out of 200k; cannot fit log-space normal."
+        )
+    log_samples = np.log(samples)
+    mu, sigma = float(np.mean(log_samples)), float(np.std(log_samples))
+    return stats.norm(loc=mu, scale=sigma)
+
+
 def _log_transform_marginal(marginal_spec: dict):
     """Convert a marginal spec to its log-space equivalent.
 
@@ -249,23 +295,32 @@ def load_composite_prior_log(
 
     yaml_entries = {p["name"]: p for p in yaml_data["parameters"]}
 
-    # Load CSV params (preserves ordering)
+    # Load CSV params (preserves ordering). Capture the distribution field
+    # so non-lognormal CSV priors (normal, uniform, beta) can be honored
+    # for the params not in submodel_priors.yaml. dist_param1/2 are kept
+    # under their original names; the marginal spec dict downstream maps
+    # them to the right scipy/stats arguments per distribution.
     csv_params = []
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv_mod.DictReader(f)
         for row in reader:
             csv_params.append({
                 "name": row["name"],
-                "mu": float(row["dist_param1"]),
-                "sigma": float(row["dist_param2"]),
+                "distribution": row.get("distribution", "lognormal").strip(),
+                "p1": float(row["dist_param1"]),
+                "p2": float(row["dist_param2"]),
             })
 
     param_names = [p["name"] for p in csv_params]
     n = len(param_names)
 
     # Build marginals: YAML entries override CSV. Fall back to the CSV's
-    # lognormal if the YAML marginal is degenerate (e.g. parameterizer fit a
-    # gamma with scale=0 from a posterior pinned at zero).
+    # declared distribution if the YAML marginal is degenerate (e.g.
+    # parameterizer fit a gamma with scale=0 from a posterior pinned at
+    # zero). The CSV path is log-space — for non-lognormal distributions
+    # we sample from the named distribution and fit a normal to log-samples,
+    # matching the empirical-fit pattern used for gamma/invgamma marginals
+    # from YAML.
     marginals = []
     fallback_params: list[str] = []
     for p in csv_params:
@@ -275,7 +330,7 @@ def load_composite_prior_log(
                 continue
             except (ValueError, ZeroDivisionError, FloatingPointError):
                 fallback_params.append(p["name"])
-        marginals.append(stats.norm(loc=p["mu"], scale=p["sigma"]))
+        marginals.append(_csv_log_marginal(p))
     if fallback_params:
         import warnings
         warnings.warn(
