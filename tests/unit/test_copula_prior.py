@@ -280,18 +280,25 @@ class TestLoadCopulaPriorLog:
             assert lp.shape == (100,)
             assert torch.isfinite(lp).all()
 
-    def test_rejects_non_lognormal(self):
+    def test_rejects_unknown_distribution(self):
+        """Marginals with a distribution name we don't recognize are rejected.
+
+        Note: gamma/invgamma/normal/uniform/beta are all *supported* (gamma
+        and invgamma via empirical log-fit, normal/uniform/beta as their
+        scipy distributions); use a genuinely unknown name to test the
+        rejection path.
+        """
         from qsp_inference.priors.copula_prior import load_copula_prior_log
 
         data = {
             "metadata": {"n_parameters": 1, "n_samples": 1000},
             "parameters": [
-                {"name": "k", "marginal": {"distribution": "gamma", "shape": 2.0, "scale": 1.0, "median": 1.7, "cv": 0.7}},
+                {"name": "k", "marginal": {"distribution": "weibull", "shape": 2.0, "scale": 1.0, "median": 1.7, "cv": 0.7}},
             ],
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             path = self._write_yaml(tmpdir, data)
-            with pytest.raises(ValueError, match="not supported"):
+            with pytest.raises(ValueError, match="Unknown marginal distribution"):
                 load_copula_prior_log(path)
 
 
