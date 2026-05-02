@@ -223,9 +223,13 @@ class TestWriteSubmodelPriors:
         from qsp_inference.audit.report import _write_submodel_priors
 
         s1, s2 = _make_correlated_lognormal_samples(n=5000)
-        joint_samples = {
-            "k_kill": s1.tolist(),
-            "k_growth": s2.tolist(),
+        # Both params from the same inference component → real correlation
+        # should be inferred and survive thresholding.
+        joint_samples_by_component = {
+            "comp_immune": {
+                "k_kill": s1.tolist(),
+                "k_growth": s2.tolist(),
+            }
         }
         targets = {
             "k_kill": ["target_immune"],
@@ -235,7 +239,7 @@ class TestWriteSubmodelPriors:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "submodel_priors.yaml"
-            _write_submodel_priors(joint_samples, targets, groups, path)
+            _write_submodel_priors(joint_samples_by_component, targets, groups, path)
 
             assert path.exists()
 
@@ -259,11 +263,15 @@ class TestWriteSubmodelPriors:
     def test_filters_nuisance_and_hyperparams(self):
         from qsp_inference.audit.report import _write_submodel_priors
 
-        joint_samples = {
-            "k_real": _make_lognormal_samples(mu=0.0, sigma=0.5).tolist(),
-            "k_nuisance": _make_lognormal_samples(mu=0.0, sigma=0.5, seed=2).tolist(),
-            "grp__base": _make_lognormal_samples(mu=0.0, sigma=0.3, seed=3).tolist(),
-            "grp__tau": _make_lognormal_samples(mu=0.0, sigma=0.2, seed=4).tolist(),
+        # All four params live in one component — the nuisance/hyperparam
+        # filtering should drop everything except k_real.
+        joint_samples_by_component = {
+            "comp_real": {
+                "k_real": _make_lognormal_samples(mu=0.0, sigma=0.5).tolist(),
+                "k_nuisance": _make_lognormal_samples(mu=0.0, sigma=0.5, seed=2).tolist(),
+                "grp__base": _make_lognormal_samples(mu=0.0, sigma=0.3, seed=3).tolist(),
+                "grp__tau": _make_lognormal_samples(mu=0.0, sigma=0.2, seed=4).tolist(),
+            }
         }
         # Only k_real is in the targets dict (non-nuisance)
         targets = {"k_real": ["target_1"]}
@@ -271,7 +279,7 @@ class TestWriteSubmodelPriors:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "submodel_priors.yaml"
-            _write_submodel_priors(joint_samples, targets, groups, path)
+            _write_submodel_priors(joint_samples_by_component, targets, groups, path)
 
             from ruamel.yaml import YAML
 
@@ -289,24 +297,30 @@ class TestWriteSubmodelPriors:
             _write_submodel_priors({}, {"k": ["t1"]}, {}, path)
             assert not path.exists()
 
-    def test_differing_sample_sizes(self):
-        """Parameters with different sample counts (from different components) should not crash."""
+    def test_differing_sample_sizes_across_components(self):
+        """Components with different sample counts (e.g., NUTS vs NPE) coexist
+        without merging into a shared copula block."""
         import yaml
 
         from qsp_inference.audit.report import _write_submodel_priors
 
         rng = np.random.default_rng(99)
-        # Simulate two components with different sample counts
-        joint_samples = {
-            "k_A": rng.lognormal(0, 0.5, 8000).tolist(),  # NUTS 2-chain
-            "k_B": rng.lognormal(-1, 0.7, 8000).tolist(),  # same component as A
-            "k_C": rng.lognormal(1, 0.3, 4000).tolist(),  # NPE component
+        joint_samples_by_component = {
+            "comp_nuts_AB": {
+                # NUTS 2-chain — A and B are paired draws from the same posterior
+                "k_A": rng.lognormal(0, 0.5, 8000).tolist(),
+                "k_B": rng.lognormal(-1, 0.7, 8000).tolist(),
+            },
+            "comp_npe_C": {
+                # Independent NPE component, fewer samples
+                "k_C": rng.lognormal(1, 0.3, 4000).tolist(),
+            },
         }
         targets = {"k_A": ["t1"], "k_B": ["t1"], "k_C": ["t2"]}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "submodel_priors.yaml"
-            _write_submodel_priors(joint_samples, targets, {}, path)
+            _write_submodel_priors(joint_samples_by_component, targets, {}, path)
             assert path.exists()
 
             with open(path) as f:
@@ -314,10 +328,18 @@ class TestWriteSubmodelPriors:
 
             assert len(loaded["parameters"]) == 3
 
-            # k_A and k_B are from the same component (8000 samples) —
-            # they may have nonzero copula correlation
-            # k_C is from a different component — cross-component
-            # correlations should be ~0 (below threshold)
+            # If any copula entries survive, they must not cross components
+            # (k_A/k_B vs k_C). Within k_A↔k_B is fine.
+            cop = loaded.get("copula")
+            if cop is not None:
+                params = cop["parameters"]
+                R = np.array(cop["correlation"])
+                name_to_idx = {n: i for i, n in enumerate(params)}
+                for x in ("k_A", "k_B"):
+                    if x in name_to_idx and "k_C" in name_to_idx:
+                        assert R[name_to_idx[x], name_to_idx["k_C"]] == 0.0, (
+                            f"cross-component leak: R[{x},k_C] != 0"
+                        )
             param_names_out = [p["name"] for p in loaded["parameters"]]
             assert "k_A" in param_names_out
             assert "k_B" in param_names_out
