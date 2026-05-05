@@ -4,10 +4,12 @@ Bayesian inference tools for quantitative systems pharmacology (QSP) models. Dec
 
 ## What it does
 
-- **Submodel inference**: Joint NumPyro NUTS MCMC across SubmodelTarget and CalibrationTarget YAMLs, with translation sigma weighting data sources by relevance
-- **Parameter audit**: Coverage reporting, priority scoring, diagnostics, and DAG visualization via the `qsp-audit` CLI
-- **Copula priors**: Posterior parameterization as marginal distributions + Gaussian copula, loadable as PyTorch distributions for SBI workflows
-- **SBI diagnostics**: Recovery, calibration, posterior predictive checks, optimal Bayesian experimental design (OBED), and learning curves for neural posterior estimation
+- **Submodel inference**: Joint NumPyro NUTS MCMC across SubmodelTarget and CalibrationTarget YAMLs, with translation sigma weighting data sources by relevance. Lognormal, normal, uniform, and Beta priors are supported in the priors CSV.
+- **Parameter audit**: Coverage reporting, priority scoring, diagnostics, and DAG visualization via the `qsp-audit` CLI. When a Stage 2 SBI run is provided, the report adds Stage 2 NPE posterior shifts and a clinical predictive uncertainty section.
+- **Copula priors**: Posterior parameterization as marginal distributions (lognormal, normal, uniform, Beta, gamma, invgamma) + Gaussian copula, loadable as PyTorch distributions for SBI workflows. Composite priors fall back to the CSV for parameters not covered by the copula.
+- **Prior restriction for SBI**: Classifier-based rejection sampling (`RestrictionClassifier`) with projection helpers so the classifier survives prior changes (parameters added or retired).
+- **SBI diagnostics**: Recovery, calibration, posterior predictive checks, optimal Bayesian experimental design (OBED), and learning curves for neural posterior estimation.
+- **Cache freshness**: Per-component content fingerprints (target YAMLs, prior CSV rows, config slices, package version) are stamped into `submodel_priors.yaml` so consumers can detect when posteriors are stale relative to the current tree.
 
 ## Installation
 
