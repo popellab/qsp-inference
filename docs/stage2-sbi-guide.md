@@ -23,11 +23,14 @@ Stage 1 (submodel inference)        Stage 2 (full-model NPE)
 
 Stage 1 turns scattered literature into a tractable joint prior. Stage 2 turns that prior plus full-model behavior plus aggregate clinical/preclinical observables into the parameter posterior you actually use for predictions.
 
-### Reference implementation
+### Reference implementations
 
-For an end-to-end Stage 2 pipeline that wires together everything in this guide — copula-prior loading, restriction classifier training, NPE training, the full diagnostics suite, PPC, and the CSV outputs the audit expects — see the **sbi runner in pdac-build**. It is the canonical consumer of qsp-inference's Stage 2 surface and is the shortest path to a working setup. Treat the rest of this document as the reference for the individual building blocks; the pdac-build sbi runner shows how they compose.
+Two reference points, picked by what you need:
 
-The trajectory plotting in that runner uses `qsp_inference.inference.evaluate_calibration_target_over_trajectory` to evaluate calibration-target observables over long-form trajectory frames produced upstream by `qsp_hpc.cpp.evolve_trajectory.assemble_evolve_trajectory_long`.
+- **[`examples/stage2_pipeline.py`](../examples/stage2_pipeline.py)** — a single-scenario, in-memory distillation of the workflow that fits in one screen and uses only qsp-inference. Read this first.
+- **`workflows/sbi_runner.py` in pdac-build** — the canonical production consumer. Adds multi-scenario stacking, simulation caching, GPU staging, restriction-classifier integration, and the exact CSV outputs the audit reads. Read this when wiring up a real project.
+
+The trajectory plotting in pdac-build's sbi runner uses `qsp_inference.inference.evaluate_calibration_target_over_trajectory` to evaluate calibration-target observables over long-form trajectory frames produced upstream by `qsp_hpc.cpp.evolve_trajectory.assemble_evolve_trajectory_long`.
 
 ## Loading the Stage 1 posterior as a Stage 2 prior
 
