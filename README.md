@@ -55,7 +55,8 @@ log_p = prior.log_prob(samples)   # evaluates joint density
 
 ## Documentation
 
-- **[Submodel Inference Guide](docs/submodel-inference-guide.md)** — practical guide covering the Bayesian framework, SubmodelTarget YAML anatomy, maple workflows, audit CLI, and diagnostics interpretation
+- **[Submodel Inference Guide](docs/submodel-inference-guide.md)** — Stage 1: practical guide covering the Bayesian framework, SubmodelTarget YAML anatomy, maple workflows, audit CLI, and diagnostics interpretation
+- **[Stage 2 SBI Guide](docs/stage2-sbi-guide.md)** — Stage 2: loading the Stage 1 posterior as an SBI prior, prior restriction with `RestrictionClassifier`, NPE data prep, the diagnostics suite, posterior predictive checks, OBED, and how Stage 2 outputs feed back into the audit report
 
 ## Testing
 

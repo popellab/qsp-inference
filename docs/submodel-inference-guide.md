@@ -201,6 +201,8 @@ Per-parameter contraction and shift relative to both the pre-stage-1 prior and t
 **6. Clinical predictive uncertainty** (only when `posterior_predictive_clinical.csv` is present)
 A 95% CI table per (scenario, endpoint) with driver attribution via Spearman correlation between posterior samples and endpoint values. When PRCC results are available, drivers are restricted to PRCC-significant parameters to keep the table readable. Side artifacts `ppc_endpoint_ci.csv` and `ppc_endpoint_correlations.csv` are written next to the report for downstream analysis. This section is upstream of OBED proper: it identifies which parameters drive remaining clinical predictive uncertainty.
 
+For details on producing the Stage 2 inputs the audit reads here (`posterior_samples`, `local_calibration.csv`, `posterior_predictive_clinical.csv`), see the [Stage 2 SBI guide](stage2-sbi-guide.md).
+
 ### Outputs
 
 The audit produces:
