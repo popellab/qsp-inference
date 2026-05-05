@@ -23,14 +23,11 @@ Stage 1 (submodel inference)        Stage 2 (full-model NPE)
 
 Stage 1 turns scattered literature into a tractable joint prior. Stage 2 turns that prior plus full-model behavior plus aggregate clinical/preclinical observables into the parameter posterior you actually use for predictions.
 
-### Reference implementations
+### Reference implementation
 
-Two reference points, picked by what you need:
+See **[`examples/stage2_pipeline.py`](../examples/stage2_pipeline.py)** for a single-scenario, end-to-end script that wires together everything in this guide: composite copula prior, restriction classifier, copula transform, prior-predictive sanity gate, NPE training, the diagnostics suite, posterior predictive coverage, and the CSV layout the audit's Stage 2 sections read.
 
-- **[`examples/stage2_pipeline.py`](../examples/stage2_pipeline.py)** — a single-scenario, in-memory distillation of the workflow that fits in one screen and uses only qsp-inference. Read this first.
-- **`workflows/sbi_runner.py` in pdac-build** — the canonical production consumer. Adds multi-scenario stacking, simulation caching, GPU staging, restriction-classifier integration, and the exact CSV outputs the audit reads. Read this when wiring up a real project.
-
-The trajectory plotting in pdac-build's sbi runner uses `qsp_inference.inference.evaluate_calibration_target_over_trajectory` to evaluate calibration-target observables over long-form trajectory frames produced upstream by `qsp_hpc.cpp.evolve_trajectory.assemble_evolve_trajectory_long`.
+The script uses `qsp_hpc.simulation.QSPSimulator` (and its C++ analogue `qsp_hpc.simulation.CppSimulator`) from [qsp-hpc-tools](https://github.com/popellab/qsp-hpc-tools) as the QSP simulator. Both expose `simulate_with_parameters(theta) -> ndarray` of test statistics, with theta-hashed suffix pools so repeated calls with the same parameter matrix hit the cache. For full-trajectory plotting downstream of NPE, pair `qsp_hpc.cpp.evolve_trajectory.assemble_evolve_trajectory_long` with `qsp_inference.inference.evaluate_calibration_target_over_trajectory`.
 
 ## Loading the Stage 1 posterior as a Stage 2 prior
 

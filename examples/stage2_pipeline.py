@@ -1,21 +1,23 @@
 """Stage 2 NPE pipeline: from Stage 1 copula prior to posterior + diagnostics.
 
-A linear, single-scenario distillation of the Stage 2 workflow used by
-pdac-build's ``workflows/sbi_runner.py``. The pdac-build runner adds
-multi-scenario stacking, simulation caching, GPU staging, restriction-
-classifier integration, and CSV outputs the audit reads. This script keeps
-just the spine so the qsp-inference pieces (prior loading, copula transform,
-diagnostics, PPC, save_diagnostics) are easy to follow.
+A linear, single-scenario walk-through of the Stage 2 workflow. Real projects
+add multi-scenario stacking, simulation caching, and shell-local calibration;
+this script keeps just the spine so the qsp-inference pieces (prior loading,
+copula transform, diagnostics, PPC, save_diagnostics) are easy to follow.
+
+Simulator: ``qsp_hpc.simulation.QSPSimulator`` from qsp-hpc-tools
+(https://github.com/popellab/qsp-hpc-tools), wired here through its
+``simulate_with_parameters(theta)`` method. The C++ counterpart
+``qsp_hpc.simulation.CppSimulator`` exposes the same interface.
 
 Inputs (replace these with project paths):
-    submodel_priors.yaml   from `qsp-audit ... report`
-    pdac_priors.csv        the CSV path the audit was run against
-    qsp_simulator          a callable theta -> x with shape (n, n_obs)
-    obs_values             observed test statistics, dict {name: value}
+    submodel_priors.yaml      from ``qsp-audit ... report``
+    parameters/priors.csv     the CSV path the audit was run against
+    QSPSimulator(...)         configured for the project's QSP model
+    obs_values                observed test statistics, dict {name: value}
 
 Outputs (under SAVE_DIR):
     posterior_samples.csv
-    posterior_predictive_clinical.csv (when PPC is run on a clinical scenario)
     diagnostics CSVs (recovery, contraction, calibration, coverage, ...)
     figures (recovery, ECDF, PPC histograms, ...)
 
@@ -28,6 +30,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from qsp_hpc.simulation import QSPSimulator
 from sbi.inference import NPE
 from sbi.neural_nets import posterior_nn
 
@@ -55,9 +58,22 @@ from qsp_inference.priors.copula_prior import load_composite_prior_log
 # Configuration. In a real project these come from a RunConfig / argparse.
 # ---------------------------------------------------------------------------
 SUBMODEL_PRIORS = Path("submodel_priors.yaml")
-PRIORS_CSV = Path("parameters/pdac_priors.csv")
+PRIORS_CSV = Path("parameters/priors.csv")
 SAVE_DIR = Path("runs/stage2_example")
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Configure for the project's QSP model. See qsp-hpc-tools docs for the full
+# QSPSimulator API (model_version, observable selection, pool config, etc.).
+sim = QSPSimulator(...)  # noqa: F821 — placeholder, project-specific config
+
+def qsp_simulator(theta: np.ndarray) -> np.ndarray:
+    """Theta -> test statistics, shape (n, n_obs).
+
+    ``QSPSimulator.simulate_with_parameters`` uses a theta-hashed suffix pool,
+    so repeated calls with identical parameter matrices hit the cache instead
+    of resimulating.
+    """
+    return sim.simulate_with_parameters(theta)
 
 NUM_TRAIN = 5_000
 NUM_TEST = 500
@@ -86,14 +102,9 @@ print(f"Loaded composite prior over {n_params} params")
 # ---------------------------------------------------------------------------
 # 2. (Optional) train a RestrictionClassifier from a pilot pool.
 # ---------------------------------------------------------------------------
-# In a real run, replace these with actual pilot sims. The classifier predicts
-# P(valid | theta) and lets sample_restricted reject low-survival draws before
-# the main training pool is generated.
-def qsp_simulator(theta: np.ndarray) -> np.ndarray:
-    """Replace with a real QSP simulator. Must return (n, n_obs)."""
-    raise NotImplementedError("wire up the project's simulator here")
-
-
+# Run a small pilot pool, mark sims that returned finite outputs as valid, and
+# fit the classifier. P(valid | theta) then lets sample_restricted reject
+# low-survival draws before the main training pool is generated.
 pilot_theta = prior_log.sample((2_000,)).exp().numpy()
 pilot_x = qsp_simulator(pilot_theta)
 pilot_valid = np.all(np.isfinite(pilot_x), axis=1)
@@ -269,7 +280,7 @@ save_diagnostics(
 )
 
 # `local_calibration.csv` (shell-local KS p-values + contraction) is what the
-# audit's Stage 2 NPE shifts section reads. The pdac-build runner produces it
-# by repeating sbi_calibration_ecdf and sbi_z_score_contraction on a
-# shell-local (param-tier) subset; replicate the same pattern when needed.
+# audit's Stage 2 NPE shifts section reads. Produce it by repeating
+# sbi_calibration_ecdf and sbi_z_score_contraction on a shell-local
+# (param-tier) subset and saving the resulting metrics.
 print(f"\nDone. See {SAVE_DIR}/")
