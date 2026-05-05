@@ -23,6 +23,12 @@ Stage 1 (submodel inference)        Stage 2 (full-model NPE)
 
 Stage 1 turns scattered literature into a tractable joint prior. Stage 2 turns that prior plus full-model behavior plus aggregate clinical/preclinical observables into the parameter posterior you actually use for predictions.
 
+### Reference implementation
+
+For an end-to-end Stage 2 pipeline that wires together everything in this guide — copula-prior loading, restriction classifier training, NPE training, the full diagnostics suite, PPC, and the CSV outputs the audit expects — see the **sbi runner in pdac-build**. It is the canonical consumer of qsp-inference's Stage 2 surface and is the shortest path to a working setup. Treat the rest of this document as the reference for the individual building blocks; the pdac-build sbi runner shows how they compose.
+
+The trajectory plotting in that runner uses `qsp_inference.inference.evaluate_calibration_target_over_trajectory` to evaluate calibration-target observables over long-form trajectory frames produced upstream by `qsp_hpc.cpp.evolve_trajectory.assemble_evolve_trajectory_long`.
+
 ## Loading the Stage 1 posterior as a Stage 2 prior
 
 The Stage 1 audit writes `submodel_priors.yaml` with marginals (lognormal/normal/uniform/Beta/gamma/invgamma) and a Gaussian copula correlation matrix. Two PyTorch-distribution loaders consume it:
