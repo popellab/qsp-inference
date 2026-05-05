@@ -153,7 +153,7 @@ uv pip install -e ".[submodel]"
 ```
 
 Your project needs:
-- A priors CSV (`parameters/pdac_priors.csv`) with prior distributions for all parameters
+- A priors CSV (`parameters/pdac_priors.csv`) with prior distributions for all parameters. The loader accepts `distribution` values of `lognormal` (uses `dist_param1=mu`, `dist_param2=sigma`), `normal` (`mu`, `sigma`), `uniform` (`lower`, `upper`), and `beta` (`a`, `b`). Beta is useful for bounded fractions like simplex shares from a stick-breaking parameterization.
 - SubmodelTarget YAMLs in `calibration_targets/submodel_targets/`
 - Optionally, a `submodel_config.yaml` in the same directory for parameter groups and cascade cuts
 
@@ -195,12 +195,26 @@ Coverage summary — how many of your PRCC-significant parameters have posterior
 **4. Component diagnostics**
 Per-component inference details — which components used NUTS vs. NPE, divergence counts, SBC calibration for NPE components.
 
+**5. Stage 2 NPE posterior shifts** (only when a Stage 2 SBI run is configured)
+Per-parameter contraction and shift relative to both the pre-stage-1 prior and the post-stage-1 prior, plus global SBC contraction and shell-local contraction from `local_calibration.csv`. KS p-values flag local miscalibration; mean |z| flags SBC bias. Wired through `AuditConfig.sbi_run_path` (or `--sbi-run-path` on the CLI).
+
+**6. Clinical predictive uncertainty** (only when `posterior_predictive_clinical.csv` is present)
+A 95% CI table per (scenario, endpoint) with driver attribution via Spearman correlation between posterior samples and endpoint values. When PRCC results are available, drivers are restricted to PRCC-significant parameters to keep the table readable. Side artifacts `ppc_endpoint_ci.csv` and `ppc_endpoint_correlations.csv` are written next to the report for downstream analysis. This section is upstream of OBED proper: it identifies which parameters drive remaining clinical predictive uncertainty.
+
+For details on producing the Stage 2 inputs the audit reads here (`posterior_samples`, `local_calibration.csv`, `posterior_predictive_clinical.csv`), see the [Stage 2 SBI guide](stage2-sbi-guide.md).
+
 ### Outputs
 
 The audit produces:
 - **Markdown report** with tables and diagnostics
 - **`submodel_priors.yaml`**: Posterior marginal distributions + Gaussian copula correlation matrix — ready for downstream SBI calibration
 - **Figures**: Prior vs. posterior marginals, PPC histograms, inference DAG
+
+### Cache freshness
+
+Each per-component cache (`comp_*.json`) carries a freshness manifest: hashes of the target YAMLs that fed the component, the prior CSV rows for the parameters it touched, the relevant slice of `submodel_config.yaml`, `reference_values.yaml`, and the qsp-inference version. The full set of fingerprints (including upstream cascade components) is mirrored into the `metadata.freshness` block of `submodel_priors.yaml`, so a downstream consumer can decide whether the file is stale relative to the current tree without re-running inference.
+
+On a cache hit the audit warns when content has drifted but does not auto-invalidate. To force re-inference for specific parameters, run `qsp-audit invalidate <param> ...`.
 
 ## Comparison with typical QSP calibration
 

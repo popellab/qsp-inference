@@ -63,12 +63,6 @@ try:
         plot_ppc_histograms,
         plot_posterior_predictive_spaghetti,
     )
-    from qsp_inference.inference.active_subspace import (
-        plot_eigenvalue_decay,
-        plot_active_weights,
-        plot_1d_active_subspace_density,
-        plot_2d_active_subspace_density,
-    )
     from qsp_inference.inference.obed import (
         classify_mpr,
         classify_recist,
@@ -129,11 +123,6 @@ __all__ = [
     "generate_posterior_predictive_simulations",
     "plot_ppc_histograms",
     "plot_posterior_predictive_spaghetti",
-    # Active subspace
-    "plot_eigenvalue_decay",
-    "plot_active_weights",
-    "plot_1d_active_subspace_density",
-    "plot_2d_active_subspace_density",
     # OBED
     "classify_mpr",
     "classify_recist",
