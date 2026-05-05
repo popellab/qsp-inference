@@ -114,12 +114,9 @@ config = AuditConfig(project_root=Path("/path/to/pdac-build"))
 report = run_audit(config, output=Path("audit_report.md"))
 ```
 
-CLI:
+Iteration script (re-MCMC components touched by an edited parameter, skip PPC + report):
 ```bash
-qsp-audit -r /path/to/project report -o report.md
-qsp-audit -r /path/to/project status
-qsp-audit -r /path/to/project invalidate k_CD8_kill k_Treg_act
-qsp-audit -r /path/to/project dag -o ./figures
+python examples/regen_submodel_priors.py --project-root /path/to/project --invalidate k_CD8_kill
 ```
 
 ## Testing

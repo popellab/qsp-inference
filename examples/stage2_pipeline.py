@@ -11,7 +11,7 @@ Simulator: ``qsp_hpc.simulation.QSPSimulator`` from qsp-hpc-tools
 ``qsp_hpc.simulation.CppSimulator`` exposes the same interface.
 
 Inputs (replace these with project paths):
-    submodel_priors.yaml      from ``qsp-audit ... report``
+    submodel_priors.yaml      from ``qsp_inference.audit.report.run_audit``
     parameters/priors.csv     the CSV path the audit was run against
     QSPSimulator(...)         configured for the project's QSP model
     obs_values                observed test statistics, dict {name: value}
@@ -21,7 +21,7 @@ Outputs (under SAVE_DIR):
     diagnostics CSVs (recovery, contraction, calibration, coverage, ...)
     figures (recovery, ECDF, PPC histograms, ...)
 
-The CSV outputs match what the qsp-audit Stage 2 sections expect under
+The CSV outputs match what the audit's Stage 2 report sections expect under
 ``AuditConfig.sbi_run_path``.
 """
 from __future__ import annotations

@@ -4,10 +4,10 @@
 Fast iteration loop for Stage 1: re-MCMC the components affected by an edit
 to a SubmodelTarget YAML or a prior CSV row, reuse cached posteriors for
 everything else, and rewrite ``submodel_priors.yaml`` so Stage 2 can
-reload it. Skips the slow parts of ``qsp-audit report`` (PPC simulations,
+reload it. Skips the slow parts of ``run_audit`` (PPC simulations,
 markdown report, plots).
 
-Use ``qsp-audit report`` for the full audit when you want the report.
+Use ``qsp_inference.audit.report.run_audit()`` for the full audit when you want the report.
 Use this script when you just want fresh priors.
 
 What this DOES:
@@ -50,7 +50,7 @@ from pathlib import Path
 
 # Internal helpers from the audit machinery. ``_run_inference`` and
 # ``_write_submodel_priors`` are currently private to qsp_inference.audit.report;
-# they're used here because the full ``qsp-audit report`` flow bundles them
+# they're used here because the full ``run_audit`` flow bundles them
 # with PPC + report generation, which are the slow steps this script skips.
 from qsp_inference.audit.report import (
     AuditConfig,
