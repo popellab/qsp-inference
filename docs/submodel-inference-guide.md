@@ -52,7 +52,7 @@ Literature data          SubmodelTarget YAMLs         Prior CSV
 ```
 
 1. **Extract data** from the literature into SubmodelTarget YAMLs using maple
-2. **Run the audit** (`qsp-audit report`) to perform inference and generate a report
+2. **Run the audit** (`qsp_inference.audit.report.run_audit`) to perform inference and generate a report
 3. **Review the report** — check for conflicts, weak targets, and MCMC diagnostics
 4. **Iterate** — add more targets, fix issues, re-run
 
@@ -157,23 +157,38 @@ Your project needs:
 - SubmodelTarget YAMLs in `calibration_targets/submodel_targets/`
 - Optionally, a `submodel_config.yaml` in the same directory for parameter groups and cascade cuts
 
-### Commands
+### How to run it
 
-```bash
-# Run inference and generate the full report
-qsp-audit -r /path/to/project report -o audit_report.md
+The audit and supporting helpers are exposed as importable Python functions. The full report flow is one call:
 
-# Quick status check (no inference, just coverage stats)
-qsp-audit -r /path/to/project status
+```python
+from qsp_inference.audit.report import AuditConfig, run_audit
 
-# Re-run inference for specific parameters (invalidates cache)
-qsp-audit -r /path/to/project invalidate k_CD8_kill k_Treg_act
-
-# Generate the inference DAG visualization
-qsp-audit -r /path/to/project dag -o ./figures
+run_audit(
+    AuditConfig(project_root="/path/to/project"),
+    output="audit_report.md",
+    invalidate_params=["k_CD8_kill", "k_Treg_act"],  # optional
+)
 ```
 
-The first run takes a while (MCMC for each component). Subsequent runs are fast — results are cached per component and only re-run when invalidated.
+For the iterative debugging loop (re-MCMC only the components touched by a changed parameter, skip the slow PPC + report steps), use [`examples/regen_submodel_priors.py`](../examples/regen_submodel_priors.py):
+
+```bash
+python examples/regen_submodel_priors.py --project-root /path/to/project --invalidate k_CD8_kill
+python examples/regen_submodel_priors.py --project-root /path/to/project --rebuild-all
+```
+
+The DAG visualization is its own helper:
+
+```python
+from qsp_inference.audit.plots import plot_inference_dag
+from qsp_inference.audit.report import AuditConfig
+
+config = AuditConfig(project_root="/path/to/project")
+plot_inference_dag(config.submodel_dir, "/path/to/project/figures")
+```
+
+The first run takes a while (MCMC for each component). Subsequent runs are fast: results are cached per component and only re-run when invalidated.
 
 ### What the report tells you
 
@@ -214,7 +229,7 @@ The audit produces:
 
 Each per-component cache (`comp_*.json`) carries a freshness manifest: hashes of the target YAMLs that fed the component, the prior CSV rows for the parameters it touched, the relevant slice of `submodel_config.yaml`, `reference_values.yaml`, and the qsp-inference version. The full set of fingerprints (including upstream cascade components) is mirrored into the `metadata.freshness` block of `submodel_priors.yaml`, so a downstream consumer can decide whether the file is stale relative to the current tree without re-running inference.
 
-On a cache hit the audit warns when content has drifted but does not auto-invalidate. To force re-inference for specific parameters, run `qsp-audit invalidate <param> ...`.
+On a cache hit the audit warns when content has drifted but does not auto-invalidate. To force re-inference for specific parameters, pass them via `invalidate_params=[...]` to `run_audit`, or use the `--invalidate` flag on `examples/regen_submodel_priors.py`.
 
 ## Comparison with typical QSP calibration
 
@@ -525,4 +540,4 @@ This means the likelihood variance is inflated by `exp(2 * 0.65) ~ 3.7x` — the
 
 **Check the DAG.** The inference DAG visualization shows you how your targets decompose into components. If one component has too many parameters, consider whether some can be cascade-cut.
 
-**Cache is your friend.** The `.compare_cache/` directory stores per-component results. Adding a new target only triggers inference for its component — everything else stays cached. Use `qsp-audit invalidate` when you change a target's specification.
+**Cache is your friend.** The `.compare_cache/` directory stores per-component results. Adding a new target only triggers inference for its component, everything else stays cached. Pass `invalidate_params=[...]` to `run_audit` (or `--invalidate` to `examples/regen_submodel_priors.py`) when you change a target's specification.

@@ -5,7 +5,7 @@ Bayesian inference tools for quantitative systems pharmacology (QSP) models. Dec
 ## What it does
 
 - **Submodel inference**: Joint NumPyro NUTS MCMC across SubmodelTarget and CalibrationTarget YAMLs, with translation sigma weighting data sources by relevance. Lognormal, normal, uniform, and Beta priors are supported in the priors CSV.
-- **Parameter audit**: Coverage reporting, priority scoring, diagnostics, and DAG visualization via the `qsp-audit` CLI. When a Stage 2 SBI run is provided, the report adds Stage 2 NPE posterior shifts and a clinical predictive uncertainty section.
+- **Parameter audit**: Coverage reporting, priority scoring, diagnostics, and DAG visualization via `qsp_inference.audit.report.run_audit()`. When a Stage 2 SBI run is provided, the report adds Stage 2 NPE posterior shifts and a clinical predictive uncertainty section.
 - **Copula priors**: Posterior parameterization as marginal distributions (lognormal, normal, uniform, Beta, gamma, invgamma) + Gaussian copula, loadable as PyTorch distributions for SBI workflows. Composite priors fall back to the CSV for parameters not covered by the copula.
 - **Prior restriction for SBI**: Classifier-based rejection sampling (`RestrictionClassifier`) with projection helpers so the classifier survives prior changes (parameters added or retired).
 - **SBI diagnostics**: Recovery, calibration, posterior predictive checks, optimal Bayesian experimental design (OBED), and learning curves for neural posterior estimation.
@@ -32,11 +32,18 @@ Requires [maple](https://github.com/popellab/maple) for SubmodelTarget and Calib
 
 ### Run the parameter audit
 
-```bash
-qsp-audit -r /path/to/project report -o audit_report.md
+```python
+from qsp_inference.audit.report import AuditConfig, run_audit
+
+run_audit(
+    AuditConfig(project_root="/path/to/project"),
+    output="audit_report.md",
+)
 ```
 
 This runs component-wise Bayesian inference on all SubmodelTarget YAMLs, generates a diagnostic report, and writes `submodel_priors.yaml` with the joint posterior.
+
+For the iterative debugging loop (re-MCMC only the components touched by an edited parameter or YAML, skip the slow PPC + report steps), use [`examples/regen_submodel_priors.py`](examples/regen_submodel_priors.py).
 
 ### Load the posterior as a prior for SBI
 
@@ -55,7 +62,7 @@ log_p = prior.log_prob(samples)   # evaluates joint density
 
 ## Documentation
 
-- **[Submodel Inference Guide](docs/submodel-inference-guide.md)** — Stage 1: practical guide covering the Bayesian framework, SubmodelTarget YAML anatomy, maple workflows, audit CLI, and diagnostics interpretation
+- **[Submodel Inference Guide](docs/submodel-inference-guide.md)** — Stage 1: practical guide covering the Bayesian framework, SubmodelTarget YAML anatomy, maple workflows, the audit API, and diagnostics interpretation
 - **[Stage 2 SBI Guide](docs/stage2-sbi-guide.md)** — Stage 2: loading the Stage 1 posterior as an SBI prior, prior restriction with `RestrictionClassifier`, NPE data prep, the diagnostics suite, posterior predictive checks, OBED, and how Stage 2 outputs feed back into the audit report
 
 ## Testing
