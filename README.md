@@ -11,6 +11,16 @@ Bayesian inference tools for quantitative systems pharmacology (QSP) models. Dec
 - **SBI diagnostics**: Recovery, calibration, posterior predictive checks, optimal Bayesian experimental design (OBED), and learning curves for neural posterior estimation.
 - **Cache freshness**: Per-component content fingerprints (target YAMLs, prior CSV rows, config slices, package version) are stamped into `submodel_priors.yaml` so consumers can detect when posteriors are stale relative to the current tree.
 
+## Related projects
+
+`qsp-inference` is one piece of a four-repo QSP modeling stack:
+
+- **[maple](https://github.com/popellab/maple)** — schema-validated LLM extraction of QSP calibration targets from literature; produces the SubmodelTargets and CalibrationTargets that feed Stage 1 / Stage 2 here.
+- **[qsp-codegen](https://github.com/popellab/qsp-codegen)** — SBML to C++ CVODE code generator that emits the `qsp_sim` simulator.
+- **[qsp-hpc-tools](https://github.com/popellab/qsp-hpc-tools)** — SLURM-aware orchestration and three-tier caching for the simulation campaigns Stage 2 needs.
+
+Project page with full write-up and figures: [joeleliason.com/projects/qsp-inference](https://joeleliason.com/projects/qsp-inference/).
+
 ## Installation
 
 ```bash
