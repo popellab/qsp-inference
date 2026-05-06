@@ -1,15 +1,28 @@
 # qsp-inference
 
-Bayesian inference tools for quantitative systems pharmacology (QSP) models. Decomposes large parameter spaces into tractable submodels, runs MCMC or neural posterior estimation on each component, and produces a joint posterior (marginals + Gaussian copula) for downstream calibration.
+Two-stage Bayesian calibration for quantitative systems pharmacology (QSP) models.
 
-## What it does
+Most QSP parameters can't be measured directly in the clinical context being modeled, and most calibration workflows pick literature point values and pad them with arbitrary ranges for sensitivity analysis. `qsp-inference` replaces that with a two-stage Bayesian calibration: turn each literature measurement into a forward-model likelihood with automatic downweighting for context-mismatched sources, combine them into a joint posterior over the QSP parameters, then use that posterior as an informative prior for full-simulator inference against clinical data.
 
-- **Submodel inference**: Joint NumPyro NUTS MCMC across SubmodelTarget and CalibrationTarget YAMLs, with translation sigma weighting data sources by relevance. Lognormal, normal, uniform, and Beta priors are supported in the priors CSV.
-- **Parameter audit**: Coverage reporting, priority scoring, diagnostics, and DAG visualization via `qsp_inference.audit.report.run_audit()`. When a Stage 2 SBI run is provided, the report adds Stage 2 NPE posterior shifts and a clinical predictive uncertainty section.
-- **Copula priors**: Posterior parameterization as marginal distributions (lognormal, normal, uniform, Beta, gamma, invgamma) + Gaussian copula, loadable as PyTorch distributions for SBI workflows. Composite priors fall back to the CSV for parameters not covered by the copula.
-- **Prior restriction for SBI**: Classifier-based rejection sampling (`RestrictionClassifier`) with projection helpers so the classifier survives prior changes (parameters added or retired).
-- **SBI diagnostics**: Recovery, calibration, posterior predictive checks, optimal Bayesian experimental design (OBED), and learning curves for neural posterior estimation.
-- **Cache freshness**: Per-component content fingerprints (target YAMLs, prior CSV rows, config slices, package version) are stamped into `submodel_priors.yaml` so consumers can detect when posteriors are stale relative to the current tree.
+Project page with full write-up and figures: [joeleliason.com/projects/qsp-inference](https://joeleliason.com/projects/qsp-inference/).
+
+## How it works
+
+### Stage 1: literature → joint posterior
+
+The Stage 1 input is a set of *SubmodelTargets*: structured extractions from individual papers, produced by [maple](https://github.com/popellab/maple), each pairing a measurement with a small forward model that predicts that measurement from QSP parameters. Each target also carries a source relevance assessment that produces a *translation sigma* — extra likelihood noise that downweights context-mismatched sources (e.g. mouse data on a related cancer downweighting relative to direct human clinical data).
+
+Stage 1 partitions the parameter–target graph into independent inference chunks (typically 1–10 parameters each) and fits each chunk separately: NumPyro NUTS for chunks with JAX-jittable forward models, component-wise neural posterior estimation for chunks whose ODE solves are too slow for NUTS' many-step trajectories. A `submodel_config.yaml` adds two optional knobs on top: parameter groups for hierarchical partial pooling, and cascade cuts that force a parameter to be inferred upstream and pass its posterior forward as a prior for downstream chunks.
+
+The joint posterior is parameterized as marginals plus a Gaussian copula and stamped with per-component content fingerprints in `submodel_priors.yaml` so consumers can detect when the posterior is stale.
+
+`qsp_inference.audit.report.run_audit()` runs the full Stage 1 pipeline plus a markdown diagnostic report: contraction, conflicts, MCMC health, and an extraction-priority ranking (which parameters most need more data). See the [Submodel Inference Guide](docs/submodel-inference-guide.md) for the full Stage 1 walkthrough.
+
+### Stage 2: clinical data → final posterior
+
+Stage 2 inputs are *CalibrationTargets*: clinical observables (baseline immune cell densities, tumor volume trajectories, biomarker time courses, etc.) that need the full QSP simulator to evaluate. The Stage 1 posterior loads as a `torch.distributions` object and serves as the prior for neural posterior estimation via [`sbi`](https://sbi-dev.github.io/sbi/) — simulate many `(θ, x)` pairs, train a normalizing-flow conditional density estimator, and condition on the observed `x` to get the Stage 2 posterior.
+
+A `RestrictionClassifier` (sklearn boosted trees on log-θ) rejection-samples the prior to filter out biologically implausible parameter combinations before the simulator gets called, and survives prior changes (parameters added or retired) via projection helpers. Diagnostics cover recovery, calibration ECDF, posterior predictive coverage, Mahalanobis self-reference null and LOO predictive influence for misspecification, and clinical predictive uncertainty for optimal Bayesian experimental design (OBED). See the [Stage 2 SBI Guide](docs/stage2-sbi-guide.md) for the full walkthrough.
 
 ## Related projects
 
@@ -18,8 +31,6 @@ Bayesian inference tools for quantitative systems pharmacology (QSP) models. Dec
 - **[maple](https://github.com/popellab/maple)** — schema-validated LLM extraction of QSP calibration targets from literature; produces the SubmodelTargets and CalibrationTargets that feed Stage 1 / Stage 2 here.
 - **[qsp-codegen](https://github.com/popellab/qsp-codegen)** — SBML to C++ CVODE code generator that emits the `qsp_sim` simulator.
 - **[qsp-hpc-tools](https://github.com/popellab/qsp-hpc-tools)** — SLURM-aware orchestration and three-tier caching for the simulation campaigns Stage 2 needs.
-
-Project page with full write-up and figures: [joeleliason.com/projects/qsp-inference](https://joeleliason.com/projects/qsp-inference/).
 
 ## Installation
 
@@ -63,7 +74,7 @@ from qsp_inference.priors import load_composite_prior_log
 # Copula prior for submodel params + independent fallback for the rest
 prior, param_names = load_composite_prior_log(
     "submodel_priors.yaml",
-    "parameters/pdac_priors.csv",
+    "parameters/priors.csv",
 )
 
 samples = prior.sample((10000,))  # log-space samples
