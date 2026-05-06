@@ -6,7 +6,9 @@ from pathlib import Path
 import numpy as np
 import pint
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")  # sbi extra, not in default install
+
 import yaml
 
 from qsp_inference.auxiliary.config import (
