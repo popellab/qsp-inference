@@ -30,6 +30,11 @@ from qsp_inference.auxiliary.discovery import (
     AuxiliaryRegistry,
     discover_auxiliary_members,
 )
+from qsp_inference.auxiliary.prior import (
+    HierarchicalAuxiliaryPrior,
+    build_units_by_name,
+    merge_into_constants,
+)
 
 __all__ = [
     "AuxiliaryBasePrior",
@@ -37,6 +42,9 @@ __all__ = [
     "AuxiliaryGroupSpec",
     "AuxiliaryMember",
     "AuxiliaryRegistry",
-    "load_auxiliary_config",
+    "HierarchicalAuxiliaryPrior",
+    "build_units_by_name",
     "discover_auxiliary_members",
+    "load_auxiliary_config",
+    "merge_into_constants",
 ]
