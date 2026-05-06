@@ -31,12 +31,32 @@ from qsp_inference.auxiliary.discovery import (
     discover_auxiliary_members,
 )
 
+# The hierarchical prior depends on ``torch``, which is in the optional
+# ``sbi`` extra (not part of the default install). Re-export it eagerly when
+# torch is available; otherwise leave the names off ``__all__`` so a
+# torch-less install can still use the config + discovery pieces.
+try:
+    from qsp_inference.auxiliary.prior import (  # noqa: F401
+        HierarchicalAuxiliaryPrior,
+        build_units_by_name,
+        merge_into_constants,
+    )
+except ImportError:  # torch missing — prior module is opt-in.
+    _PRIOR_EXPORTS: tuple[str, ...] = ()
+else:
+    _PRIOR_EXPORTS = (
+        "HierarchicalAuxiliaryPrior",
+        "build_units_by_name",
+        "merge_into_constants",
+    )
+
 __all__ = [
     "AuxiliaryBasePrior",
     "AuxiliaryConfig",
     "AuxiliaryGroupSpec",
     "AuxiliaryMember",
     "AuxiliaryRegistry",
-    "load_auxiliary_config",
     "discover_auxiliary_members",
+    "load_auxiliary_config",
+    *_PRIOR_EXPORTS,
 ]

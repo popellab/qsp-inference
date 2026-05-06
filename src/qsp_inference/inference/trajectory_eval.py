@@ -14,7 +14,7 @@ the function on each sim's full time series.
 """
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 import numpy as np
 import pandas as pd
@@ -30,6 +30,7 @@ def evaluate_observable_over_trajectory(
     ureg: Any,
     time_units: str = "day",
     on_error: str = "nan",
+    auxiliary_per_sim: Optional[Mapping[int, Mapping[str, Any]]] = None,
 ) -> pd.DataFrame:
     """Evaluate ``compute_observable`` per sim, collecting time-resolved values.
 
@@ -64,6 +65,18 @@ def evaluate_observable_over_trajectory(
             evaluation failure (mirrors the derive_test_stats_worker
             behavior). ``"raise"`` propagates the underlying exception —
             useful for debugging a broken observable.
+        auxiliary_per_sim: Optional mapping ``{sample_index: {name: Pint
+            Quantity, ...}}`` of measurement-bridging auxiliary parameters
+            (see :mod:`qsp_inference.auxiliary`). Each per-sim record is
+            merged into ``constants`` before invoking the observable, so
+            ``observable.code`` accesses auxiliary draws via the same
+            ``constants`` dict. ``None`` (default) means no auxiliary
+            parameters — preserves the prior behavior. A sample_index
+            absent from the mapping evaluates with ``constants`` only
+            (treats the auxiliary contribution as missing — caller's
+            responsibility to provide draws for every sample they want
+            evaluated). An auxiliary name colliding with a fixed-constant
+            name raises ``ValueError`` (regardless of ``on_error``).
 
     Returns:
         Long-form DataFrame with columns
@@ -124,8 +137,21 @@ def evaluate_observable_over_trajectory(
             else:
                 species_dict[col] = arr * ureg(unit)
 
+        if auxiliary_per_sim is not None:
+            aux_record = auxiliary_per_sim.get(int(sample_idx), {})
+            collisions = set(aux_record).intersection(constants)
+            if collisions:
+                raise ValueError(
+                    f"Auxiliary parameter name(s) collide with observable.constants: "
+                    f"{sorted(collisions)}. Rename the AuxiliaryParameter or the "
+                    f"ObservableConstant so the observable.code namespace is unambiguous."
+                )
+            sim_constants: dict[str, Any] = {**constants, **aux_record}
+        else:
+            sim_constants = dict(constants)
+
         try:
-            result = compute_fn(time_q, species_dict, dict(constants), ureg)
+            result = compute_fn(time_q, species_dict, sim_constants, ureg)
             if not hasattr(result, "to"):
                 raise TypeError(
                     "compute_observable returned a non-Pint object; "
@@ -173,6 +199,7 @@ def evaluate_calibration_target_over_trajectory(
     *,
     time_units: str = "day",
     on_error: str = "nan",
+    auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
 ) -> pd.DataFrame:
     """Sugar wrapper that pulls observable code/constants/units off a
     ``maple.CalibrationTarget`` (or duck-typed equivalent).
@@ -181,10 +208,50 @@ def evaluate_calibration_target_over_trajectory(
     :func:`evaluate_observable_over_trajectory` keeps this module free
     of a hard maple import — pass any object exposing
     ``target.observable.code`` / ``.units`` / ``.constants[i].name`` /
-    ``.constants[i].value`` / ``.constants[i].units``.
+    ``.constants[i].value`` / ``.constants[i].units`` (and optionally
+    ``.auxiliary_parameters[i].name`` / ``.units`` for the auxiliary
+    plumbing below).
+
+    ``auxiliary_records``, when provided, is a sequence of per-sim
+    ``{name: float}`` dicts (one per ``sample_index`` in ascending order
+    — i.e. the ordering produced by
+    :meth:`qsp_inference.auxiliary.HierarchicalAuxiliaryPrior.sample_as_records`).
+    The wrapper filters each record to only the auxiliary parameters
+    declared on this calibration target's observable, attaches the
+    declared Pint units, and threads them through as
+    ``auxiliary_per_sim``. A target with no
+    ``observable.auxiliary_parameters`` simply ignores the records.
     """
     obs = target.observable
     constants = {c.name: c.value * ureg(c.units) for c in obs.constants}
+
+    aux_per_sim: Optional[dict[int, dict[str, Any]]] = None
+    declared_aux = getattr(obs, "auxiliary_parameters", None) or []
+    if auxiliary_records is not None and declared_aux:
+        aux_units = {a.name: getattr(a, "units", "dimensionless") for a in declared_aux}
+        sample_indices = sorted(
+            {int(s) for s in traj_df["sample_index"].unique()}
+        )
+        records_list = list(auxiliary_records)
+        if len(records_list) != len(sample_indices):
+            raise ValueError(
+                f"auxiliary_records length {len(records_list)} does not match "
+                f"the number of sample indices in traj_df ({len(sample_indices)}). "
+                f"Provide one record per sim, in ascending sample_index order."
+            )
+        aux_per_sim = {}
+        for sample_idx, record in zip(sample_indices, records_list):
+            filtered: dict[str, Any] = {}
+            for name, units in aux_units.items():
+                if name not in record:
+                    raise ValueError(
+                        f"auxiliary_records[{sample_idx}] is missing "
+                        f"declared auxiliary parameter '{name}' for this "
+                        f"calibration target."
+                    )
+                filtered[name] = float(record[name]) * ureg(units)
+            aux_per_sim[sample_idx] = filtered
+
     return evaluate_observable_over_trajectory(
         observable_code=obs.code,
         constants=constants,
@@ -194,6 +261,7 @@ def evaluate_calibration_target_over_trajectory(
         ureg=ureg,
         time_units=time_units,
         on_error=on_error,
+        auxiliary_per_sim=aux_per_sim,
     )
 
 
