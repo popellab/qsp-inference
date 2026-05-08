@@ -33,6 +33,7 @@ def evaluate_observable_over_trajectory(
     time_units: str = "day",
     on_error: str = "nan",
     auxiliary_per_sim: Optional[Mapping[int, Mapping[str, Any]]] = None,
+    parameter_per_sim: Optional[Mapping[int, Mapping[str, Any]]] = None,
 ) -> pd.DataFrame:
     """Evaluate ``compute_observable`` per sim, collecting time-resolved values.
 
@@ -79,6 +80,17 @@ def evaluate_observable_over_trajectory(
             responsibility to provide draws for every sample they want
             evaluated). An auxiliary name colliding with a fixed-constant
             name raises ``ValueError`` (regardless of ``on_error``).
+        parameter_per_sim: Optional mapping ``{sample_index: {name: Pint
+            Quantity, ...}}`` of per-sim QSP parameter values to thread
+            into ``species_dict``. Used when a cal target declares a
+            varied prior parameter (e.g. ``rho_collagen``) under
+            ``observable.species`` — the long-form trajectory parquet
+            doesn't carry parameter columns, so the values must come from
+            the caller's theta matrix. Each Quantity is broadcast to the
+            sim's time axis (``q * np.ones(len(time))``) so cal-target
+            code that indexes/slices behaves identically to a real
+            species. A parameter name colliding with a real species
+            column or a constant name raises ``ValueError``.
 
     Returns:
         Long-form DataFrame with columns
@@ -152,6 +164,27 @@ def evaluate_observable_over_trajectory(
         else:
             sim_constants = dict(constants)
 
+        if parameter_per_sim is not None:
+            param_record = parameter_per_sim.get(int(sample_idx), {})
+            param_collisions_species = set(param_record).intersection(species_dict)
+            if param_collisions_species:
+                raise ValueError(
+                    f"Parameter name(s) collide with real species in traj_df: "
+                    f"{sorted(param_collisions_species)}. Drop the entry from "
+                    f"parameter_per_sim or rename the QSP parameter so the "
+                    f"observable.code species_dict namespace is unambiguous."
+                )
+            param_collisions_const = set(param_record).intersection(sim_constants)
+            if param_collisions_const:
+                raise ValueError(
+                    f"Parameter name(s) collide with observable.constants / "
+                    f"auxiliary records: {sorted(param_collisions_const)}. Rename "
+                    f"the ObservableConstant or the QSP parameter."
+                )
+            ones = np.ones(len(wide.index), dtype=np.float64)
+            for pname, pq in param_record.items():
+                species_dict[pname] = ones * pq
+
         try:
             result = compute_fn(time_q, species_dict, sim_constants, ureg)
             if not hasattr(result, "to"):
@@ -202,6 +235,8 @@ def evaluate_calibration_target_over_trajectory(
     time_units: str = "day",
     on_error: str = "nan",
     auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
+    parameter_records: Optional[Iterable[Mapping[str, float]]] = None,
+    parameter_units: Optional[Mapping[str, str]] = None,
 ) -> pd.DataFrame:
     """Sugar wrapper that pulls observable code/constants/units off a
     ``maple.CalibrationTarget`` (or duck-typed equivalent).
@@ -254,6 +289,46 @@ def evaluate_calibration_target_over_trajectory(
                 filtered[name] = float(record[name]) * ureg(units)
             aux_per_sim[sample_idx] = filtered
 
+    # Per-sim parameter threading: cal targets that declare a varied
+    # prior parameter under observable.species (e.g. rho_collagen) need
+    # the parameter's per-sim Quantity injected into species_dict
+    # because the long-form trajectory parquet doesn't carry parameter
+    # columns. Filter parameter_records per-target by the species list
+    # so unrelated params don't pollute the observable's namespace.
+    param_per_sim: Optional[dict[int, dict[str, Any]]] = None
+    declared_species = list(getattr(obs, "species", None) or [])
+    if parameter_records is not None and declared_species:
+        param_units_map = dict(parameter_units or {})
+        sample_indices_p = sorted(
+            {int(s) for s in traj_df["sample_index"].unique()}
+        )
+        param_records_list = list(parameter_records)
+        if len(param_records_list) != len(sample_indices_p):
+            raise ValueError(
+                f"parameter_records length {len(param_records_list)} does not "
+                f"match the number of sample indices in traj_df "
+                f"({len(sample_indices_p)}). Provide one record per sim, in "
+                f"ascending sample_index order."
+            )
+        # Subset to params declared as species on this target AND present
+        # in the records; missing ones flow through (the underlying eval
+        # will surface KeyError naturally when observable.code accesses
+        # them).
+        relevant = [s for s in declared_species if s in (param_records_list[0] if param_records_list else {})]
+        if relevant:
+            param_per_sim = {}
+            for sid, rec in zip(sample_indices_p, param_records_list):
+                filtered: dict[str, Any] = {}
+                for pname in relevant:
+                    if pname not in rec:
+                        raise ValueError(
+                            f"parameter_records[{sid}] missing declared "
+                            f"species/parameter '{pname}'."
+                        )
+                    unit = param_units_map.get(pname, "dimensionless")
+                    filtered[pname] = float(rec[pname]) * ureg(unit)
+                param_per_sim[sid] = filtered
+
     return evaluate_observable_over_trajectory(
         observable_code=obs.code,
         constants=constants,
@@ -264,6 +339,7 @@ def evaluate_calibration_target_over_trajectory(
         time_units=time_units,
         on_error=on_error,
         auxiliary_per_sim=aux_per_sim,
+        parameter_per_sim=param_per_sim,
     )
 
 
@@ -371,6 +447,8 @@ def evaluate_targets_to_x(
     ureg: Any,
     *,
     auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
+    parameter_records: Optional[Iterable[Mapping[str, float]]] = None,
+    parameter_units: Optional[Mapping[str, str]] = None,
     target_index_values: Optional[Mapping[str, Sequence[float]]] = None,
     time_units: str = "day",
 ) -> tuple[np.ndarray, list[str], EvalReport]:
@@ -457,6 +535,16 @@ def evaluate_targets_to_x(
             f"record per sim, in ascending sample_index order."
         )
 
+    param_records_list: Optional[list[Mapping[str, float]]] = (
+        list(parameter_records) if parameter_records is not None else None
+    )
+    if param_records_list is not None and len(param_records_list) != n_sims:
+        raise ValueError(
+            f"parameter_records length {len(param_records_list)} does not match "
+            f"the number of sample indices in traj_df ({n_sims}). Provide one "
+            f"record per sim, in ascending sample_index order."
+        )
+
     overrides = target_index_values or {}
     report = EvalReport()
     columns: list[np.ndarray] = []
@@ -484,6 +572,9 @@ def evaluate_targets_to_x(
             sim_aux: Optional[list[Mapping[str, float]]] = None
             if aux_records_list is not None:
                 sim_aux = [aux_records_list[row]]
+            sim_param: Optional[list[Mapping[str, float]]] = None
+            if param_records_list is not None:
+                sim_param = [param_records_list[row]]
 
             try:
                 result_df = evaluate_calibration_target_over_trajectory(
@@ -494,6 +585,8 @@ def evaluate_targets_to_x(
                     time_units=time_units,
                     on_error="raise",
                     auxiliary_records=sim_aux,
+                    parameter_records=sim_param,
+                    parameter_units=parameter_units,
                 )
             except KeyError as e:
                 bucket["n_species_missing"] += 1
