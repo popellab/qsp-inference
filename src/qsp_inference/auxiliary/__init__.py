@@ -38,7 +38,6 @@ from qsp_inference.auxiliary.discovery import (
 try:
     from qsp_inference.auxiliary.prior import (  # noqa: F401
         HierarchicalAuxiliaryPrior,
-        build_units_by_name,
         merge_into_constants,
     )
 except ImportError:  # torch missing — prior module is opt-in.
@@ -46,7 +45,6 @@ except ImportError:  # torch missing — prior module is opt-in.
 else:
     _PRIOR_EXPORTS = (
         "HierarchicalAuxiliaryPrior",
-        "build_units_by_name",
         "merge_into_constants",
     )
 

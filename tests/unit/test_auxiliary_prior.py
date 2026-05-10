@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pint
 import pytest
 
 torch = pytest.importorskip("torch")  # sbi extra, not in default install
@@ -19,7 +18,6 @@ from qsp_inference.auxiliary.config import (
 from qsp_inference.auxiliary.discovery import discover_auxiliary_members
 from qsp_inference.auxiliary.prior import (
     HierarchicalAuxiliaryPrior,
-    build_units_by_name,
     merge_into_constants,
 )
 
@@ -266,7 +264,7 @@ def test_two_member_group_tau_zero_perfectly_correlated(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# Helpers: sample_as_records, merge_into_constants, build_units_by_name
+# Helpers: sample_as_records, merge_into_constants
 # --------------------------------------------------------------------------
 
 
@@ -288,36 +286,19 @@ def test_sample_as_records_seed_is_reproducible(tmp_path: Path) -> None:
     assert a == b
 
 
-def test_merge_into_constants_attaches_units() -> None:
-    ureg = pint.UnitRegistry()
-    base = {"area_per_cell": 80.0 * ureg("micrometer**2")}
+def test_merge_into_constants_attaches_aux_as_floats() -> None:
+    base = {"area_per_cell": 80.0}
     aux = {"f_serum_to_tumor_TGFb": 1.5}
-    units_by_name = {"f_serum_to_tumor_TGFb": "dimensionless"}
-    merged = merge_into_constants(base, aux, units_by_name=units_by_name, ureg=ureg)
-    assert merged["area_per_cell"] == base["area_per_cell"]
-    assert merged["f_serum_to_tumor_TGFb"].magnitude == pytest.approx(1.5)
-    assert str(merged["f_serum_to_tumor_TGFb"].units) == "dimensionless"
+    merged = merge_into_constants(base, aux)
+    assert merged["area_per_cell"] == 80.0
+    assert merged["f_serum_to_tumor_TGFb"] == pytest.approx(1.5)
+    assert isinstance(merged["f_serum_to_tumor_TGFb"], float)
     # Original dict unchanged
     assert "f_serum_to_tumor_TGFb" not in base
 
 
 def test_merge_into_constants_rejects_collision() -> None:
-    ureg = pint.UnitRegistry()
-    base = {"shared_name": 2.0 * ureg.dimensionless}
+    base = {"shared_name": 2.0}
     aux = {"shared_name": 1.5}
     with pytest.raises(ValueError, match="collides"):
-        merge_into_constants(
-            base, aux, units_by_name={"shared_name": "dimensionless"}, ureg=ureg
-        )
-
-
-def test_merge_into_constants_rejects_missing_units() -> None:
-    ureg = pint.UnitRegistry()
-    with pytest.raises(ValueError, match="incomplete"):
-        merge_into_constants({}, {"f_a": 1.5}, units_by_name={}, ureg=ureg)
-
-
-def test_build_units_by_name(tmp_path: Path) -> None:
-    reg = _registry(tmp_path, ["f_a", "f_b"])
-    units = build_units_by_name(reg)
-    assert units == {"f_a": "dimensionless", "f_b": "dimensionless"}
+        merge_into_constants(base, aux)
