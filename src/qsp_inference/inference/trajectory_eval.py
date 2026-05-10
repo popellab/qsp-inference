@@ -6,11 +6,12 @@ upstream (long-form ``[sample_index, t_to_diagnosis_days, column, value]``)
 and a posterior-predictive plotter downstream (one panel per cal target,
 trajectory band ending in observed value at t=0).
 
-The observable code's normal signature is
-``compute_observable(time, species_dict, constants, ureg) -> Pint
-Quantity array of length len(time)``. This module compiles it once and
-loops over ``sample_index`` groups in the trajectory frame, evaluating
-the function on each sim's full time series.
+The observable code's signature is
+``compute_observable(time, species_dict, constants) -> ndarray of length
+len(time)``. Inputs and outputs are raw floats in canonical model units
+— Pint was dropped from the calibration-target observable interface in
+the pintless rollout (PR1 maple, PR2 qsp-hpc-tools, PR3 pdac-build,
+PR4 here).
 """
 from __future__ import annotations
 
@@ -25,69 +26,49 @@ import pandas as pd
 def evaluate_observable_over_trajectory(
     *,
     observable_code: str,
-    constants: Mapping[str, Any],
-    output_units: str,
+    constants: Mapping[str, float],
     traj_df: pd.DataFrame,
-    species_units: Mapping[str, str],
-    ureg: Any,
-    time_units: str = "day",
     on_error: str = "nan",
-    auxiliary_per_sim: Optional[Mapping[int, Mapping[str, Any]]] = None,
-    parameter_per_sim: Optional[Mapping[int, Mapping[str, Any]]] = None,
+    auxiliary_per_sim: Optional[Mapping[int, Mapping[str, float]]] = None,
+    parameter_per_sim: Optional[Mapping[int, Mapping[str, float]]] = None,
 ) -> pd.DataFrame:
     """Evaluate ``compute_observable`` per sim, collecting time-resolved values.
 
     Args:
         observable_code: Python source defining
-            ``compute_observable(time, species_dict, constants, ureg)`` —
-            the same string that lives in
-            ``CalibrationTarget.observable.code``. Must return a Pint
-            Quantity array with ``len(time)`` entries.
-        constants: Mapping of constant name → Pint Quantity. Built by the
-            caller from ``CalibrationTarget.observable.constants``.
-        output_units: Pint-parseable target units. The evaluated result
-            is converted to these before its magnitude is recorded —
-            errors loudly on dimensionality mismatch.
+            ``compute_observable(time, species_dict, constants)`` — the
+            same string that lives in ``CalibrationTarget.observable.code``.
+            Must return a float ndarray with ``len(time)`` entries, in
+            the target's declared output units.
+        constants: Mapping of constant name → raw float (already in the
+            units the observable expects). Built by the caller from
+            ``CalibrationTarget.observable.constants``.
         traj_df: Long-form trajectory frame produced by
             ``qsp_hpc.cpp.evolve_trajectory.assemble_evolve_trajectory_long``,
             with columns ``[sample_index, t_to_diagnosis_days, column,
             value]``. Each ``column`` is a species or compartment name
-            from the QSP model (e.g. ``"V_T.CD8"``, ``"V_T"``).
-        species_units: Mapping of model column name → Pint unit string.
-            Sourced from ``model_structure.json`` / ``species_units.json``
-            on the pdac-build side. Columns absent from this map are
-            wrapped as ``ureg.dimensionless`` — this is the right default
-            for compartment volumes that already carry their unit
-            elsewhere, but signals to the cal-target author that any
-            species without an entry will silently flow through unitless.
-        ureg: Pint UnitRegistry the cal target was authored against.
-        time_units: Pint unit for ``t_to_diagnosis_days``. Default
-            ``"day"`` matches the column name; override only if you
-            relabel the trajectory time axis.
+            from the QSP model (e.g. ``"V_T.CD8"``, ``"V_T"``); values
+            are raw floats in canonical model units.
         on_error: ``"nan"`` (default) returns NaN for that sample on any
             evaluation failure (mirrors the derive_test_stats_worker
             behavior). ``"raise"`` propagates the underlying exception —
             useful for debugging a broken observable.
-        auxiliary_per_sim: Optional mapping ``{sample_index: {name: Pint
-            Quantity, ...}}`` of measurement-bridging auxiliary parameters
+        auxiliary_per_sim: Optional mapping ``{sample_index: {name:
+            float, ...}}`` of measurement-bridging auxiliary parameters
             (see :mod:`qsp_inference.auxiliary`). Each per-sim record is
             merged into ``constants`` before invoking the observable, so
             ``observable.code`` accesses auxiliary draws via the same
             ``constants`` dict. ``None`` (default) means no auxiliary
-            parameters — preserves the prior behavior. A sample_index
-            absent from the mapping evaluates with ``constants`` only
-            (treats the auxiliary contribution as missing — caller's
-            responsibility to provide draws for every sample they want
-            evaluated). An auxiliary name colliding with a fixed-constant
+            parameters. An auxiliary name colliding with a fixed-constant
             name raises ``ValueError`` (regardless of ``on_error``).
-        parameter_per_sim: Optional mapping ``{sample_index: {name: Pint
-            Quantity, ...}}`` of per-sim QSP parameter values to thread
+        parameter_per_sim: Optional mapping ``{sample_index: {name:
+            float, ...}}`` of per-sim QSP parameter values to thread
             into ``species_dict``. Used when a cal target declares a
             varied prior parameter (e.g. ``rho_collagen``) under
             ``observable.species`` — the long-form trajectory parquet
             doesn't carry parameter columns, so the values must come from
-            the caller's theta matrix. Each Quantity is broadcast to the
-            sim's time axis (``q * np.ones(len(time))``) so cal-target
+            the caller's theta matrix. Each value is broadcast to the
+            sim's time axis (``v * np.ones(len(time))``) so cal-target
             code that indexes/slices behaves identically to a real
             species. A parameter name colliding with a real species
             column or a constant name raises ``ValueError``.
@@ -95,14 +76,13 @@ def evaluate_observable_over_trajectory(
     Returns:
         Long-form DataFrame with columns
         ``[sample_index, t_to_diagnosis_days, value]``. ``value`` is the
-        observable in ``output_units`` (magnitude only — caller owns the
-        unit metadata). Rows are ordered by ``(sample_index,
-        t_to_diagnosis_days)`` ascending.
+        raw float observable in the target's declared output units. Rows
+        are ordered by ``(sample_index, t_to_diagnosis_days)`` ascending.
 
     Raises:
         ValueError: ``observable_code`` doesn't define ``compute_observable``,
             or required columns are missing from ``traj_df``.
-        Pint dimensionality / unit errors propagate when
+        Exceptions from ``compute_observable`` propagate when
             ``on_error="raise"``.
     """
     if on_error not in ("nan", "raise"):
@@ -115,7 +95,7 @@ def evaluate_observable_over_trajectory(
 
     # Compile the cal target's observable code once. Loose namespace
     # mirrors maple's validator + qsp_hpc derive worker.
-    namespace: dict[str, Any] = {"np": np, "numpy": np, "ureg": ureg}
+    namespace: dict[str, Any] = {"np": np, "numpy": np}
     exec(observable_code, namespace)
     compute_fn = namespace.get("compute_observable")
     if compute_fn is None:
@@ -124,12 +104,11 @@ def evaluate_observable_over_trajectory(
             "'compute_observable'"
         )
 
-    time_q_unit = ureg(time_units)
     out_rows: list[pd.DataFrame] = []
     for sample_idx, sim_df in traj_df.groupby("sample_index", sort=True):
         # Pivot the long-form rows to a (n_t × n_columns) wide table so
-        # we can hand each column array to the observable as a Pint
-        # Quantity. ``aggfunc="first"`` is safe — there is exactly one
+        # we can hand each column array to the observable as a raw float
+        # ndarray. ``aggfunc="first"`` is safe — there is exactly one
         # row per (t, column) by construction in the upstream assembler.
         wide = (
             sim_df.pivot_table(
@@ -140,16 +119,11 @@ def evaluate_observable_over_trajectory(
             )
             .sort_index()
         )
-        time_q = wide.index.to_numpy(dtype=np.float64) * time_q_unit
+        time = wide.index.to_numpy(dtype=np.float64)
 
-        species_dict: dict[str, Any] = {}
-        for col in wide.columns:
-            arr = wide[col].to_numpy(dtype=np.float64)
-            unit = species_units.get(col)
-            if unit is None:
-                species_dict[col] = arr * ureg.dimensionless
-            else:
-                species_dict[col] = arr * ureg(unit)
+        species_dict: dict[str, np.ndarray] = {
+            col: wide[col].to_numpy(dtype=np.float64) for col in wide.columns
+        }
 
         if auxiliary_per_sim is not None:
             aux_record = auxiliary_per_sim.get(int(sample_idx), {})
@@ -160,7 +134,7 @@ def evaluate_observable_over_trajectory(
                     f"{sorted(collisions)}. Rename the AuxiliaryParameter or the "
                     f"ObservableConstant so the observable.code namespace is unambiguous."
                 )
-            sim_constants: dict[str, Any] = {**constants, **aux_record}
+            sim_constants: dict[str, float] = {**constants, **aux_record}
         else:
             sim_constants = dict(constants)
 
@@ -182,27 +156,22 @@ def evaluate_observable_over_trajectory(
                     f"the ObservableConstant or the QSP parameter."
                 )
             ones = np.ones(len(wide.index), dtype=np.float64)
-            for pname, pq in param_record.items():
-                species_dict[pname] = ones * pq
+            for pname, pval in param_record.items():
+                species_dict[pname] = ones * float(pval)
 
         try:
-            result = compute_fn(time_q, species_dict, sim_constants, ureg)
-            if not hasattr(result, "to"):
-                raise TypeError(
-                    "compute_observable returned a non-Pint object; "
-                    "expected a Quantity array"
-                )
-            magnitude = np.asarray(result.to(output_units).magnitude, dtype=np.float64)
-            if magnitude.shape != time_q.magnitude.shape:
+            result = compute_fn(time, species_dict, sim_constants)
+            value = np.asarray(result, dtype=np.float64)
+            if value.shape != time.shape:
                 raise ValueError(
                     f"compute_observable returned array of shape "
-                    f"{magnitude.shape}, expected {time_q.magnitude.shape} "
+                    f"{value.shape}, expected {time.shape} "
                     "(same length as time axis)"
                 )
         except Exception:
             if on_error == "raise":
                 raise
-            magnitude = np.full(len(wide.index), np.nan, dtype=np.float64)
+            value = np.full(len(wide.index), np.nan, dtype=np.float64)
 
         out_rows.append(
             pd.DataFrame(
@@ -211,7 +180,7 @@ def evaluate_observable_over_trajectory(
                         len(wide.index), int(sample_idx), dtype=np.int64
                     ),
                     "t_to_diagnosis_days": wide.index.to_numpy(dtype=np.float64),
-                    "value": magnitude,
+                    "value": value,
                 }
             )
         )
@@ -229,43 +198,37 @@ def evaluate_observable_over_trajectory(
 def evaluate_calibration_target_over_trajectory(
     target: Any,
     traj_df: pd.DataFrame,
-    species_units: Mapping[str, str],
-    ureg: Any,
     *,
-    time_units: str = "day",
     on_error: str = "nan",
     auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
     parameter_records: Optional[Iterable[Mapping[str, float]]] = None,
-    parameter_units: Optional[Mapping[str, str]] = None,
 ) -> pd.DataFrame:
-    """Sugar wrapper that pulls observable code/constants/units off a
+    """Sugar wrapper that pulls observable code/constants off a
     ``maple.CalibrationTarget`` (or duck-typed equivalent).
 
     The pure dependency on the underlying
     :func:`evaluate_observable_over_trajectory` keeps this module free
     of a hard maple import — pass any object exposing
-    ``target.observable.code`` / ``.units`` / ``.constants[i].name`` /
-    ``.constants[i].value`` / ``.constants[i].units`` (and optionally
-    ``.auxiliary_parameters[i].name`` / ``.units`` for the auxiliary
-    plumbing below).
+    ``target.observable.code`` / ``.constants[i].name`` /
+    ``.constants[i].value`` (and optionally
+    ``.auxiliary_parameters[i].name`` for the auxiliary plumbing below).
 
     ``auxiliary_records``, when provided, is a sequence of per-sim
     ``{name: float}`` dicts (one per ``sample_index`` in ascending order
     — i.e. the ordering produced by
     :meth:`qsp_inference.auxiliary.HierarchicalAuxiliaryPrior.sample_as_records`).
     The wrapper filters each record to only the auxiliary parameters
-    declared on this calibration target's observable, attaches the
-    declared Pint units, and threads them through as
-    ``auxiliary_per_sim``. A target with no
+    declared on this calibration target's observable and threads them
+    through as ``auxiliary_per_sim``. A target with no
     ``observable.auxiliary_parameters`` simply ignores the records.
     """
     obs = target.observable
-    constants = {c.name: c.value * ureg(c.units) for c in obs.constants}
+    constants = {c.name: float(c.value) for c in obs.constants}
 
-    aux_per_sim: Optional[dict[int, dict[str, Any]]] = None
+    aux_per_sim: Optional[dict[int, dict[str, float]]] = None
     declared_aux = getattr(obs, "auxiliary_parameters", None) or []
     if auxiliary_records is not None and declared_aux:
-        aux_units = {a.name: getattr(a, "units", "dimensionless") for a in declared_aux}
+        aux_names = [a.name for a in declared_aux]
         sample_indices = sorted(
             {int(s) for s in traj_df["sample_index"].unique()}
         )
@@ -278,27 +241,26 @@ def evaluate_calibration_target_over_trajectory(
             )
         aux_per_sim = {}
         for sample_idx, record in zip(sample_indices, records_list):
-            filtered: dict[str, Any] = {}
-            for name, units in aux_units.items():
+            filtered: dict[str, float] = {}
+            for name in aux_names:
                 if name not in record:
                     raise ValueError(
                         f"auxiliary_records[{sample_idx}] is missing "
                         f"declared auxiliary parameter '{name}' for this "
                         f"calibration target."
                     )
-                filtered[name] = float(record[name]) * ureg(units)
+                filtered[name] = float(record[name])
             aux_per_sim[sample_idx] = filtered
 
     # Per-sim parameter threading: cal targets that declare a varied
     # prior parameter under observable.species (e.g. rho_collagen) need
-    # the parameter's per-sim Quantity injected into species_dict
-    # because the long-form trajectory parquet doesn't carry parameter
-    # columns. Filter parameter_records per-target by the species list
-    # so unrelated params don't pollute the observable's namespace.
-    param_per_sim: Optional[dict[int, dict[str, Any]]] = None
+    # the parameter's per-sim value injected into species_dict because
+    # the long-form trajectory parquet doesn't carry parameter columns.
+    # Filter parameter_records per-target by the species list so
+    # unrelated params don't pollute the observable's namespace.
+    param_per_sim: Optional[dict[int, dict[str, float]]] = None
     declared_species = list(getattr(obs, "species", None) or [])
     if parameter_records is not None and declared_species:
-        param_units_map = dict(parameter_units or {})
         sample_indices_p = sorted(
             {int(s) for s in traj_df["sample_index"].unique()}
         )
@@ -318,25 +280,20 @@ def evaluate_calibration_target_over_trajectory(
         if relevant:
             param_per_sim = {}
             for sid, rec in zip(sample_indices_p, param_records_list):
-                filtered: dict[str, Any] = {}
+                filtered_p: dict[str, float] = {}
                 for pname in relevant:
                     if pname not in rec:
                         raise ValueError(
                             f"parameter_records[{sid}] missing declared "
                             f"species/parameter '{pname}'."
                         )
-                    unit = param_units_map.get(pname, "dimensionless")
-                    filtered[pname] = float(rec[pname]) * ureg(unit)
-                param_per_sim[sid] = filtered
+                    filtered_p[pname] = float(rec[pname])
+                param_per_sim[sid] = filtered_p
 
     return evaluate_observable_over_trajectory(
         observable_code=obs.code,
         constants=constants,
-        output_units=obs.units,
         traj_df=traj_df,
-        species_units=species_units,
-        ureg=ureg,
-        time_units=time_units,
         on_error=on_error,
         auxiliary_per_sim=aux_per_sim,
         parameter_per_sim=param_per_sim,
@@ -443,14 +400,10 @@ def collect_required_trajectory_columns(
 def evaluate_targets_to_x(
     targets: Sequence[Any],
     traj_df: pd.DataFrame,
-    species_units: Mapping[str, str],
-    ureg: Any,
     *,
     auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
     parameter_records: Optional[Iterable[Mapping[str, float]]] = None,
-    parameter_units: Optional[Mapping[str, str]] = None,
     target_index_values: Optional[Mapping[str, Sequence[float]]] = None,
-    time_units: str = "day",
 ) -> tuple[np.ndarray, list[str], EvalReport]:
     """Evaluate ``targets`` over ``traj_df`` and aggregate to a feature
     matrix suitable for SBI training.
@@ -458,7 +411,7 @@ def evaluate_targets_to_x(
     For each target:
 
     1. Calls :func:`evaluate_calibration_target_over_trajectory` on the
-       full trajectory frame to get a per-(sample_index, time) Pint
+       full trajectory frame to get a per-(sample_index, time)
        observable series, with ``on_error="raise"`` so failure modes
        can be classified per-sim rather than silently NaN-filled.
     2. Linearly interpolates each sim's series to the target's
@@ -474,7 +427,7 @@ def evaluate_targets_to_x(
 
     - ``KeyError`` from a missing species in ``species_dict`` →
       ``n_species_missing``.
-    - Any other ``Exception`` from ``code`` or unit conversion →
+    - Any other ``Exception`` from ``code`` →
       ``n_code_raised`` and the exception is stored in
       ``EvalReport.last_exception[target_id]``.
     - Either case yields NaN for that sim/target's columns.
@@ -491,17 +444,16 @@ def evaluate_targets_to_x(
             existing helpers: ``[sample_index, t_to_diagnosis_days,
             column, value]``. ``sample_index`` ascending order
             determines the row order of the output matrix.
-        species_units: Per-species canonical unit string. Passed
-            through to the underlying helper.
-        ureg: Pint UnitRegistry.
         auxiliary_records: Optional sequence of per-sim auxiliary
             records (one ``{name: float}`` dict per ``sample_index``,
             in ascending order). Filtered per-target inside.
+        parameter_records: Optional sequence of per-sim QSP parameter
+            records (one ``{name: float}`` dict per ``sample_index``,
+            in ascending order). Filtered per-target by the target's
+            declared ``observable.species`` list inside.
         target_index_values: Optional ``{target_id: [t1, t2, ...]}``
             override. Falls back to each target's YAML-declared
             ``empirical_data.index_values`` (or ``[0.0]`` if unset).
-        time_units: Pint unit for the trajectory's time axis. Default
-            ``"day"`` matches the standard column name.
 
     Returns:
         ``(x, names, report)``:
@@ -557,10 +509,8 @@ def evaluate_targets_to_x(
 
         column_block = np.full((n_sims, len(idx_values)), np.nan, dtype=np.float64)
 
-        # Run the existing per-target helper once on the full frame,
-        # with on_error="raise" so we can classify failure modes per
-        # sim. The helper itself loops over sample_indices internally,
-        # so we re-call it per-sim to scope the try/except. Per-sim
+        # Run the existing per-target helper once per sim so the
+        # try/except can scope per-sim failure-mode classification. Per-sim
         # invocation pays the same pivot cost the bulk path would have
         # paid, in a tighter loop — acceptable for unit-test scale and
         # for production where N_targets ≪ N_sims.
@@ -580,13 +530,9 @@ def evaluate_targets_to_x(
                 result_df = evaluate_calibration_target_over_trajectory(
                     target,
                     sim_traj,
-                    species_units,
-                    ureg,
-                    time_units=time_units,
                     on_error="raise",
                     auxiliary_records=sim_aux,
                     parameter_records=sim_param,
-                    parameter_units=parameter_units,
                 )
             except KeyError as e:
                 bucket["n_species_missing"] += 1

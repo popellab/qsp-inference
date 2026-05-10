@@ -275,33 +275,24 @@ class HierarchicalAuxiliaryPrior(Distribution):
 def merge_into_constants(
     base_constants: dict,
     aux_record: dict,
-    *,
-    units_by_name: dict,
-    ureg,
 ) -> dict:
     """Merge a per-sim auxiliary record into an observable's ``constants`` dict.
 
     The QSP simulator emits one trajectory per ``sample_index``; the
     observable-evaluation helper draws one auxiliary record per sample and
     folds it into the existing fixed-constants dict before invoking
-    ``observable.code``. This helper keeps the unit-attachment logic in
-    one place so callers don't accidentally pass raw floats into the Pint
-    namespace.
+    ``observable.code``.
 
     Args:
         base_constants: The fixed-constant mapping built from
             ``CalibrationTarget.observable.constants``. Each value is a
-            Pint Quantity.
+            raw float in canonical observable units.
         aux_record: ``{member_name: float}`` from
             :meth:`HierarchicalAuxiliaryPrior.sample_as_records`.
-        units_by_name: ``{member_name: pint-parseable units string}``
-            from the registry (each
-            :class:`AuxiliaryMember` carries its declared units).
-        ureg: Pint UnitRegistry consumed by the calibration target.
 
     Returns:
-        New dict with auxiliary entries attached as Pint Quantities.
-        Does not mutate ``base_constants``.
+        New dict with auxiliary entries merged in as raw floats. Does
+        not mutate ``base_constants``.
 
     Raises:
         ValueError: an auxiliary name collides with a fixed-constant name.
@@ -314,26 +305,11 @@ def merge_into_constants(
                 f"observable.constants entry. Pick a different name on the "
                 f"AuxiliaryParameter."
             )
-        units = units_by_name.get(name)
-        if units is None:
-            raise ValueError(
-                f"Auxiliary parameter '{name}' has no entry in units_by_name; "
-                f"the registry-derived unit map is incomplete."
-            )
-        out[name] = float(value) * ureg(units)
+        out[name] = float(value)
     return out
-
-
-def build_units_by_name(registry: AuxiliaryRegistry) -> dict[str, str]:
-    """Return ``{member_name: units string}`` for every member in ``registry``.
-
-    Convenience for callers wiring :func:`merge_into_constants`.
-    """
-    return {name: registry.members[name].units for name in registry.member_names}
 
 
 __all__ = [
     "HierarchicalAuxiliaryPrior",
-    "build_units_by_name",
     "merge_into_constants",
 ]
