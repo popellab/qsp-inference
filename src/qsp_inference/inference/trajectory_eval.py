@@ -23,11 +23,43 @@ import numpy as np
 import pandas as pd
 
 
+def pivot_traj_df_per_sim(
+    traj_df: pd.DataFrame,
+) -> dict[int, pd.DataFrame]:
+    """Pre-pivot a long-form trajectory frame into ``{sample_index: wide_df}``.
+
+    The wide frame is indexed by ``t_to_diagnosis_days`` (sorted) with one
+    column per QSP column (species/compartment/rule). Hoisting this out of
+    :func:`evaluate_observable_over_trajectory` lets a caller evaluating many
+    cal targets on the same trajectory pay the pivot cost once instead of
+    N_targets times.
+    """
+    required_cols = {"sample_index", "t_to_diagnosis_days", "column", "value"}
+    missing = required_cols - set(traj_df.columns)
+    if missing:
+        raise ValueError(f"traj_df missing required columns: {sorted(missing)}")
+
+    out: dict[int, pd.DataFrame] = {}
+    for sample_idx, sim_df in traj_df.groupby("sample_index", sort=True):
+        wide = (
+            sim_df.pivot_table(
+                index="t_to_diagnosis_days",
+                columns="column",
+                values="value",
+                aggfunc="first",
+            )
+            .sort_index()
+        )
+        out[int(sample_idx)] = wide
+    return out
+
+
 def evaluate_observable_over_trajectory(
     *,
     observable_code: str,
     constants: Mapping[str, float],
-    traj_df: pd.DataFrame,
+    traj_df: Optional[pd.DataFrame] = None,
+    wide_per_sim: Optional[Mapping[int, pd.DataFrame]] = None,
     on_error: str = "nan",
     auxiliary_per_sim: Optional[Mapping[int, Mapping[str, float]]] = None,
     parameter_per_sim: Optional[Mapping[int, Mapping[str, float]]] = None,
@@ -88,10 +120,12 @@ def evaluate_observable_over_trajectory(
     if on_error not in ("nan", "raise"):
         raise ValueError(f"on_error must be 'nan' or 'raise'; got {on_error!r}")
 
-    required_cols = {"sample_index", "t_to_diagnosis_days", "column", "value"}
-    missing = required_cols - set(traj_df.columns)
-    if missing:
-        raise ValueError(f"traj_df missing required columns: {sorted(missing)}")
+    if wide_per_sim is None:
+        if traj_df is None:
+            raise ValueError("provide either traj_df or wide_per_sim")
+        wide_per_sim = pivot_traj_df_per_sim(traj_df)
+    elif traj_df is not None:
+        raise ValueError("pass exactly one of traj_df / wide_per_sim, not both")
 
     # Compile the cal target's observable code once. Loose namespace
     # mirrors maple's validator + qsp_hpc derive worker.
@@ -105,20 +139,8 @@ def evaluate_observable_over_trajectory(
         )
 
     out_rows: list[pd.DataFrame] = []
-    for sample_idx, sim_df in traj_df.groupby("sample_index", sort=True):
-        # Pivot the long-form rows to a (n_t × n_columns) wide table so
-        # we can hand each column array to the observable as a raw float
-        # ndarray. ``aggfunc="first"`` is safe — there is exactly one
-        # row per (t, column) by construction in the upstream assembler.
-        wide = (
-            sim_df.pivot_table(
-                index="t_to_diagnosis_days",
-                columns="column",
-                values="value",
-                aggfunc="first",
-            )
-            .sort_index()
-        )
+    for sample_idx in sorted(wide_per_sim):
+        wide = wide_per_sim[sample_idx]
         time = wide.index.to_numpy(dtype=np.float64)
 
         species_dict: dict[str, np.ndarray] = {
@@ -197,8 +219,9 @@ def evaluate_observable_over_trajectory(
 
 def evaluate_calibration_target_over_trajectory(
     target: Any,
-    traj_df: pd.DataFrame,
+    traj_df: Optional[pd.DataFrame] = None,
     *,
+    wide_per_sim: Optional[Mapping[int, pd.DataFrame]] = None,
     on_error: str = "nan",
     auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
     parameter_records: Optional[Iterable[Mapping[str, float]]] = None,
@@ -225,13 +248,21 @@ def evaluate_calibration_target_over_trajectory(
     obs = target.observable
     constants = {c.name: float(c.value) for c in obs.constants}
 
+    if wide_per_sim is None and traj_df is None:
+        raise ValueError("provide either traj_df or wide_per_sim")
+    if wide_per_sim is not None and traj_df is not None:
+        raise ValueError("pass exactly one of traj_df / wide_per_sim, not both")
+
+    def _sample_indices() -> list[int]:
+        if wide_per_sim is not None:
+            return sorted(int(k) for k in wide_per_sim)
+        return sorted({int(s) for s in traj_df["sample_index"].unique()})
+
     aux_per_sim: Optional[dict[int, dict[str, float]]] = None
     declared_aux = getattr(obs, "auxiliary_parameters", None) or []
     if auxiliary_records is not None and declared_aux:
         aux_names = [a.name for a in declared_aux]
-        sample_indices = sorted(
-            {int(s) for s in traj_df["sample_index"].unique()}
-        )
+        sample_indices = _sample_indices()
         records_list = list(auxiliary_records)
         if len(records_list) != len(sample_indices):
             raise ValueError(
@@ -261,9 +292,7 @@ def evaluate_calibration_target_over_trajectory(
     param_per_sim: Optional[dict[int, dict[str, float]]] = None
     declared_species = list(getattr(obs, "species", None) or [])
     if parameter_records is not None and declared_species:
-        sample_indices_p = sorted(
-            {int(s) for s in traj_df["sample_index"].unique()}
-        )
+        sample_indices_p = _sample_indices()
         param_records_list = list(parameter_records)
         if len(param_records_list) != len(sample_indices_p):
             raise ValueError(
@@ -294,6 +323,7 @@ def evaluate_calibration_target_over_trajectory(
         observable_code=obs.code,
         constants=constants,
         traj_df=traj_df,
+        wide_per_sim=wide_per_sim,
         on_error=on_error,
         auxiliary_per_sim=aux_per_sim,
         parameter_per_sim=param_per_sim,
@@ -580,4 +610,5 @@ __all__ = [
     "evaluate_observable_over_trajectory",
     "evaluate_calibration_target_over_trajectory",
     "evaluate_targets_to_x",
+    "pivot_traj_df_per_sim",
 ]
