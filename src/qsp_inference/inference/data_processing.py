@@ -87,9 +87,10 @@ def add_observation_noise(
     ci95_lower: np.ndarray,
     ci95_upper: np.ndarray,
     medians: np.ndarray,
+    *,
+    bootstrap_samples: "list | None",
     seed: int = 42,
     sample_sizes: np.ndarray | None = None,
-    bootstrap_samples: "list | None" = None,
 ) -> np.ndarray:
     """
     Add observation noise to simulator outputs based on calibration target uncertainty.
@@ -137,12 +138,15 @@ def add_observation_noise(
             When provided, the parametric noise scale is divided by sqrt(n) to use
             standard error instead of population spread. Ignored for observables
             handled by the empirical path.
-        bootstrap_samples: Optional list (length n_observables) of 1-D arrays of
-            observed bootstrap samples per observable, or None per entry. When a
-            usable array (>= 5 finite samples) is given for observable i, the
-            empirical path is used for that observable; otherwise it falls back to
-            the parametric path. Pass None (default) to disable empirical noise
-            entirely (exact legacy behavior).
+        bootstrap_samples: REQUIRED (keyword-only). List (length n_observables) of
+            1-D arrays of observed bootstrap samples per observable, or None per
+            entry. When a usable array (>= 5 finite samples) is given for
+            observable i, the empirical path is used for that observable; otherwise
+            it falls back to the parametric path. Empirical noise is the expected
+            default, so this argument is mandatory — pass the bootstrap list (with
+            None entries where a target has no samples) for the standard path, or
+            pass ``bootstrap_samples=None`` to deliberately run fully parametric
+            (legacy behavior; emits a warning).
 
     Returns:
         x_noisy: Noisy simulator outputs, same shape as x.

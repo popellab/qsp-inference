@@ -17,12 +17,20 @@ def test_backward_compat_no_bootstrap_is_deterministic():
     x = rng.lognormal(0, 0.1, size=(500, 2))
     lo = np.array([0.5, 0.5]); hi = np.array([2.0, 2.0]); med = np.array([1.0, 1.0])
     with pytest.warns(UserWarning, match="no bootstrap_samples"):
-        a = add_observation_noise(x, lo, hi, med, seed=7)
-        b = add_observation_noise(x, lo, hi, med, seed=7)
+        a = add_observation_noise(x, lo, hi, med, bootstrap_samples=None, seed=7)
+        b = add_observation_noise(x, lo, hi, med, bootstrap_samples=None, seed=7)
     np.testing.assert_array_equal(a, b)
     assert a.shape == x.shape
     # noise actually perturbed the data
     assert not np.allclose(a, x)
+
+
+def test_bootstrap_samples_is_required():
+    """Empirical is not optional: omitting bootstrap_samples is a TypeError."""
+    x = np.full((50, 1), 1.0)
+    lo = np.array([0.5]); hi = np.array([2.0]); med = np.array([1.0])
+    with pytest.raises(TypeError):
+        add_observation_noise(x, lo, hi, med, seed=1)
 
 
 def test_warns_only_when_no_bootstrap():
@@ -31,7 +39,7 @@ def test_warns_only_when_no_bootstrap():
     x = np.full((200, 1), 1.0)
     lo = np.array([0.5]); hi = np.array([2.0]); med = np.array([1.0])
     with pytest.warns(UserWarning, match="no bootstrap_samples"):
-        add_observation_noise(x, lo, hi, med, seed=1)
+        add_observation_noise(x, lo, hi, med, bootstrap_samples=None, seed=1)
     boot = np.random.default_rng(0).lognormal(0, 0.3, size=2000)
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning would fail the test
