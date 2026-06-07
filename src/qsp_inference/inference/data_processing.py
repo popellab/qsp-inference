@@ -21,9 +21,13 @@ Usage:
 import warnings
 
 import numpy as np
-import torch
 from pathlib import Path
 from typing import Dict, Union
+
+try:
+    import torch
+except ImportError:  # torch is only needed by the tensor-producing NPE helpers;
+    torch = None     # add_observation_noise et al. are pure numpy
 from qsp_inference.inference.gaussian_copula_transform import (
     compute_quantiles_from_array,
     transform_to_normal_from_array
