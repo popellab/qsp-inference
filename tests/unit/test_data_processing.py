@@ -1,4 +1,6 @@
 """Unit tests for add_observation_noise (parametric + empirical paths)."""
+import warnings
+
 import numpy as np
 import pytest
 
@@ -14,12 +16,26 @@ def test_backward_compat_no_bootstrap_is_deterministic():
     rng = np.random.default_rng(0)
     x = rng.lognormal(0, 0.1, size=(500, 2))
     lo = np.array([0.5, 0.5]); hi = np.array([2.0, 2.0]); med = np.array([1.0, 1.0])
-    a = add_observation_noise(x, lo, hi, med, seed=7)
-    b = add_observation_noise(x, lo, hi, med, seed=7)
+    with pytest.warns(UserWarning, match="no bootstrap_samples"):
+        a = add_observation_noise(x, lo, hi, med, seed=7)
+        b = add_observation_noise(x, lo, hi, med, seed=7)
     np.testing.assert_array_equal(a, b)
     assert a.shape == x.shape
     # noise actually perturbed the data
     assert not np.allclose(a, x)
+
+
+def test_warns_only_when_no_bootstrap():
+    """Empirical is the default: a fully-parametric call (no bootstrap_samples)
+    warns; providing bootstrap_samples does not."""
+    x = np.full((200, 1), 1.0)
+    lo = np.array([0.5]); hi = np.array([2.0]); med = np.array([1.0])
+    with pytest.warns(UserWarning, match="no bootstrap_samples"):
+        add_observation_noise(x, lo, hi, med, seed=1)
+    boot = np.random.default_rng(0).lognormal(0, 0.3, size=2000)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning would fail the test
+        add_observation_noise(x, lo, hi, med, seed=1, bootstrap_samples=[boot])
 
 
 def test_empirical_constant_predictive_recovers_bootstrap():
@@ -51,8 +67,9 @@ def test_empirical_beats_parametric_on_skewed_bootstrap():
     x = np.full((8000, 1), med)
     emp = add_observation_noise(x, np.array([lo]), np.array([hi]), np.array([med]),
                                 seed=5, bootstrap_samples=[boot])[:, 0]
-    par = add_observation_noise(x, np.array([lo]), np.array([hi]), np.array([med]),
-                                seed=5, bootstrap_samples=None)[:, 0]
+    with pytest.warns(UserWarning, match="no bootstrap_samples"):
+        par = add_observation_noise(x, np.array([lo]), np.array([hi]), np.array([med]),
+                                    seed=5, bootstrap_samples=None)[:, 0]
     # error in reproducing the true 97.5th percentile of the observation
     truth_hi = np.percentile(boot, 97.5)
     emp_err = abs(np.percentile(emp, 97.5) - truth_hi) / truth_hi

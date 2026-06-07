@@ -18,6 +18,8 @@ Usage:
     )
 """
 
+import warnings
+
 import numpy as np
 import torch
 from pathlib import Path
@@ -148,6 +150,20 @@ def add_observation_noise(
     n_obs = x.shape[1]
     rng = np.random.default_rng(seed)
     x_noisy = x.copy()
+
+    # Empirical bootstrap-residual noise is the default/expected path: it carries
+    # the observed noise's real skew/tails/bounds. The parametric CI refit only
+    # reproduces the observation when the bootstrap is log-symmetric, so running
+    # fully parametric (no bootstrap_samples at all) is a fallback worth flagging.
+    if bootstrap_samples is None:
+        warnings.warn(
+            "add_observation_noise: no bootstrap_samples provided — falling back to "
+            "the parametric lognormal/Gaussian CI refit for ALL observables. Empirical "
+            "bootstrap-residual noise is the default/expected path; pass per-observable "
+            "bootstrap samples (from each target's distribution_code) where available.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     n_emp = 0
     n_logn = 0
