@@ -87,25 +87,43 @@ def add_observation_noise(
     medians: np.ndarray,
     seed: int = 42,
     sample_sizes: np.ndarray | None = None,
+    bootstrap_samples: "list | None" = None,
 ) -> np.ndarray:
     """
     Add observation noise to simulator outputs based on calibration target uncertainty.
 
-    For each observable, determines whether the CI95 is better described by
-    lognormal or Gaussian noise (based on CI asymmetry around the median),
-    then draws noise accordingly. This teaches the NPE that observations are
-    noisy measurements, so targets with wide CIs constrain less.
+    Two noise models are supported per observable:
 
-    When sample_sizes are provided, the noise scale is divided by sqrt(n) to
-    reflect the standard error of the population summary statistic (median)
-    rather than the full population spread. The CI95 in calibration targets
-    typically represents inter-patient variability, but x_obs is the *median*
-    of n patients — its uncertainty is sqrt(n) times smaller.
+    1. **Empirical** (preferred, used when ``bootstrap_samples[i]`` is available):
+       convolve the predictive with the observed bootstrap's OWN residual shape.
+       The bootstrap (the sampling distribution of the observed statistic produced
+       by the calibration target's ``distribution_code``) is the real measurement
+       noise — including skew, tails and bounds — so no parametric family or
+       CI-derived sigma is assumed. Multiplicative (relative) residuals
+       ``boot_j / median(boot)`` are used when the predictive column and the
+       bootstrap are strictly positive (natural for densities/concentrations and
+       respects positivity); additive residuals ``boot_j - median(boot)``
+       otherwise. The bootstrap already represents the *statistic's* sampling
+       uncertainty, so ``sample_sizes`` (the sqrt(n) SEM rescale) is intentionally
+       NOT applied to empirical observables.
+
+    2. **Parametric** (fallback, when no bootstrap is provided for an observable):
+       determine whether the CI95 is better described by lognormal or Gaussian
+       noise (by CI asymmetry around the median) and draw accordingly. NOTE: the
+       parametric refit only reproduces the observed CI when the median equals the
+       geometric mean of (lo, hi) — i.e. when the bootstrap is (log-)symmetric —
+       so it mis-scales skewed bootstraps. Prefer the empirical path when samples
+       are available.
+
+    Either way the NPE learns that observations are noisy measurements, so targets
+    with wider uncertainty constrain the posterior less.
 
     Lognormal noise (multiplicative): x_noisy = x * exp(N(0, log_sigma))
-        Used when CI95 is approximately symmetric in log-space.
     Gaussian noise (additive): x_noisy = x + N(0, sigma)
-        Used when CI95 is approximately symmetric in linear space.
+
+    When ``sample_sizes`` are provided (parametric path only), the noise scale is
+    divided by sqrt(n) to reflect the standard error of the population summary
+    statistic (median) rather than the full population spread.
 
     Args:
         x: Simulator outputs, shape (n_samples, n_observables).
@@ -114,8 +132,15 @@ def add_observation_noise(
         medians: Observed medians per observable, shape (n_observables,).
         seed: Random seed for reproducibility.
         sample_sizes: Sample size per observable, shape (n_observables,).
-            When provided, noise scale is divided by sqrt(n) to use
-            standard error instead of population spread.
+            When provided, the parametric noise scale is divided by sqrt(n) to use
+            standard error instead of population spread. Ignored for observables
+            handled by the empirical path.
+        bootstrap_samples: Optional list (length n_observables) of 1-D arrays of
+            observed bootstrap samples per observable, or None per entry. When a
+            usable array (>= 5 finite samples) is given for observable i, the
+            empirical path is used for that observable; otherwise it falls back to
+            the parametric path. Pass None (default) to disable empirical noise
+            entirely (exact legacy behavior).
 
     Returns:
         x_noisy: Noisy simulator outputs, same shape as x.
@@ -124,11 +149,29 @@ def add_observation_noise(
     rng = np.random.default_rng(seed)
     x_noisy = x.copy()
 
+    n_emp = 0
     n_logn = 0
     n_gauss = 0
     n_skip = 0
 
     for i in range(n_obs):
+        col = x[:, i]
+
+        # --- Empirical path: convolve with the observed bootstrap's residual shape.
+        if bootstrap_samples is not None and bootstrap_samples[i] is not None:
+            boot = np.asarray(bootstrap_samples[i], dtype=float)
+            boot = boot[np.isfinite(boot)]
+            if boot.size >= 5:
+                med_b = float(np.median(boot))
+                idx = rng.integers(0, boot.size, size=x.shape[0])
+                if med_b > 0 and np.all(boot > 0) and np.all(col > 0):
+                    x_noisy[:, i] = col * (boot[idx] / med_b)   # multiplicative
+                else:
+                    x_noisy[:, i] = col + (boot[idx] - med_b)   # additive
+                n_emp += 1
+                continue
+            # too few bootstrap samples -> fall through to the parametric path
+
         lo, hi, med = ci95_lower[i], ci95_upper[i], medians[i]
 
         # Skip if CI95 is missing or degenerate
@@ -162,8 +205,9 @@ def add_observation_noise(
             n_gauss += 1
 
     sem_str = " (SEM-scaled)" if sample_sizes is not None else ""
-    print(f"  Observation noise{sem_str}: {n_logn} lognormal, {n_gauss} Gaussian, {n_skip} skipped"
-          f" (of {n_obs} observables)")
+    emp_str = f"{n_emp} empirical, " if bootstrap_samples is not None else ""
+    print(f"  Observation noise{sem_str}: {emp_str}{n_logn} lognormal, {n_gauss} Gaussian, "
+          f"{n_skip} skipped (of {n_obs} observables)")
 
     return x_noisy
 
