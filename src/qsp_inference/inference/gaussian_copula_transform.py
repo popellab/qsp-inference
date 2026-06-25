@@ -139,9 +139,25 @@ def transform_to_normal_from_array(data, quantiles, debug=False):
     This is a simplified array-based version for use with direct numpy arrays.
     Does not modify data in-place (returns transformed copy).
 
+    Tail handling: the map is built as a piecewise-linear function from the
+    empirical quantile grid (x) to its normal scores (z), with **linear
+    extrapolation in z** beyond the training support using the slope of the
+    outer ~5% of the grid. The previous implementation instead bucketed values
+    with ``searchsorted`` and clipped the resulting uniform level to
+    ``[1e-10, 1-1e-10]`` — so every value above the training max collapsed to the
+    SAME ``norm.ppf(1-1e-10) ≈ +6.36`` (and every value below the min to -6.36),
+    destroying tail ordering and, critically, placing an out-of-support observed
+    statistic ~2x beyond the [-3.1, +3.1] range the NPE ever trained on. An NPE
+    conditioned on that saturated input extrapolates wildly and reverts toward the
+    prior. Linear z-extrapolation keeps the map monotone and continuous so an
+    out-of-support value lands just past the boundary the flow actually saw,
+    degrading gracefully instead of saturating. In-support values are unchanged up
+    to the switch from bucketed-rank to linear interpolation (a strict smoothing).
+
     Args:
         data: 2D numpy array of shape (n_samples, n_features)
-        quantiles: 2D array of shape (n_quantiles, n_features)
+        quantiles: 2D array of shape (n_quantiles, n_features), e.g. from
+                   ``compute_quantiles_from_array`` (np.quantile at linspace(0,1,n))
         debug: If True, print debug information
 
     Returns:
@@ -149,27 +165,57 @@ def transform_to_normal_from_array(data, quantiles, debug=False):
     """
     from scipy import stats
 
+    data = np.asarray(data, dtype=float)
     n_samples, n_features = data.shape
     n_quantiles = quantiles.shape[0]
+
+    # Normal scores of the quantile grid. quantiles[:, i] are the
+    # linspace(0, 1, n_quantiles) empirical quantiles, so grid point k sits at
+    # uniform level k/(n_quantiles-1); offset the 0/1 ends by half a step to keep
+    # ppf finite (matches the spirit of the old 1e-10 clip but only at the grid).
+    p = np.linspace(0.0, 1.0, n_quantiles)
+    eps = 0.5 / n_quantiles
+    z_grid = stats.norm.ppf(np.clip(p, eps, 1.0 - eps))
 
     transformed = np.zeros_like(data)
 
     for i in range(n_features):
-        # Compute empirical CDF values using precomputed quantiles
-        # For each data point, find where it falls in the quantile array
-        u = np.searchsorted(quantiles[:, i], data[:, i]) / n_quantiles
+        xq = quantiles[:, i]
+        x = data[:, i]
 
-        if debug and i == 0:  # Debug first feature only
+        # Deduplicate flat regions so the interpolation x-grid is strictly
+        # increasing; ties collapse to their first normal score (a flat
+        # observable segment maps to a single z).
+        xu, idx = np.unique(xq, return_index=True)
+        if xu.size < 2:
+            # Degenerate feature: all training values identical -> map to 0.
+            transformed[:, i] = 0.0
+            continue
+        zu = z_grid[idx]
+
+        # In-support: piecewise-linear interpolation (np.interp clamps to the
+        # ends outside [xu[0], xu[-1]]; we overwrite those below).
+        z = np.interp(x, xu, zu)
+
+        # Out-of-support: linear extrapolation in z using the slope across the
+        # outer ~5% of the grid (smoother than a single extreme-quantile gap).
+        k = max(1, xu.size // 20)
+        dx_lo = xu[k] - xu[0]
+        dx_hi = xu[-1] - xu[-1 - k]
+        slope_lo = (zu[k] - zu[0]) / dx_lo if dx_lo > 0 else 0.0
+        slope_hi = (zu[-1] - zu[-1 - k]) / dx_hi if dx_hi > 0 else 0.0
+        below = x < xu[0]
+        above = x > xu[-1]
+        z[below] = zu[0] + (x[below] - xu[0]) * slope_lo
+        z[above] = zu[-1] + (x[above] - xu[-1]) * slope_hi
+
+        if debug and i == 0:
             print(f"     DEBUG feature 0:")
-            print(f"       data range: [{data[:, i].min():.4f}, {data[:, i].max():.4f}]")
-            print(f"       quantiles range: [{quantiles[:, i].min():.4f}, {quantiles[:, i].max():.4f}]")
-            print(f"       u range before clip: [{u.min():.6f}, {u.max():.6f}]")
-            print(f"       u unique values: {len(np.unique(u))}")
+            print(f"       data range:      [{x.min():.4f}, {x.max():.4f}]")
+            print(f"       support range:   [{xu[0]:.4f}, {xu[-1]:.4f}]")
+            print(f"       z range:         [{z.min():.4f}, {z.max():.4f}]  (grid ends ±{abs(zu[-1]):.2f})")
+            print(f"       n below/above support: {int(below.sum())}/{int(above.sum())}")
 
-        # Clip to avoid infinities at boundaries
-        u = np.clip(u, 1e-10, 1 - 1e-10)
+        transformed[:, i] = z
 
-        # Transform to standard normal using inverse CDF
-        transformed[:, i] = stats.norm.ppf(u)
-
-    return transformed
+    return transformed.astype(data.dtype, copy=False)
