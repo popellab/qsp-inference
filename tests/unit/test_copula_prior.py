@@ -30,6 +30,19 @@ class TestGaussianCopulaPrior:
         samples = prior.sample((1000,))
         assert (samples > 0).all()
 
+    def test_support_is_real_vector(self):
+        # Without an explicit `support`, sbi's DirectPosterior.sample /
+        # RestrictedPrior / get_density_thresholder (the TSNPE path) raise
+        # NotImplementedError on this Distribution subclass. The copula couples
+        # unbounded marginals, so support is R^n; check it accepts samples and
+        # has the right event shape.
+        marginals = [_lognormal_marginal(0.0, 0.5), _lognormal_marginal(-1.0, 0.3)]
+        prior = GaussianCopulaPrior(marginals=marginals)
+        samples = prior.sample((50,))
+        check = prior.support.check(samples)
+        assert bool(check.all())          # every sample in-support
+        assert check.shape == (50,)       # one bool per sample (event reduced)
+
     def test_log_prob_shape(self):
         marginals = [_lognormal_marginal(0.0, 0.5), _lognormal_marginal(-1.0, 0.3)]
         prior = GaussianCopulaPrior(marginals=marginals)

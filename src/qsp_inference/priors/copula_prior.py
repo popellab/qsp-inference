@@ -117,6 +117,18 @@ class GaussianCopulaPrior(Distribution):
             validate_args=False,
         )
 
+    # The copula couples log-space marginals (normal scores), so the joint
+    # support is unbounded R^n. Declaring it explicitly makes this a fully
+    # sbi-compatible Distribution: sbi only auto-assigns
+    # constraints.independent(constraints.real, 1) to *non*-Distribution custom
+    # priors, so a Distribution subclass that omits `support` raises
+    # NotImplementedError inside DirectPosterior.sample / RestrictedPrior /
+    # get_density_thresholder (the TSNPE path). This matches that default.
+    @property
+    def support(self):
+        from torch.distributions import constraints
+        return constraints.independent(constraints.real, 1)
+
     @property
     def param_names(self) -> list[str]:
         return self._param_names
