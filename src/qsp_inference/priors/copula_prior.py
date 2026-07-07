@@ -373,15 +373,42 @@ def load_composite_prior_log(
     return prior, param_names
 
 
+def _select_prior_block(data: dict, block: str | None) -> dict:
+    """Return the ``{parameters, copula}`` node for the requested block.
+
+    ``block=None`` → the top-level center-scale prior (the flat-SBI prior).
+    ``block="population"`` → the parallel population (ω) block written by the
+    Option-A population pass. The population block mirrors the top-level shape
+    (``parameters`` + optional ``copula``) but covers only the params that
+    actually have a population ``observed_distribution``.
+
+    Raises ``KeyError`` if the requested block is absent — callers that treat
+    the population block as optional should catch it.
+    """
+    if block is None:
+        return data
+    node = data.get(block)
+    if node is None:
+        raise KeyError(
+            f"submodel_priors.yaml has no '{block}' block "
+            "(was it generated with the population pass, "
+            "run_comparison(run_population_pass=True)?)"
+        )
+    return node
+
+
 def load_copula_prior(
     yaml_path: str | Path,
     device: str = "cpu",
+    block: str | None = None,
 ) -> tuple[GaussianCopulaPrior, list[str]]:
     """Load a Gaussian copula prior from submodel_priors.yaml.
 
     Args:
         yaml_path: Path to the YAML file produced by the audit pipeline.
         device: Torch device (currently only 'cpu' supported for scipy ops).
+        block: ``None`` for the center-scale prior (default), or
+            ``"population"`` for the parallel ω block (Option A).
 
     Returns:
         (prior, param_names) tuple. The prior is a PyTorch Distribution with
@@ -392,6 +419,7 @@ def load_copula_prior(
     yaml = YAML()
     with open(yaml_path) as f:
         data = yaml.load(f)
+    data = _select_prior_block(data, block)
 
     param_entries = data["parameters"]
     param_names = [p["name"] for p in param_entries]
@@ -423,6 +451,7 @@ def load_copula_prior(
 
 def load_copula_prior_log(
     yaml_path: str | Path,
+    block: str | None = None,
 ) -> tuple[GaussianCopulaPrior, list[str]]:
     """Load a Gaussian copula prior in log-space for SBI workflows.
 
@@ -432,6 +461,10 @@ def load_copula_prior_log(
 
     Args:
         yaml_path: Path to the YAML file produced by the audit pipeline.
+        block: ``None`` for the center-scale prior (default), or
+            ``"population"`` for the parallel ω block (Option A). The
+            population block covers only params with a population
+            observed_distribution; ``KeyError`` if it is absent.
 
     Returns:
         (prior, param_names) where prior operates in log-space.
@@ -441,6 +474,7 @@ def load_copula_prior_log(
     yaml = YAML()
     with open(yaml_path) as f:
         data = yaml.load(f)
+    data = _select_prior_block(data, block)
 
     param_entries = data["parameters"]
     param_names = [p["name"] for p in param_entries]

@@ -122,3 +122,90 @@ def test_write_submodel_priors_population_block(tmp_path):
     pm = {p["name"]: p["marginal"] for p in y["population"]["parameters"]}
     # population marginal is wider than the center marginal
     assert pm["k_a"]["cv"] > cm["k_a"]["cv"] * 3
+
+
+# ── Orchestration: cache loader, copula block selection, component detection ──
+
+
+def _write_comp_cache(cache_dir, comp_id, center, population=None):
+    import json
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"fits": {}, "diag": {}, "samples": center}
+    if population is not None:
+        payload["population_samples"] = population
+    (cache_dir / f"comp_{comp_id}.json").write_text(json.dumps(payload))
+
+
+def test_load_population_samples_by_component(tmp_path):
+    from qsp_inference.audit.report import load_population_samples_by_component
+
+    cache = tmp_path / ".compare_cache"
+    _write_comp_cache(cache, "aaaa", {"k_a": [1.0, 2.0]}, {"k_a": [1.0, 5.0, 9.0]})
+    # A second component with no population block is skipped.
+    _write_comp_cache(cache, "bbbb", {"k_b": [1.0, 2.0]})
+
+    pop = load_population_samples_by_component(cache)
+    assert set(pop) == {"comp_aaaa"}
+    assert pop["comp_aaaa"]["k_a"] == [1.0, 5.0, 9.0]
+
+
+def test_load_population_samples_none_when_absent(tmp_path):
+    from qsp_inference.audit.report import load_population_samples_by_component
+
+    cache = tmp_path / ".compare_cache"
+    _write_comp_cache(cache, "aaaa", {"k_a": [1.0, 2.0]})  # center only
+    assert load_population_samples_by_component(cache) is None
+    # Missing directory entirely.
+    assert load_population_samples_by_component(tmp_path / "nope") is None
+
+
+def test_load_copula_prior_log_population_block(tmp_path):
+    pytest.importorskip("torch")  # copula_prior pulls in torch (sbi extra)
+    from qsp_inference.priors.copula_prior import load_copula_prior_log
+
+    targets = {"k_a": ["t1"], "k_b": ["t1"]}
+    center = {"compA": _corr_lognormal_samples(0.1, seed=1)}
+    pop = {"compA": _corr_lognormal_samples(0.5, seed=1)}
+    out = tmp_path / "sp.yaml"
+    _write_submodel_priors(center, targets, {}, out, population_samples_by_component=pop)
+
+    prior_c, names_c = load_copula_prior_log(out)  # center
+    prior_p, names_p = load_copula_prior_log(out, block="population")
+    assert set(names_c) == set(names_p) == {"k_a", "k_b"}
+    # Population log-marginal is wider than center.
+    sc = prior_c.sample((4000,)).cpu().numpy().std(axis=0)
+    sp = prior_p.sample((4000,)).cpu().numpy().std(axis=0)
+    assert (sp > sc).all()
+
+
+def test_load_copula_prior_log_missing_population_block(tmp_path):
+    pytest.importorskip("torch")  # copula_prior pulls in torch (sbi extra)
+    from qsp_inference.priors.copula_prior import load_copula_prior_log
+
+    center = {"compA": _corr_lognormal_samples(0.1)}
+    out = tmp_path / "sp.yaml"
+    _write_submodel_priors(center, {"k_a": ["t1"], "k_b": ["t1"]}, {}, out)
+    with pytest.raises(KeyError):
+        load_copula_prior_log(out, block="population")
+
+
+def test_component_feeds_population_spread():
+    from qsp_inference.submodel.comparison import _component_feeds_population_spread
+
+    pop_od = _il12_like_od()
+    center_od = ObservedDistribution(
+        moments=MomentSpread(center=1.0, scale=0.2, scale_type="sd", shape="normal"),
+        spread_source=SpreadSource.CENTER_ONLY,
+    )
+
+    def _tgt(*ods):
+        return types.SimpleNamespace(
+            calibration=types.SimpleNamespace(
+                error_model=[types.SimpleNamespace(observed_distribution=od) for od in ods]
+            )
+        )
+
+    assert _component_feeds_population_spread([_tgt(center_od, pop_od)]) is True
+    assert _component_feeds_population_spread([_tgt(center_od), _tgt(None)]) is False
+    assert _component_feeds_population_spread([]) is False
