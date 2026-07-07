@@ -161,6 +161,7 @@ def test_load_population_samples_none_when_absent(tmp_path):
 
 
 def test_load_copula_prior_log_population_block(tmp_path):
+    pytest.importorskip("torch")  # copula_prior pulls in torch (sbi extra)
     from qsp_inference.priors.copula_prior import load_copula_prior_log
 
     targets = {"k_a": ["t1"], "k_b": ["t1"]}
@@ -179,6 +180,7 @@ def test_load_copula_prior_log_population_block(tmp_path):
 
 
 def test_load_copula_prior_log_missing_population_block(tmp_path):
+    pytest.importorskip("torch")  # copula_prior pulls in torch (sbi extra)
     from qsp_inference.priors.copula_prior import load_copula_prior_log
 
     center = {"compA": _corr_lognormal_samples(0.1)}
