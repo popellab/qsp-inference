@@ -2,6 +2,8 @@
 
 from qsp_inference.vpop.diagnostics import (
     CoreResult,
+    misspecification_ratio,
+    perfect_model_null,
     conflict_ranking,
     duplicate_observables,
     ess_scaling,
@@ -21,6 +23,8 @@ __all__ = [
     "fit_prevalence_weights",
     "CoreResult",
     "conflict_ranking",
+    "misspecification_ratio",
+    "perfect_model_null",
     "duplicate_observables",
     "ess_scaling",
     "greedy_core",

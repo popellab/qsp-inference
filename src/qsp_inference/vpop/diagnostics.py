@@ -101,6 +101,91 @@ def self_target_control(
     return float(res.ess_fraction)
 
 
+def perfect_model_null(
+    sim_obs: np.ndarray,
+    obs_names: list[str],
+    n_obs: dict[str, int],
+    *,
+    reps: int = 15,
+    seed: int = 0,
+    **kw,
+) -> np.ndarray:
+    """ESS that a PERFECT model would achieve, given the real observed sample sizes.
+
+    **Raw ESS is uninterpretable without this.** Even a model that reproduces the population
+    exactly cannot reach ESS = N, because the observed targets are estimated from a finite
+    sample and carry sampling noise; the weights must tilt to match that noise, and the tilt
+    costs ESS. The cost grows with the number of constraints and shrinks with the observed n.
+
+    The scale of this is easy to underestimate. With 46 observables and a median published
+    sample size of 11 patients, a *perfect* model lands around 3% of the cloud. Reporting
+    "ESS collapsed to 3%" as a finding would be a false alarm.
+
+    So we build the null by Monte Carlo rather than from a formula: draw the "observed" data
+    FROM the cloud itself, at each target's real n, and refit. (The analytic
+    ``ESS/N ~= 1/(1 + K/n)`` is a second-order approximation and understates the loss badly
+    once K/n gets large -- exactly our regime.)
+
+    Args:
+        n_obs: observable name -> the REAL published sample size behind that target.
+
+    Returns:
+        ``reps`` null ESS values. Compare with :func:`misspecification_ratio`.
+    """
+    rng = np.random.default_rng(seed)
+    n_cloud = len(sim_obs)
+    out = []
+    for _ in range(reps):
+        fake = {
+            nm: sim_obs[rng.choice(n_cloud, size=int(n_obs[nm]), replace=True), k]
+            for k, nm in enumerate(obs_names)
+        }
+        out.append(float(fit_prevalence_weights(sim_obs, fake, obs_names, **kw).ess))
+    return np.asarray(out)
+
+
+def misspecification_ratio(
+    sim_obs: np.ndarray,
+    observed: dict[str, np.ndarray],
+    obs_names: list[str],
+    n_obs: dict[str, int],
+    *,
+    reps: int = 15,
+    seed: int = 0,
+    **kw,
+) -> dict:
+    """How far the model sits beyond what sampling noise alone would explain.
+
+    For exponential tilting, ``ESS/N ~= 1/(1 + D^2)``, where ``D^2`` is the (squared,
+    Mahalanobis) distance of the observed targets from the cloud's own marginals in the
+    constraint metric. So ``D^2 = N/ESS - 1``.
+
+    Under a perfect model ``D^2`` is pure sampling noise. The ratio of the measured ``D^2`` to
+    the null ``D^2`` is therefore a **calibrated** misspecification statistic, in a unit that
+    means something:
+
+    - ``~1``  -- indistinguishable from a perfect model. The ESS you lost was the price of
+      finite observed samples, not a modelling defect.
+    - ``>> 1`` -- the cloud's marginals are genuinely displaced from the data.
+
+    This is the number to quote. Bare ESS is not comparable across different observable sets,
+    because the null itself moves with the constraint count and the observed sample sizes.
+    """
+    measured = float(fit_prevalence_weights(sim_obs, observed, obs_names, **kw).ess)
+    null = perfect_model_null(sim_obs, obs_names, n_obs, reps=reps, seed=seed, **kw)
+    n_cloud = len(sim_obs)
+    d2_measured = n_cloud / measured - 1.0
+    d2_null = n_cloud / float(np.median(null)) - 1.0
+    return {
+        "measured_ess": measured,
+        "null_ess_median": float(np.median(null)),
+        "null_ess_std": float(null.std()),
+        "d2_measured": d2_measured,
+        "d2_null": d2_null,
+        "misspecification_ratio": d2_measured / d2_null if d2_null > 0 else np.nan,
+    }
+
+
 def ess_scaling(
     sim_obs: np.ndarray,
     observed: dict[str, np.ndarray],
