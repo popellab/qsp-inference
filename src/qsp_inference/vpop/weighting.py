@@ -135,15 +135,36 @@ def build_quantile_constraints(
 
         sim = sim_obs[:, k]
         sim_bin = np.digitize(sim, edges)  # 0 .. len(edges)
-        obs_bin = np.digitize(obs, edges)
         n_actual = len(edges) + 1
 
         counts = np.bincount(sim_bin, minlength=n_actual)
         support[name] = int(counts.min())
 
+        # Target probabilities with a CONTINUITY CORRECTION for ties.
+        #
+        # A naive digitize of the observed sample shoves every value tied AT an edge
+        # into one bin. When the observed sample has an atom at its own quantile --
+        # common for bootstrap samples off a coarse published summary -- that skews
+        # the target away from the nominal 1/n_bins (e.g. 0.444 instead of 0.500).
+        #
+        # That is not a harmless wobble. Two observables the model treats as the SAME
+        # variable (a readout in two treatment arms the model cannot tell apart) then
+        # receive CONTRADICTORY targets at the same threshold -- 44.4% below vs 50%
+        # below. The dual has no solution, so the optimiser exploits floating-point
+        # differences between the two columns, weights blow up, and ESS collapses while
+        # the TV distance still looks perfect. It reads exactly like a joint conflict
+        # and is not one.
+        #
+        # Splitting tied mass across the edge it sits on restores the nominal target.
+        below = (obs[:, None] < edges[None, :]).sum(axis=0).astype(np.float64)
+        tied = (obs[:, None] == edges[None, :]).sum(axis=0).astype(np.float64)
+        cdf_at_edge = (below + 0.5 * tied) / len(obs)  # mid-rank ECDF
+        bounds = np.concatenate([[0.0], cdf_at_edge, [1.0]])
+        probs = np.diff(bounds)
+
         for b in range(n_actual):
             rows.append((sim_bin == b).astype(np.float64))
-            targets.append(float((obs_bin == b).mean()))
+            targets.append(float(probs[b]))
             labels.append((name, b))
 
     A = np.vstack(rows)
