@@ -158,3 +158,40 @@ def test_shape_mismatch_rejected():
 def test_no_finite_observed_samples_rejected():
     with pytest.raises(ValueError, match="no finite observed samples"):
         fit_prevalence_weights(np.zeros((10, 1)), {"y": np.array([np.nan])}, ["y"])
+
+
+def test_shrinkage_removes_the_n_dependence_for_a_well_specified_model():
+    """The n-dependence of exact matching is an ESTIMATOR artifact, not a fact about VPops.
+
+    A bin proportion from n patients carries sampling noise. Matching it EXACTLY tilts a
+    (correct) cloud toward that noise and pays ESS for the privilege. Given the real n,
+    we shrink the target toward the model's own marginal by how much of the residual
+    sampling noise alone explains -- so a perfect model needs no tilt AT ANY n.
+    """
+    rng = np.random.default_rng(20)
+    K, N = 30, 8000
+    cloud = rng.normal(size=(N, K))
+    names = [f"y{i}" for i in range(K)]
+
+    for n in (6, 11):
+        observed = {nm: rng.normal(size=n) for nm in names}   # same law => perfect model
+        hard = fit_prevalence_weights(cloud, observed, names, n_bins=2, ridge=1e-3)
+        soft = fit_prevalence_weights(cloud, observed, names, n_bins=2, ridge=1e-3,
+                                      n_obs={nm: n for nm in names})
+        assert hard.ess_fraction < 0.15          # exact matching burns the cloud...
+        assert soft.ess_fraction > 0.90          # ...shrinkage does not
+        assert soft.tau2 == pytest.approx(0.0, abs=1e-3)   # nothing to explain
+
+
+def test_shrinkage_still_catches_a_genuinely_displaced_model():
+    """It must not become a rug to sweep misspecification under."""
+    rng = np.random.default_rng(21)
+    K, N = 30, 8000
+    cloud = rng.normal(size=(N, K))
+    names = [f"y{i}" for i in range(K)]
+    observed = {nm: rng.normal(0.8, 1.0, size=60) for nm in names}   # cloud centred wrong
+
+    soft = fit_prevalence_weights(cloud, observed, names, n_bins=2, ridge=1e-3,
+                                  n_obs={nm: 60 for nm in names})
+    assert soft.tau2 > 0.01              # discrepancy sampling noise cannot explain
+    assert soft.ess_fraction < 0.5       # and it still tilts hard
