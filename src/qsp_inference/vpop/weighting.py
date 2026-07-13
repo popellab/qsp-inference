@@ -66,8 +66,16 @@ class VPopResult:
     """ESS as a fraction of the cloud. Low means the fit leaned on a few patients."""
 
     converged: bool
+
     per_observable: pd.DataFrame
     """Per-observable fit quality (total-variation distance) and support deficiency."""
+
+    tau2: float = 0.0
+    """Model-discrepancy variance in observable space (0 when ``n_obs`` was not given).
+
+    Estimated by method of moments from the residuals: the part of the model-vs-data gap
+    that sampling noise alone CANNOT explain. ~0 = indistinguishable from a perfect model.
+    A direct misspecification statistic, needing no null simulation."""
 
     support_deficient: list[str] = field(default_factory=list)
     """Observables where the observed data reach outside the cloud. Widen the prior."""
@@ -180,6 +188,7 @@ def fit_prevalence_weights(
     n_bins: int = 5,
     ridge: float = 1e-3,
     max_iter: int = 500,
+    n_obs: dict[str, int] | None = None,
 ) -> VPopResult:
     """Weight a plausible-patient cloud so it reproduces the observed distributions.
 
@@ -193,15 +202,61 @@ def fit_prevalence_weights(
         ridge: L2 on the dual variables. Larger = softer constraints, higher ESS,
             looser fit. Keeps the fit finite when the data are unreachable.
         max_iter: L-BFGS iterations.
+        n_obs: observable name -> the REAL published sample size behind that target.
+            **Supply this.** Without it the fit matches the observed proportions
+            *exactly*, which treats a 6-patient proportion as exact truth and burns
+            effective sample size reproducing its sampling noise -- see below.
 
     Returns:
         A :class:`VPopResult`. Read ``support_deficient`` before trusting the weights:
         a cloud that cannot reach the data cannot be reweighted onto it.
+
+    Shrinkage (why ``n_obs`` matters more than it looks):
+        A bin proportion estimated from n patients carries sampling noise of order
+        ``sqrt(p(1-p)/n)``. Matching it *exactly* tilts the cloud toward that noise.
+        Under a well-specified model the cloud's marginals are already right, so the
+        tilt moves it AWAY from the truth and pays effective sample size for the
+        privilege: with 46 observables at n=11, exact matching burns ~97% of the cloud
+        reproducing noise. The n-dependence that produces is an artefact of the
+        estimator, not a fact about virtual populations.
+
+        Given ``n_obs`` we instead shrink each target toward the model's own marginal,
+
+            p* = p_model + s * (p_hat - p_model),   s = tau^2 / (tau^2 + v)
+
+        where ``v = p(1-p)/n`` is the target's sampling variance and ``tau^2`` is the
+        model-discrepancy variance, estimated from the residuals by method of moments.
+        A perfect model gives ``tau^2 = 0``, so ``s = 0``, so no tilt **at any n** --
+        the ESS stays at N. A genuinely displaced model gives ``s -> 1`` and the fit
+        tilts as hard as before, so misspecification is still caught.
+
+        ``n`` then plays its proper role: it sets how much you TRUST a discrepancy (a
+        6-patient target barely moves the cohort; a 700-patient one moves it a lot),
+        rather than deciding how big the cohort is. ``tau^2`` is reported on the result
+        and is itself a direct misspecification statistic.
+
+        This is the same ``SEM + tau^2`` structure the submodel error models already use,
+        one level up.
     """
-    A, p, labels, support = build_quantile_constraints(
+    A, p_hat, labels, support = build_quantile_constraints(
         sim_obs, observed, obs_names, n_bins=n_bins
     )
     n_cloud = sim_obs.shape[0]
+
+    # Shrink the target toward the model's own marginal by how much of the residual
+    # sampling noise alone can explain.
+    p_model = A @ np.full(n_cloud, 1.0 / n_cloud)
+    tau2 = 0.0
+    if n_obs is not None:
+        v = np.array(
+            [p_hat[i] * (1.0 - p_hat[i]) / max(int(n_obs[labels[i][0]]), 1)
+             for i in range(len(p_hat))]
+        )
+        tau2 = float(max(0.0, np.mean((p_hat - p_model) ** 2) - np.mean(v)))
+        s = tau2 / (tau2 + v) if tau2 > 0 else np.zeros_like(v)
+        p = p_model + s * (p_hat - p_model)
+    else:
+        p = p_hat
 
     def objective(lam: np.ndarray) -> tuple[float, np.ndarray]:
         scores = A.T @ lam  # (n_cloud,)
@@ -242,6 +297,7 @@ def fit_prevalence_weights(
     per_observable = pd.DataFrame(per_obs)
 
     return VPopResult(
+        tau2=tau2,
         weights=weights,
         ess=ess,
         ess_fraction=ess / n_cloud,

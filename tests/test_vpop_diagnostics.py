@@ -10,6 +10,8 @@ from qsp_inference.vpop import (
     duplicate_observables,
     ess_scaling,
     greedy_core,
+    misspecification_ratio,
+    perfect_model_null,
     paired_effect_sizes,
     self_target_control,
 )
@@ -115,3 +117,37 @@ def test_paired_effect_sizes_flags_an_inert_intervention():
     assert row["observed_ratio"] > 2.0
     assert row["model_arm_correlation"] > 0.999
     assert bool(row["inert_in_model"]) is True
+
+
+def test_perfect_model_null_is_below_full_ess_and_falls_with_smaller_n():
+    """A perfect model cannot reach ESS = N: the observed targets carry sampling noise."""
+    rng = np.random.default_rng(10)
+    sim = rng.normal(size=(6000, 8))
+    names = [f"y{i}" for i in range(8)]
+    big = perfect_model_null(sim, names, {n: 400 for n in names}, reps=5, seed=1)
+    small = perfect_model_null(sim, names, {n: 10 for n in names}, reps=5, seed=1)
+    assert np.median(big) < 6000                      # never the full cloud
+    assert np.median(small) < np.median(big)          # noisier targets cost more ESS
+
+
+def test_misspecification_ratio_is_about_one_for_a_perfect_model():
+    """The whole point: a well-specified model must score ~1, however low its raw ESS."""
+    rng = np.random.default_rng(11)
+    sim = rng.normal(size=(8000, 10))
+    names = [f"y{i}" for i in range(10)]
+    n_obs = {n: 25 for n in names}
+    # observed drawn from the SAME law as the cloud => perfect model, but small n
+    observed = {n: rng.normal(size=25) for n in names}
+    out = misspecification_ratio(sim, observed, names, n_obs, reps=9, seed=2)
+    assert out["null_ess_median"] < 8000
+    assert 0.2 < out["misspecification_ratio"] < 5.0
+
+
+def test_misspecification_ratio_is_large_for_a_displaced_model():
+    rng = np.random.default_rng(12)
+    sim = rng.normal(size=(8000, 6))
+    names = [f"y{i}" for i in range(6)]
+    n_obs = {n: 50 for n in names}
+    observed = {n: rng.normal(1.5, 1.0, size=50) for n in names}   # cloud is centred wrong
+    out = misspecification_ratio(sim, observed, names, n_obs, reps=9, seed=2)
+    assert out["misspecification_ratio"] > 10.0
