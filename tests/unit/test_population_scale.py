@@ -22,6 +22,7 @@ from maple.core.calibration.shared_models import (
 )
 from qsp_inference.submodel.inference import (
     HETEROGENEITY_SIGMA,
+    ErrorModelEntry,
     _population_obs_from_distribution,
 )
 from qsp_inference.audit.report import _write_submodel_priors
@@ -209,3 +210,68 @@ def test_component_feeds_population_spread():
     assert _component_feeds_population_spread([_tgt(center_od, pop_od)]) is True
     assert _component_feeds_population_spread([_tgt(center_od), _tgt(None)]) is False
     assert _component_feeds_population_spread([]) is False
+
+
+# ---------------------------------------------------------------------------
+# unit_group shared-latent grouping: K observables on one panel must not shrink ω
+# ---------------------------------------------------------------------------
+
+
+def _posterior_logk(entries, *, seed=0):
+    """Run the joint model on a single 1-parameter target, return log(k) samples."""
+    pytest.importorskip("numpyro")
+    import jax
+    from numpyro.infer import MCMC, NUTS
+
+    from qsp_inference.submodel.inference import (
+        PriorSpec,
+        TargetLikelihood,
+        submodel_joint_model,
+    )
+
+    prior = {"k": PriorSpec(name="k", distribution="lognormal", units="", mu=0.0, sigma=2.0)}
+    tls = [TargetLikelihood(target_id="t", entries=entries)]
+    mcmc = MCMC(
+        NUTS(submodel_joint_model),
+        num_warmup=600,
+        num_samples=1200,
+        num_chains=1,
+        progress_bar=False,
+    )
+    mcmc.run(jax.random.PRNGKey(seed), prior, tls)
+    return np.log(np.asarray(mcmc.get_samples()["k"]))
+
+
+def _grouped_entries(k_members, unit_group, *, value=1.0, sigma=0.5, n_bio=10):
+    fwd = lambda params: params["k"]  # noqa: E731 — identity forward model
+    return [
+        ErrorModelEntry(
+            forward_fn=fwd,
+            value=value,
+            sigma=sigma,
+            family="lognormal",
+            fit=None,
+            unit_group=unit_group,
+            n_biological=n_bio,
+            is_population_spread=True,
+        )
+        for _ in range(k_members)
+    ]
+
+
+def test_unit_group_shared_latent_is_k_invariant():
+    """K observables sharing a unit_group must NOT shrink the population posterior by ~sqrt(K).
+
+    A single panel measured K ways is one shared random effect: the inferred ω should be
+    ~invariant to K. Without grouping, K independent likelihood terms shrink it by ~sqrt(K)
+    (the exact over-confidence maple #62's unit_group exists to prevent).
+    """
+    sd_k1 = _posterior_logk(_grouped_entries(1, "panel"), seed=0).std()
+    sd_k4_grouped = _posterior_logk(_grouped_entries(4, "panel"), seed=1).std()
+    sd_k4_independent = _posterior_logk(_grouped_entries(4, None), seed=2).std()
+
+    # Grouped K=4 keeps ~the K=1 width (one shared random effect).
+    assert sd_k4_grouped == pytest.approx(sd_k1, rel=0.35)
+    # Ungrouped K=4 is spuriously tight (~sd/sqrt(4)); grouping recovers the honest width.
+    assert sd_k4_independent < 0.7 * sd_k4_grouped
+
