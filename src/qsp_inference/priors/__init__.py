@@ -11,6 +11,8 @@ from qsp_inference.priors.copula_prior import (
     load_copula_prior,
     load_copula_prior_log,
     load_composite_prior_log,
+    compose_overlay_prior,
+    load_overlay_prior_log,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "load_copula_prior",
     "load_copula_prior_log",
     "load_composite_prior_log",
+    "compose_overlay_prior",
+    "load_overlay_prior_log",
 ]
