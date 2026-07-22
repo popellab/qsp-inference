@@ -15,6 +15,7 @@ Usage::
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import torch
@@ -447,6 +448,139 @@ def load_copula_prior(
     )
 
     return prior, param_names
+
+
+def _log_marginal_loc_scale(marginal) -> tuple[float, float]:
+    """Recover (mu, sigma) from a log-space marginal.
+
+    The log-space loaders (``_log_transform_marginal`` / ``_csv_log_marginal``)
+    always return a ``scipy.stats.norm`` frozen distribution, so ``mean``/``std``
+    are exactly the normal's ``loc``/``scale``. Guarded so a non-log prior
+    (lognormal marginals) can't silently be misread as if it were log-space.
+    """
+    if getattr(marginal, "dist", None) is None or marginal.dist.name != "norm":
+        raise ValueError(
+            "sigma-overlay requires a log-space prior (normal marginals); got "
+            f"marginal '{getattr(getattr(marginal, 'dist', None), 'name', '?')}'. "
+            "Pass the output of load_composite_prior_log / load_copula_prior_log."
+        )
+    return float(marginal.mean()), float(marginal.std())
+
+
+def compose_overlay_prior(
+    center: GaussianCopulaPrior,
+    *,
+    population_sigma: Mapping[str, float] | None = None,
+    pin_params: Iterable[str] | None = None,
+    pin_sigma: float = 1e-3,
+) -> GaussianCopulaPrior:
+    """Compose the cloud-generation prior: center mu, overlaid sigma.
+
+    Builds a new log-space :class:`GaussianCopulaPrior` from a *center* prior by
+    the per-parameter rule:
+
+    - **mu = center mu, always** — the center is never moved.
+    - **sigma = population sigma** where ``population_sigma`` supplies one,
+      **pinned (``pin_sigma`` ~ 0)** for ``pin_params``, **center sigma** otherwise.
+    - **Pins win over population** — a param in both is pinned.
+    - Copula rows/cols are **zeroed for pinned params** (they become independent);
+      the result stays PSD because it is ``blockdiag(1, principal-submatrix)`` of a
+      correlation matrix. Correlations among the remaining params are preserved.
+
+    This is the single hook shared by (a) a hand-curated vary/pin policy — pass its
+    pinned set as ``pin_params`` — and (b) the data-driven population block — pass
+    its per-param sigma as ``population_sigma`` (see :func:`load_overlay_prior_log`).
+    As ``observed_distribution`` coverage grows, params flip from pinned/center to
+    data-sigma through this same overlay with no new plumbing.
+
+    Args:
+        center: A log-space center prior (normal marginals), e.g. from
+            :func:`load_composite_prior_log`.
+        population_sigma: Optional ``{param_name: sigma}`` overrides (log-space).
+        pin_params: Optional param names to pin (sigma -> ``pin_sigma``, decoupled).
+        pin_sigma: Log-space sigma used for pinned params. Small but nonzero to keep
+            the marginal a proper (samplable, finite-log-prob) distribution.
+
+    Returns:
+        ``(prior, param_names)`` — a new prior over the same params in the same order.
+    """
+    population_sigma = dict(population_sigma or {})
+    pin = set(pin_params or [])
+    names = list(center.param_names)
+
+    mus: list[float] = []
+    sigmas: list[float] = []
+    for m in center._marginals:
+        mu, sigma = _log_marginal_loc_scale(m)
+        mus.append(mu)
+        sigmas.append(sigma)
+
+    R = np.array(center._R, dtype=np.float64).copy()
+
+    # Population overrides first; pins applied second so they always win.
+    for j, nm in enumerate(names):
+        if nm not in pin and nm in population_sigma:
+            sigmas[j] = float(population_sigma[nm])
+    for j, nm in enumerate(names):
+        if nm in pin:
+            sigmas[j] = float(pin_sigma)
+            R[j, :] = 0.0
+            R[:, j] = 0.0
+            R[j, j] = 1.0
+
+    marginals = [stats.norm(loc=mus[j], scale=sigmas[j]) for j in range(len(names))]
+    prior = GaussianCopulaPrior(marginals=marginals, correlation=R, param_names=names)
+    return prior, names
+
+
+def load_overlay_prior_log(
+    yaml_path: str | Path,
+    csv_path: str | Path,
+    *,
+    pin_params: Iterable[str] | None = None,
+    use_population_block: bool = True,
+    pin_sigma: float = 1e-3,
+) -> tuple[GaussianCopulaPrior, list[str]]:
+    """Load the cloud-generation prior: composite center with a sigma-overlay.
+
+    Convenience wrapper that loads the center composite prior
+    (:func:`load_composite_prior_log`), pulls the population-block sigma for any
+    param that declares an ``observed_distribution`` (if the block is present),
+    and applies :func:`compose_overlay_prior`.
+
+    Args:
+        yaml_path: ``submodel_priors.yaml`` from the audit pipeline (optionally
+            carrying a ``population`` block from the population pass).
+        csv_path: Full priors CSV (defines param order and the fallback center sigma).
+        pin_params: Param names to pin (sigma -> ``pin_sigma``).
+        use_population_block: If True and a ``population`` block exists, override
+            sigma with the population sigma for its params. Silently ignored when
+            the block is absent.
+        pin_sigma: Log-space sigma for pinned params.
+
+    Returns:
+        ``(prior, param_names)`` covering all CSV params in CSV order.
+    """
+    center, names = load_composite_prior_log(yaml_path, csv_path)
+
+    population_sigma: dict[str, float] = {}
+    if use_population_block:
+        try:
+            pop_prior, pop_names = load_copula_prior_log(yaml_path, block="population")
+        except KeyError:
+            pop_prior = None
+        if pop_prior is not None:
+            population_sigma = {
+                nm: _log_marginal_loc_scale(pop_prior._marginals[i])[1]
+                for i, nm in enumerate(pop_names)
+            }
+
+    return compose_overlay_prior(
+        center,
+        population_sigma=population_sigma,
+        pin_params=pin_params,
+        pin_sigma=pin_sigma,
+    )
 
 
 def load_copula_prior_log(
