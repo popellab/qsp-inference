@@ -765,6 +765,89 @@ def apply_derived_priors(
     return GaussianCopulaPrior(marginals=marginals, correlation=R, param_names=names)
 
 
+def temper_prior(
+    prior: GaussianCopulaPrior, temperature: float
+) -> GaussianCopulaPrior:
+    """Return ``prior^(1/T)`` — the prior flattened by a temperature.
+
+    Used to build a *training proposal* from the anchored prior. Drawing training
+    θ from a wider distribution than the one we report under is what lets the
+    proposal be a computational choice and the prior a scientific one; the
+    posterior is recovered under the original prior by importance reweighting
+    (:mod:`qsp_inference.inference.importance`).
+
+    **This is exact, not an approximation.** Every log-space marginal produced by
+    the ``*_log`` loaders is a normal (``_csv_log_marginal`` and
+    ``_log_transform_marginal`` both return ``stats.norm``), so a log-space
+    :class:`GaussianCopulaPrior` *is* a multivariate normal with covariance
+    ``Σ = D R D``. Tempering a Gaussian gives ``N(μ, T·Σ)``, and
+    ``T·Σ = (√T·D) R (√T·D)`` — so scaling every marginal's σ by ``√T`` and
+    leaving the correlation matrix alone is precisely ``π^(1/T)``.
+
+    Deriving the proposal *from* the prior rather than specifying it alongside
+    has a practical payoff: it cannot disagree with the prior about anything but
+    width. Anchors, pins, derived children and correlations all carry over, and
+    the parameter ordering is identical by construction, so the reweight cannot
+    be silently misaligned.
+
+    A note on what this deliberately cannot do: a parameter pinned to σ ≈ 0 by a
+    σ-overlay stays pinned, because ``√T · 0 = 0``. That is the correct behaviour
+    here — which parameters vary is a claim about the population and belongs to
+    the prior, not to a sampling device.
+
+    **Where the identity stops being exact.** ``GaussianCopulaPrior.log_prob``
+    clamps the copula's ``u`` to ``[1e-8, 1-1e-8]`` (roughly ±5.6σ) before
+    inverting to normal scores. Past that the *copula* term is distorted; the
+    marginal term is exact everywhere, and with an uncorrelated prior there is no
+    copula term at all, so the identity then holds exactly however far out you
+    go. In practice this bites on the tail draws of a wide proposal evaluated
+    under a narrow prior — precisely the draws whose importance weight is
+    vanishing, so weighted summaries are unaffected. It is a property of the
+    density guard, not of tempering.
+
+    Args:
+        prior: A log-space prior (normal marginals). Passing a prior in natural
+            units raises, since tempering lognormal marginals this way is not
+            the same operation.
+        temperature: ``T > 0``. ``T > 1`` widens (the usual case, σ×√T);
+            ``T < 1`` sharpens. ``T == 1`` returns ``prior`` unchanged, so the
+            decoupled path is exactly inert when switched off.
+
+    Returns:
+        A new :class:`GaussianCopulaPrior`, or ``prior`` itself when ``T == 1``.
+
+    Raises:
+        ValueError: if ``temperature <= 0``, or if any marginal is not normal.
+    """
+    if temperature <= 0:
+        raise ValueError(f"temperature must be > 0; got {temperature}")
+    if temperature == 1.0:
+        return prior
+
+    scale = float(np.sqrt(temperature))
+    tempered = []
+    for name, marg in zip(prior.param_names, prior._marginals):
+        dist_name = getattr(getattr(marg, "dist", None), "name", None)
+        if dist_name != "norm":
+            raise ValueError(
+                f"temper_prior needs normal marginals (log-space), but parameter "
+                f"'{name}' has a '{dist_name}' marginal. Load the prior with one "
+                "of the *_log loaders (load_composite_prior_log / "
+                "load_overlay_prior_log / load_copula_prior_log)."
+            )
+        # For a normal, mean() and std() are exactly loc and scale, and are
+        # robust to whether the frozen dist was built positionally or by keyword.
+        tempered.append(
+            stats.norm(loc=float(marg.mean()), scale=scale * float(marg.std()))
+        )
+
+    return GaussianCopulaPrior(
+        marginals=tempered,
+        correlation=prior._R,
+        param_names=list(prior.param_names),
+    )
+
+
 def load_copula_prior_log(
     yaml_path: str | Path,
     block: str | None = None,
