@@ -49,18 +49,18 @@ class TruncatedDistribution(Distribution):
         base_distribution,
         low: Optional[float] = None,
         high: Optional[float] = None,
-        max_rejection_iterations: int = 1000
+        max_rejection_iterations: int = 1000,
     ):
         self.base_distribution = base_distribution
-        self.low = low if low is not None else -float('inf')
-        self.high = high if high is not None else float('inf')
+        self.low = low if low is not None else -float("inf")
+        self.high = high if high is not None else float("inf")
         self.max_rejection_iterations = max_rejection_iterations
 
         # Initialize parent Distribution class
         super().__init__(
             batch_shape=base_distribution.batch_shape,
             event_shape=base_distribution.event_shape,
-            validate_args=False
+            validate_args=False,
         )
 
         # Validate bounds
@@ -86,10 +86,10 @@ class TruncatedDistribution(Distribution):
             return interval(self.low, self.high)
         elif self.has_lower:
             # Only lower bound - use interval with inf upper
-            return interval(self.low, float('inf'))
+            return interval(self.low, float("inf"))
         elif self.has_upper:
             # Only upper bound - use interval with -inf lower
-            return interval(float('-inf'), self.high)
+            return interval(float("-inf"), self.high)
         else:
             # No bounds - return real (unbounded)
             return real
@@ -109,7 +109,7 @@ class TruncatedDistribution(Distribution):
             return self._truncated_normal_mean()
 
         # Fallback: use base distribution mean (approximate)
-        if hasattr(self.base_distribution, 'mean'):
+        if hasattr(self.base_distribution, "mean"):
             return self.base_distribution.mean
         else:
             # Last resort: sample-based estimate
@@ -131,7 +131,7 @@ class TruncatedDistribution(Distribution):
             return self._truncated_normal_stddev()
 
         # Fallback: use base distribution stddev (approximate)
-        if hasattr(self.base_distribution, 'stddev'):
+        if hasattr(self.base_distribution, "stddev"):
             return self.base_distribution.stddev
         else:
             # Last resort: sample-based estimate
@@ -356,9 +356,7 @@ class TruncatedDistribution(Distribution):
 
         # Set out-of-bounds to -inf
         result = torch.where(
-            in_bounds,
-            normalized_log_prob,
-            torch.tensor(-float('inf'), device=device)
+            in_bounds, normalized_log_prob, torch.tensor(-float("inf"), device=device)
         )
 
         return result
@@ -371,14 +369,14 @@ class TruncatedDistribution(Distribution):
             torch.device object
         """
         # Try common parameter names
-        for param_name in ['loc', 'scale', 'low', 'high', 'concentration1', 'concentration0']:
+        for param_name in ["loc", "scale", "low", "high", "concentration1", "concentration0"]:
             if hasattr(self.base_distribution, param_name):
                 param = getattr(self.base_distribution, param_name)
                 if isinstance(param, torch.Tensor):
                     return param.device
 
         # Default to CPU
-        return torch.device('cpu')
+        return torch.device("cpu")
 
     def to(self, device):
         """
@@ -407,7 +405,7 @@ class TruncatedDistribution(Distribution):
             base_distribution=new_base,
             low=self.low if self.has_lower else None,
             high=self.high if self.has_upper else None,
-            max_rejection_iterations=self.max_rejection_iterations
+            max_rejection_iterations=self.max_rejection_iterations,
         )
 
     def __repr__(self) -> str:

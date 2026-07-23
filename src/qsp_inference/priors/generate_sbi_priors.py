@@ -87,21 +87,21 @@ def _export_baseline_values(model_name: str) -> Dict[str, Tuple[float, str]]:
     Returns:
         Dict mapping parameter names to (value, units) tuples
     """
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
         baseline_csv = tmp.name
 
     try:
         matlab_cmd = f"export_baseline_parameters('{model_name}', '{baseline_csv}'); exit;"
-        result = subprocess.run(['matlab', '-batch', matlab_cmd], capture_output=True, text=True)
+        result = subprocess.run(["matlab", "-batch", matlab_cmd], capture_output=True, text=True)
 
         if result.returncode != 0:
             raise RuntimeError(f"Failed to export baseline values from MATLAB:\n{result.stderr}")
 
         baseline_values = {}
-        with open(baseline_csv, 'r', encoding='utf-8') as f:
+        with open(baseline_csv, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                baseline_values[row['parameter_id']] = (float(row['baseline_value']), row['units'])
+                baseline_values[row["parameter_id"]] = (float(row["baseline_value"]), row["units"])
 
         return baseline_values
 
@@ -111,17 +111,22 @@ def _export_baseline_values(model_name: str) -> Dict[str, Tuple[float, str]]:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate SBI priors from parameter list and model baseline values.',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description="Generate SBI priors from parameter list and model baseline values.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('param_list', type=Path,
-                        help='Text file with parameter names (one per line)')
-    parser.add_argument('model_name', type=str,
-                        help='MATLAB model function name (e.g., immune_oncology_model_PDAC)')
-    parser.add_argument('output_csv', type=Path,
-                        help='Output CSV file path')
-    parser.add_argument('--cv', type=float, default=2.0,
-                        help='Coefficient of variation for priors (default: 2.0 = 200%%)')
+    parser.add_argument(
+        "param_list", type=Path, help="Text file with parameter names (one per line)"
+    )
+    parser.add_argument(
+        "model_name", type=str, help="MATLAB model function name (e.g., immune_oncology_model_PDAC)"
+    )
+    parser.add_argument("output_csv", type=Path, help="Output CSV file path")
+    parser.add_argument(
+        "--cv",
+        type=float,
+        default=2.0,
+        help="Coefficient of variation for priors (default: 2.0 = 200%%)",
+    )
     args = parser.parse_args()
 
     # Validate inputs
@@ -137,10 +142,10 @@ def main():
 
     # Read parameter names
     param_names = []
-    with open(args.param_list, 'r', encoding='utf-8') as f:
+    with open(args.param_list, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line and not line.startswith('#'):
+            if line and not line.startswith("#"):
                 param_names.append(line)
 
     print(f"  {len(param_names)} parameters to process")
@@ -162,14 +167,16 @@ def main():
 
         try:
             expected_val, mu, sigma = _generate_lognormal_params(baseline_val, args.cv)
-            results.append({
-                'name': param_name,
-                'expected_value': expected_val,
-                'units': units,
-                'distribution': 'lognormal',
-                'dist_param1': mu,
-                'dist_param2': sigma
-            })
+            results.append(
+                {
+                    "name": param_name,
+                    "expected_value": expected_val,
+                    "units": units,
+                    "distribution": "lognormal",
+                    "dist_param1": mu,
+                    "dist_param2": sigma,
+                }
+            )
         except ValueError as e:
             skipped.append((param_name, str(e)))
 
@@ -184,20 +191,33 @@ def main():
         raise ValueError("No priors generated - all parameters were skipped")
 
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output_csv, 'w', newline='', encoding='utf-8') as f:
+    with open(args.output_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(['name', 'expected_value', 'units', 'distribution', 'dist_param1', 'dist_param2', 'lower_bound', 'upper_bound'])
+        writer.writerow(
+            [
+                "name",
+                "expected_value",
+                "units",
+                "distribution",
+                "dist_param1",
+                "dist_param2",
+                "lower_bound",
+                "upper_bound",
+            ]
+        )
         for result in results:
-            writer.writerow([
-                result['name'],
-                _format_scientific(result['expected_value']),
-                result['units'],
-                result['distribution'],
-                _format_scientific(result['dist_param1']),
-                _format_scientific(result['dist_param2']),
-                '',  # lower_bound - empty by default, edit manually if needed
-                ''   # upper_bound - empty by default, edit manually if needed
-            ])
+            writer.writerow(
+                [
+                    result["name"],
+                    _format_scientific(result["expected_value"]),
+                    result["units"],
+                    result["distribution"],
+                    _format_scientific(result["dist_param1"]),
+                    _format_scientific(result["dist_param2"]),
+                    "",  # lower_bound - empty by default, edit manually if needed
+                    "",  # upper_bound - empty by default, edit manually if needed
+                ]
+            )
 
     sigma = np.sqrt(np.log(1 + args.cv**2))
     print(f"\n✓ Saved: {args.output_csv}")

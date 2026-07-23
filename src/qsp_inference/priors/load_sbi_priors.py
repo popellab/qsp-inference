@@ -57,7 +57,7 @@ def _parse_bound(value: str, bound_name: str, param_name: str) -> Optional[float
     Raises:
         ValueError: If bound is present but cannot be parsed as float
     """
-    if not value or value.strip() == '':
+    if not value or value.strip() == "":
         return None
 
     try:
@@ -86,10 +86,10 @@ def get_param_names(csv_path: Union[str, Path]) -> List[str]:
 
     param_names = []
 
-    with open(csv_path, 'r', encoding='utf-8') as f:
+    with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            param_names.append(row['name'])
+            param_names.append(row["name"])
 
     return param_names
 
@@ -112,38 +112,40 @@ def load_prior(csv_path: Union[str, Path], device: str = "cpu") -> MultipleIndep
 
     distributions = []
 
-    with open(csv_path, 'r', encoding='utf-8') as f:
+    with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
 
         # Check if bounds columns exist (for backward compatibility)
-        has_bounds_columns = 'lower_bound' in reader.fieldnames or 'upper_bound' in reader.fieldnames
+        has_bounds_columns = (
+            "lower_bound" in reader.fieldnames or "upper_bound" in reader.fieldnames
+        )
 
         for row in reader:
-            param_name = row['name']
-            dist_type = row['distribution'].strip().lower()
-            param1 = float(row['dist_param1'])
-            param2 = float(row['dist_param2'])
+            param_name = row["name"]
+            dist_type = row["distribution"].strip().lower()
+            param1 = float(row["dist_param1"])
+            param2 = float(row["dist_param2"])
 
             # Create base distribution
-            if dist_type == 'lognormal':
+            if dist_type == "lognormal":
                 dist = LogNormal(
                     loc=torch.tensor([param1], device=device),
-                    scale=torch.tensor([param2], device=device)
+                    scale=torch.tensor([param2], device=device),
                 )
-            elif dist_type == 'normal':
+            elif dist_type == "normal":
                 dist = Normal(
                     loc=torch.tensor([param1], device=device),
-                    scale=torch.tensor([param2], device=device)
+                    scale=torch.tensor([param2], device=device),
                 )
-            elif dist_type == 'uniform':
+            elif dist_type == "uniform":
                 dist = Uniform(
                     low=torch.tensor([param1], device=device),
-                    high=torch.tensor([param2], device=device)
+                    high=torch.tensor([param2], device=device),
                 )
-            elif dist_type == 'beta':
+            elif dist_type == "beta":
                 dist = Beta(
                     concentration1=torch.tensor([param1], device=device),
-                    concentration0=torch.tensor([param2], device=device)
+                    concentration0=torch.tensor([param2], device=device),
                 )
             else:
                 raise ValueError(
@@ -152,12 +154,8 @@ def load_prior(csv_path: Union[str, Path], device: str = "cpu") -> MultipleIndep
 
             # Apply truncation bounds if specified
             if has_bounds_columns:
-                lower_bound = _parse_bound(
-                    row.get('lower_bound', ''), 'lower_bound', param_name
-                )
-                upper_bound = _parse_bound(
-                    row.get('upper_bound', ''), 'upper_bound', param_name
-                )
+                lower_bound = _parse_bound(row.get("lower_bound", ""), "lower_bound", param_name)
+                upper_bound = _parse_bound(row.get("upper_bound", ""), "upper_bound", param_name)
 
                 # Validate bounds
                 if lower_bound is not None and upper_bound is not None:
@@ -169,14 +167,14 @@ def load_prior(csv_path: Union[str, Path], device: str = "cpu") -> MultipleIndep
                         )
 
                 # Additional validation for specific distribution types
-                if dist_type == 'lognormal' and lower_bound is not None:
+                if dist_type == "lognormal" and lower_bound is not None:
                     if lower_bound <= 0:
                         raise ValueError(
                             f"Invalid lower_bound for lognormal parameter '{param_name}': "
                             f"must be positive, got {lower_bound}"
                         )
 
-                if dist_type == 'beta':
+                if dist_type == "beta":
                     if lower_bound is not None and (lower_bound < 0 or lower_bound > 1):
                         raise ValueError(
                             f"Invalid lower_bound for beta parameter '{param_name}': "
@@ -190,9 +188,7 @@ def load_prior(csv_path: Union[str, Path], device: str = "cpu") -> MultipleIndep
 
                 # Wrap with truncated distribution if bounds are specified
                 if lower_bound is not None or upper_bound is not None:
-                    dist = TruncatedDistribution(
-                        dist, low=lower_bound, high=upper_bound
-                    )
+                    dist = TruncatedDistribution(dist, low=lower_bound, high=upper_bound)
 
             distributions.append(dist)
 
@@ -202,7 +198,9 @@ def load_prior(csv_path: Union[str, Path], device: str = "cpu") -> MultipleIndep
     return MultipleIndependent(distributions)
 
 
-def transform_lognormal_prior_to_normal(lognormal_prior: MultipleIndependent) -> MultipleIndependent:
+def transform_lognormal_prior_to_normal(
+    lognormal_prior: MultipleIndependent,
+) -> MultipleIndependent:
     """
     Transform a MultipleIndependent of LogNormal distributions to Normal distributions.
 
@@ -229,7 +227,7 @@ def transform_lognormal_prior_to_normal(lognormal_prior: MultipleIndependent) ->
     """
     import math
 
-    if not hasattr(lognormal_prior, 'dists'):
+    if not hasattr(lognormal_prior, "dists"):
         raise ValueError("Prior must be a MultipleIndependent distribution")
 
     # Transform each LogNormal to Normal
