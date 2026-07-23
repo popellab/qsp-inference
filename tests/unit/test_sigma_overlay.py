@@ -115,3 +115,45 @@ def test_load_overlay_prior_log_end_to_end(tmp_path):
     prior2, _ = load_overlay_prior_log(yaml_out, csv_out, use_population_block=False)
     s2 = prior2.sample((6000,)).cpu().numpy()
     assert s2[:, idx["k_a"]].std() < 0.25
+
+
+def test_load_overlay_prior_log_vary_params_allowlist(tmp_path):
+    """``vary_params`` is the allowlist form: everything NOT listed is pinned.
+
+    Same fixture as the end-to-end test, but instead of naming the pins we name
+    the single param allowed to vary (k_a) and assert the other two collapse —
+    including a param (k_b) that carries a population sigma, proving pins win
+    over the population override when a param is outside the allowlist.
+    """
+    from qsp_inference.audit.report import _write_submodel_priors
+
+    targets = {"k_a": ["t1"], "k_b": ["t1"]}
+    center = {"compA": _corr_lognormal_samples(0.1, seed=1)}
+    pop = {"compA": _corr_lognormal_samples(0.5, seed=1)}
+    yaml_out = tmp_path / "sp.yaml"
+    _write_submodel_priors(center, targets, {}, yaml_out, population_samples_by_component=pop)
+
+    csv_out = tmp_path / "priors.csv"
+    csv_out.write_text(
+        "name,distribution,dist_param1,dist_param2\n"
+        "k_a,lognormal,0.0,0.3\n"
+        "k_b,lognormal,0.0,0.3\n"
+        "k_pin,lognormal,0.0,0.9\n"
+    )
+
+    prior, names = load_overlay_prior_log(yaml_out, csv_out, vary_params=["k_a"])
+    idx = {n: i for i, n in enumerate(names)}
+    s = prior.sample((6000,)).cpu().numpy()
+    # k_a varies (population sigma applied); k_b and k_pin pinned despite k_b's
+    # population override — outside the allowlist ⇒ pinned.
+    assert s[:, idx["k_a"]].std() > 0.3
+    assert s[:, idx["k_b"]].std() < 5e-3
+    assert s[:, idx["k_pin"]].std() < 5e-3
+
+    # vary_params unions with explicit pin_params (a redundant pin here is a no-op).
+    prior3, _ = load_overlay_prior_log(
+        yaml_out, csv_out, vary_params=["k_a", "k_b"], pin_params=["k_b"]
+    )
+    s3 = prior3.sample((6000,)).cpu().numpy()
+    assert s3[:, idx["k_a"]].std() > 0.3
+    assert s3[:, idx["k_b"]].std() < 5e-3  # explicit pin beats allowlist membership

@@ -538,6 +538,7 @@ def load_overlay_prior_log(
     csv_path: str | Path,
     *,
     pin_params: Iterable[str] | None = None,
+    vary_params: Iterable[str] | None = None,
     use_population_block: bool = True,
     pin_sigma: float = 1e-3,
 ) -> tuple[GaussianCopulaPrior, list[str]]:
@@ -553,6 +554,11 @@ def load_overlay_prior_log(
             carrying a ``population`` block from the population pass).
         csv_path: Full priors CSV (defines param order and the fallback center sigma).
         pin_params: Param names to pin (sigma -> ``pin_sigma``).
+        vary_params: Allowlist form of the pin policy — when given, every param
+            NOT listed is pinned. Merged with any explicit ``pin_params`` (union).
+            This is the shape a vary/pin policy file carries (a ``vary:`` list);
+            passing it here avoids the caller having to invert it against the
+            full param set.
         use_population_block: If True and a ``population`` block exists, override
             sigma with the population sigma for its params. Silently ignored when
             the block is absent.
@@ -562,6 +568,12 @@ def load_overlay_prior_log(
         ``(prior, param_names)`` covering all CSV params in CSV order.
     """
     center, names = load_composite_prior_log(yaml_path, csv_path)
+
+    # Allowlist → pin everything outside it, unioned with any explicit pins.
+    if vary_params is not None:
+        vary = set(vary_params)
+        derived_pins = [n for n in names if n not in vary]
+        pin_params = sorted(set(derived_pins) | set(pin_params or []))
 
     population_sigma: dict[str, float] = {}
     if use_population_block:
