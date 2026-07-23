@@ -266,6 +266,20 @@ def sbi_calibration_ecdf(samples, theta_test, param_names, figsize=(16, 12), max
     in the posterior samples. If well-calibrated, these percentiles should
     be uniformly distributed.
 
+    NOT the end-to-end calibration gate. This ranks theta_test inside the
+    *unweighted* posterior draws, and theta_test is drawn from whatever
+    distribution the training pairs were simulated at. When that is the
+    training proposal pi_tilde rather than the reporting prior pi (see
+    qsp_inference.priors.copula_prior.temper_prior), the question answered
+    here is "does the network fit its own training joint?" -- a check on the
+    estimator, which can pass while the reported posterior is wrong, because
+    the importance weights never enter it and no theta_test is ever drawn
+    where pi has mass and pi_tilde does not.
+
+    For the check on the full reported path (draw theta* from pi, rank it in
+    the *weighted* draws), use qsp_inference.inference.sbc. The two are
+    complementary: this one localizes estimator defects, that one gates.
+
     Args:
         samples: Posterior samples, shape (n_samples, n_test, n_params)
         theta_test: True test parameters, shape (n_test, n_params)

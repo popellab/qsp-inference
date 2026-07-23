@@ -15,6 +15,18 @@ from qsp_inference.inference.restriction import (
     sample_restricted,
 )
 
+# Also lightweight: sbc operates on plain arrays of PIT values and weights, so
+# the calibration gate can be run (and tested) without the sbi extra.
+from qsp_inference.inference.sbc import (
+    weighted_pit,
+    weighted_sbc,
+    ParameterCalibration,
+    SBCResult,
+    SBCGate,
+    uniform_band_halfwidth,
+    plot_sbc_ecdf,
+)
+
 # Heavy — require torch/sbi/etc. Guard so partial installs (e.g. CI without
 # the sbi extra) can still import the restriction module.
 try:
@@ -108,6 +120,14 @@ __all__ = [
     "RestrictionClassifier",
     "train_restriction_classifier",
     "sample_restricted",
+    # Weighted SBC (the end-to-end calibration gate)
+    "weighted_pit",
+    "weighted_sbc",
+    "ParameterCalibration",
+    "SBCResult",
+    "SBCGate",
+    "uniform_band_halfwidth",
+    "plot_sbc_ecdf",
     # Plotting
     "plot_posterior_marginals",
     "plot_posterior_pairs",
