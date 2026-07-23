@@ -346,22 +346,93 @@ def _target_id(target: Any) -> str:
     return "<unnamed-target>"
 
 
-def _resolve_index_values(
-    target: Any, override: Optional[Sequence[float]]
-) -> list[float]:
-    """Pick the time points to interpolate to for one target.
+def _readout_time_days(target: Any) -> Optional[float]:
+    """Canonical-day readout time for a target, or ``None`` if the
+    observable reduces via ``reduce_observable`` instead.
 
-    Override wins if non-empty, else ``target.empirical_data.index_values``,
-    else ``[0.0]`` (the pdac-build default for index-less scalar targets,
-    per the CLAUDE.md gotcha that an unset index defaults to t=0).
+    ``observable.readout_time`` is expressed in ``observable.readout_time_unit``
+    (a Pint unit, e.g. ``"day"``); the trajectory time axis is in canonical
+    days, so we convert with the shared maple registry. The import is local
+    so this module keeps no hard maple dependency for the pure-eval path.
     """
-    if override:
-        return [float(v) for v in override]
-    empirical = getattr(target, "empirical_data", None)
-    declared = getattr(empirical, "index_values", None) if empirical else None
-    if declared:
-        return [float(v) for v in declared]
-    return [0.0]
+    obs = target.observable
+    readout_time = getattr(obs, "readout_time", None)
+    if readout_time is None:
+        return None
+    unit = getattr(obs, "readout_time_unit", None)
+    if not unit:
+        raise ValueError(
+            "observable.readout_time is set but observable.readout_time_unit "
+            "is missing; cannot convert the readout time to canonical days."
+        )
+    from maple.core.unit_registry import ureg
+
+    return float((float(readout_time) * ureg(unit)).to("day").magnitude)
+
+
+def _compile_reduce_observable(code: str):
+    """Compile a ``reduce_observable(time, series) -> float`` from source."""
+    namespace: dict[str, Any] = {"np": np, "numpy": np}
+    exec(code, namespace)
+    fn = namespace.get("reduce_observable")
+    if fn is None:
+        raise ValueError(
+            "observable.reduce_observable source did not define a callable "
+            "named 'reduce_observable'"
+        )
+    return fn
+
+
+def _make_reducer(target: Any, override_time: Optional[float]):
+    """Build the series → scalar reducer for one target.
+
+    The maple ``Observable`` contract sets exactly one of ``readout_time``
+    (evaluate the series at a fixed sim time) or ``reduce_observable``
+    (a ``reduce_observable(time, series) -> float`` function for peak / AUC /
+    final-value style measurements). ``override_time`` (canonical days), when
+    provided, forces a value-at-a-time readout regardless of which the
+    observable declares — the only override that still makes sense now that
+    the vector index dimension is gone.
+
+    Returns a callable ``reduce(time, series) -> float``. Resolution of the
+    readout time / compilation of ``reduce_observable`` happens once here, not
+    per-sim. Raises ``ValueError`` if the observable sets neither or both.
+    """
+    if override_time is not None:
+        forced = float(override_time)
+
+        def _reduce_override(t: np.ndarray, v: np.ndarray) -> float:
+            return float(np.interp(forced, t, v))
+
+        return _reduce_override
+
+    obs = target.observable
+    readout_days = _readout_time_days(target)
+    reduce_src = getattr(obs, "reduce_observable", None)
+
+    if readout_days is not None and reduce_src is not None:
+        raise ValueError(
+            "observable sets both readout_time and reduce_observable; the "
+            "maple contract requires exactly one."
+        )
+    if readout_days is not None:
+
+        def _reduce_at_time(t: np.ndarray, v: np.ndarray) -> float:
+            return float(np.interp(readout_days, t, v))
+
+        return _reduce_at_time
+    if reduce_src is not None:
+        fn = _compile_reduce_observable(reduce_src)
+
+        def _reduce_fn(t: np.ndarray, v: np.ndarray) -> float:
+            return float(fn(t, v))
+
+        return _reduce_fn
+
+    raise ValueError(
+        "observable sets neither readout_time nor reduce_observable; the "
+        "maple contract requires exactly one."
+    )
 
 
 @dataclass
@@ -371,8 +442,8 @@ class EvalReport:
     Attributes:
         per_target: ``{target_id: Counter}`` with keys ``n_total``,
             ``n_nan``, ``n_code_raised``, ``n_species_missing``. ``n_nan``
-            counts sims whose interpolated value at any requested
-            ``index_values`` came out NaN regardless of cause; the other
+            counts sims whose reduced scalar value came out NaN regardless
+            of cause; the other
             counters break that down. Sum can exceed ``n_nan`` because a
             single sim can hit multiple buckets in principle, but in
             practice they're disjoint at evaluation time (we stop at
@@ -433,7 +504,7 @@ def evaluate_targets_to_x(
     *,
     auxiliary_records: Optional[Iterable[Mapping[str, float]]] = None,
     parameter_records: Optional[Iterable[Mapping[str, float]]] = None,
-    target_index_values: Optional[Mapping[str, Sequence[float]]] = None,
+    target_readout_times: Optional[Mapping[str, float]] = None,
 ) -> tuple[np.ndarray, list[str], EvalReport]:
     """Evaluate ``targets`` over ``traj_df`` and aggregate to a feature
     matrix suitable for SBI training.
@@ -444,32 +515,38 @@ def evaluate_targets_to_x(
        full trajectory frame to get a per-(sample_index, time)
        observable series, with ``on_error="raise"`` so failure modes
        can be classified per-sim rather than silently NaN-filled.
-    2. Linearly interpolates each sim's series to the target's
-       requested ``index_values`` (overridden by
-       ``target_index_values[target_id]`` if present; otherwise pulled
-       from ``target.empirical_data.index_values``; default ``[0.0]``).
-    3. Emits one column per index value, named
-       ``"{target_id}__t{idx_value}"`` for vector targets, or
-       ``"{target_id}"`` for scalar (single-index) targets — keeps SBI
-       column names readable when index_values has length 1.
+    2. Reduces each sim's series to a single scalar per the target's
+       ``observable`` reduction contract: interpolating at
+       ``observable.readout_time`` (converted to canonical days via the
+       shared maple Pint registry) when set, or applying the
+       ``observable.reduce_observable(time, series) -> float`` function
+       when set. Exactly one is set. A per-target entry in
+       ``target_readout_times`` overrides this with a forced
+       value-at-a-time readout (canonical days).
+    3. Emits exactly one column per target, named ``"{target_id}"`` —
+       the time-series → scalar reduction now lives on the observable
+       (maple removed the vector index dimension), so every target
+       contributes a single feature column.
 
     Failure-mode classification (per-sim, per-target):
 
     - ``KeyError`` from a missing species in ``species_dict`` →
       ``n_species_missing``.
-    - Any other ``Exception`` from ``code`` →
+    - Any other ``Exception`` from ``code`` (or from the reduction) →
       ``n_code_raised`` and the exception is stored in
       ``EvalReport.last_exception[target_id]``.
-    - Either case yields NaN for that sim/target's columns.
-    - ``n_nan`` independently counts sims whose interpolated value
+    - Either case yields NaN for that sim/target's column.
+    - ``n_nan`` independently counts sims whose reduced scalar value
       came out NaN, which also catches sim-side NaN propagation
       through a successful ``code`` call (the third failure mode in
       D7's three-way split).
 
     Args:
         targets: Sequence of CalibrationTarget-shaped objects (anything
-            duck-typed against the observable / empirical_data fields
-            consumed by :func:`evaluate_calibration_target_over_trajectory`).
+            duck-typed against the observable fields consumed by
+            :func:`evaluate_calibration_target_over_trajectory` plus the
+            ``observable.readout_time`` / ``observable.reduce_observable``
+            reduction contract).
         traj_df: Long-form trajectory frame. Same schema as the
             existing helpers: ``[sample_index, t_to_diagnosis_days,
             column, value]``. ``sample_index`` ascending order
@@ -481,17 +558,18 @@ def evaluate_targets_to_x(
             records (one ``{name: float}`` dict per ``sample_index``,
             in ascending order). Filtered per-target by the target's
             declared ``observable.species`` list inside.
-        target_index_values: Optional ``{target_id: [t1, t2, ...]}``
-            override. Falls back to each target's YAML-declared
-            ``empirical_data.index_values`` (or ``[0.0]`` if unset).
+        target_readout_times: Optional ``{target_id: t_days}`` override.
+            Forces a value-at-a-time readout at ``t_days`` (canonical
+            days) for that target, superseding whichever reduction its
+            observable declares. Omit to use the observable's own
+            ``readout_time`` / ``reduce_observable``.
 
     Returns:
         ``(x, names, report)``:
 
-        - ``x``: ``(n_sims, n_columns)`` float64 ndarray. ``n_sims`` is
+        - ``x``: ``(n_sims, n_targets)`` float64 ndarray. ``n_sims`` is
           the count of distinct sample_indices in ``traj_df`` (sorted
-          ascending). ``n_columns`` is the sum of ``len(index_values)``
-          across targets.
+          ascending). One column per target (in input order).
         - ``names``: column names matching ``x``'s column axis.
         - ``report``: :class:`EvalReport` with per-target counters.
     """
@@ -527,7 +605,7 @@ def evaluate_targets_to_x(
             f"record per sim, in ascending sample_index order."
         )
 
-    overrides = target_index_values or {}
+    overrides = target_readout_times or {}
     report = EvalReport()
     columns: list[np.ndarray] = []
     names: list[str] = []
@@ -535,9 +613,11 @@ def evaluate_targets_to_x(
     for target in targets:
         tid = _target_id(target)
         bucket = report._bucket(tid)
-        idx_values = _resolve_index_values(target, overrides.get(tid))
+        # Resolve the readout time / compile reduce_observable once per
+        # target rather than once per sim.
+        reducer = _make_reducer(target, overrides.get(tid))
 
-        column_block = np.full((n_sims, len(idx_values)), np.nan, dtype=np.float64)
+        column = np.full(n_sims, np.nan, dtype=np.float64)
 
         # Run the existing per-target helper once per sim so the
         # try/except can scope per-sim failure-mode classification. Per-sim
@@ -580,22 +660,23 @@ def evaluate_targets_to_x(
             order = np.argsort(t)
             t, v = t[order], v[order]
 
-            interp = np.interp(np.asarray(idx_values, dtype=np.float64), t, v)
-            column_block[row, :] = interp
+            try:
+                scalar = reducer(t, v)
+            except Exception as e:  # noqa: BLE001 — reduce_observable is user code
+                bucket["n_code_raised"] += 1
+                report.last_exception[tid] = e
+                bucket["n_nan"] += 1
+                continue
 
-            if np.any(np.isnan(interp)):
+            column[row] = scalar
+            if np.isnan(scalar):
                 bucket["n_nan"] += 1
 
-        # Stash columns + names. Single-index targets keep the bare
-        # target_id; vector targets append a ``__t{val}`` suffix so
-        # downstream code can recover the per-time pairing.
-        if len(idx_values) == 1:
-            columns.append(column_block[:, 0])
-            names.append(tid)
-        else:
-            for k, idx in enumerate(idx_values):
-                columns.append(column_block[:, k])
-                names.append(f"{tid}__t{idx}")
+        # One scalar column per target — the observable owns the
+        # time-series → scalar reduction, so there is no vector index
+        # suffix to emit anymore.
+        columns.append(column)
+        names.append(tid)
 
     if columns:
         x = np.column_stack(columns)
