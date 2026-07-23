@@ -23,6 +23,8 @@ import numpy as np
 from scipy import stats
 from torch.distributions import Distribution
 
+_LOG_TWO_PI = float(np.log(2.0 * np.pi))
+
 
 def _build_scipy_marginal(marginal: dict):
     """Build a scipy frozen distribution from a marginal spec dict.
@@ -112,6 +114,29 @@ class GaussianCopulaPrior(Distribution):
         self._log_det_R = float(np.linalg.slogdet(R)[1])
         self._has_copula = not np.allclose(R, np.eye(n))
 
+        # Exact path for all-normal marginals (every marginal the *_log loaders
+        # produce). For a normal, Phi^{-1}(Phi((x-loc)/scale)) == (x-loc)/scale,
+        # so the cdf->ppf round trip in sample/log_prob is mathematically the
+        # identity — but numerically it underflows in the tails, which is why
+        # those paths clamp u to [1e-8, 1-1e-8]. That clamp caps |z| at ~5.61,
+        # truncating samples and distorting the copula term beyond ~5.6 sigma.
+        # Standardizing directly avoids the round trip, so it is exact at any
+        # distance, and skips two scipy calls per parameter per evaluation.
+        locs, scales, all_normal = [], [], True
+        for m in marginals:
+            if getattr(getattr(m, "dist", None), "name", None) != "norm":
+                all_normal = False
+                break
+            locs.append(float(m.mean()))
+            scales.append(float(m.std()))
+        if all_normal and not all(np.isfinite(s) and s > 0 for s in scales):
+            all_normal = False  # a degenerate/pinned scale would divide by zero
+        self._all_normal = all_normal
+        if all_normal:
+            self._locs = torch.tensor(locs, dtype=torch.float64)
+            self._scales = torch.tensor(scales, dtype=torch.float64)
+            self._log_scales_sum = float(np.sum(np.log(scales)))
+
         super().__init__(
             batch_shape=torch.Size(),
             event_shape=torch.Size([n]),
@@ -163,6 +188,13 @@ class GaussianCopulaPrior(Distribution):
         z_indep = torch.randn(n_samples, n, dtype=torch.float64)
         z = z_indep @ self._L.T  # (n_samples, n)
 
+        if self._all_normal:
+            # x = loc + scale*z, exact. The general path below would round-trip
+            # z through Phi and Phi^{-1} and clamp u, which silently truncates
+            # draws at ~5.61 sigma.
+            x = self._locs + self._scales * z
+            return x.reshape(*shape, n).float()
+
         # z -> uniform via Phi
         u = torch.tensor(
             stats.norm.cdf(z.numpy()), dtype=torch.float64
@@ -188,21 +220,29 @@ class GaussianCopulaPrior(Distribution):
 
         n_samples, n = value.shape
 
-        # Marginal log-probs: sum_i log f_i(x_i)
-        marginal_lp = torch.zeros(n_samples, dtype=torch.float64)
-        u = torch.empty(n_samples, n, dtype=torch.float64)
-        for j, marg in enumerate(self._marginals):
-            xj = value[:, j].numpy()
-            marginal_lp += torch.tensor(marg.logpdf(xj), dtype=torch.float64)
-            u[:, j] = torch.tensor(marg.cdf(xj), dtype=torch.float64)
+        if self._all_normal:
+            # Normal scores directly: z = (x - loc)/scale is exactly
+            # Phi^{-1}(F(x)) here, with no cdf/ppf round trip to underflow and
+            # no u clamp, so this stays exact arbitrarily far into the tails.
+            z = (value - self._locs) / self._scales
+            marginal_lp = (
+                -0.5 * (z * z).sum(dim=1)
+                - self._log_scales_sum
+                - 0.5 * n * _LOG_TWO_PI
+            )
+        else:
+            # Marginal log-probs: sum_i log f_i(x_i)
+            marginal_lp = torch.zeros(n_samples, dtype=torch.float64)
+            u = torch.empty(n_samples, n, dtype=torch.float64)
+            for j, marg in enumerate(self._marginals):
+                xj = value[:, j].numpy()
+                marginal_lp += torch.tensor(marg.logpdf(xj), dtype=torch.float64)
+                u[:, j] = torch.tensor(marg.cdf(xj), dtype=torch.float64)
 
-        u = torch.clamp(u, 1e-8, 1 - 1e-8)
+            u = torch.clamp(u, 1e-8, 1 - 1e-8)
+            z = torch.tensor(stats.norm.ppf(u.numpy()), dtype=torch.float64)
 
         if self._has_copula:
-            # z = Phi^{-1}(u)
-            z = torch.tensor(
-                stats.norm.ppf(u.numpy()), dtype=torch.float64
-            )
             # copula log-density: -0.5 * (z^T (R^{-1} - I) z) - 0.5 * log|R|
             # Expand: z^T R^{-1} z - z^T z
             z_Rinv_z = (z @ self._R_inv * z).sum(dim=1)

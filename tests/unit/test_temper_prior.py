@@ -18,11 +18,11 @@ def _prior(locs, scales, correlation=None, names=None):
 
 
 def _within_clamp(prior, theta, eps=1e-8, margin=10.0):
-    """Mask of rows whose marginal CDFs stay clear of log_prob's u clamp.
+    """Mask of rows sitting inside roughly ±5.4σ of ``prior`` on every parameter.
 
-    ``GaussianCopulaPrior.log_prob`` clamps u to ``[1e-8, 1-1e-8]`` (about 5.6σ)
-    before inverting to normal scores, which distorts the *copula* term beyond
-    that point. The marginal term is exact everywhere.
+    Named for the ``u`` clamp that ``log_prob`` used to apply at ``1e-8``; the
+    densities are exact out here now, so this is only used to pick out the
+    genuine tail draws of a wide proposal.
     """
     x = theta.double().numpy()
     u = np.column_stack([m.cdf(x[:, j]) for j, m in enumerate(prior._marginals)])
@@ -44,13 +44,10 @@ class TestIsActuallyTempering:
         lp_t = tempered.log_prob(theta).double().numpy()
         residual = lp_t - lp / T
 
-        # Restricted to where neither prior's u saturates the clamp. Outside that
-        # region the deviation is the clamp's, not tempering's — see
-        # TestUClampBoundary.
-        keep = _within_clamp(prior, theta) & _within_clamp(tempered, theta)
-        assert keep.sum() > 1500, "clamp mask threw away too much of the sample"
-        assert np.std(residual[keep]) < 1e-4, (
-            f"not a temper: residual std {np.std(residual[keep])}"
+        # No masking: normal marginals are standardized directly, so the
+        # identity holds over the whole sample including the tails.
+        assert np.std(residual) < 1e-4, (
+            f"not a temper: residual std {np.std(residual)}"
         )
 
     @pytest.mark.parametrize("T", [0.5, 2.0, 5.0, 50.0])
@@ -168,31 +165,31 @@ class TestReweightRoundTrip:
         assert fracs == sorted(fracs, reverse=True)
 
 
-class TestUClampBoundary:
-    """Documents where the exact identity stops holding, and why it is benign.
+class TestDeepTailExactness:
+    """The identity holds arbitrarily far into the tail.
 
-    ``log_prob`` clamps the copula's u to [1e-8, 1-1e-8]. A draw further than
-    about 5.6σ into a prior's tail therefore gets a distorted copula term under
-    that prior. When reweighting a wide proposal onto a narrow prior this happens
-    on the proposal's tail draws — which carry negligible weight, since they sit
-    where the target density is vanishing.
+    It did not always: ``log_prob`` used to route normal scores through
+    ``cdf -> clamp(u, 1e-8) -> ppf``, capping |z| at ~5.61 and overstating the
+    density by as much as 29 log units at 9σ. Normal marginals are now
+    standardized directly, so there is no clamp to hit.
     """
 
-    def test_deep_tail_deviates(self):
+    @pytest.mark.parametrize("T", [0.25, 4.0])
+    def test_identity_holds_at_nine_sigma(self, T):
         R = np.array([[1.0, 0.6], [0.6, 1.0]])
         prior = _prior([0.0, 0.0], [1.0, 1.0], correlation=R)
-        tempered = temper_prior(prior, 0.25)  # sigma halved -> tails reached sooner
+        tempered = temper_prior(prior, T)
 
-        # ~7 sigma under the tempered prior: past the clamp.
-        theta = torch.tensor([[3.5, 0.0]])
-        residual = float(
-            tempered.log_prob(theta).double() - prior.log_prob(theta).double() / 0.25
-        )
         bulk = torch.zeros(1, 2)
-        residual_bulk = float(
-            tempered.log_prob(bulk).double() - prior.log_prob(bulk).double() / 0.25
+        const = float(
+            tempered.log_prob(bulk).double() - prior.log_prob(bulk).double() / T
         )
-        assert abs(residual - residual_bulk) > 1e-2
+        for far in ([9.0, 0.0], [0.0, -12.0], [7.0, 7.0]):
+            theta = torch.tensor([far], dtype=torch.float64)
+            residual = float(
+                tempered.log_prob(theta).double() - prior.log_prob(theta).double() / T
+            )
+            assert residual == pytest.approx(const, abs=1e-2), f"at {far}"
 
     def test_tail_draws_carry_negligible_weight(self):
         """The practical consequence: clamp-affected draws barely enter a summary."""
