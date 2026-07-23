@@ -4,6 +4,8 @@ A guide to the Stage 2 simulation-based inference (SBI) tooling in qsp-inference
 
 This guide is for modelers who already have a Stage 1 `submodel_priors.yaml` and want to (a) run Stage 2 NPE, (b) diagnose it, and (c) feed the results back into the parameter audit.
 
+*This is the how-to. For the probability model it implements — the generative model, why the likelihood is unavailable, and what the diagnostics below are testing — see [The Statistical Model](statistical-model.md).*
+
 ## How Stage 2 fits in
 
 ```

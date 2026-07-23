@@ -1,10 +1,20 @@
 # qsp-inference
 
-Two-stage Bayesian calibration for quantitative systems pharmacology (QSP) models.
+Bayesian calibration and virtual-population generation for quantitative systems pharmacology (QSP) models.
 
 Most QSP parameters can't be measured directly in the clinical context being modeled, and most calibration workflows pick literature point values and pad them with arbitrary ranges for sensitivity analysis. `qsp-inference` replaces that with a two-stage Bayesian calibration: turn each literature measurement into a forward-model likelihood with automatic downweighting for context-mismatched sources, combine them into a joint posterior over the QSP parameters, then use that posterior as an informative prior for full-simulator inference against clinical data.
 
 Project page with full write-up and figures: [joeleliason.com/projects/qsp-inference](https://joeleliason.com/projects/qsp-inference/).
+
+## The model
+
+Underneath everything here is one generative model — parameters drawn from an informative prior, pushed through the QSP simulator, observed with measurement noise — and two questions asked of it.
+
+**Flat calibration** is the single-unit posterior `p(θ | x_obs)`: one parameter set, uncertainty and all, consistent with one observed summary. A **virtual population** is the random-effects version of the same model: each patient carries their own `θ` drawn from a population distribution `F(θ | μ, ω)`, the data are cohort summaries (a median and an IQR per target), and a virtual patient is a draw from the fitted distribution. Same simulator, same prior — only the question changes. In mixed-effects terms these are the typical-value fit and the random-effects distribution.
+
+Two facts shape every method here. The likelihood cannot be evaluated — the mean map is an ODE solve with no analytic form, and the default noise model is an empirical resampler rather than a density — so inference is simulation-based throughout. And only a handful of the parameters are identified by the clinical data; along the rest the posterior equals the prior. That is why the prior is *constructed* as a measurement model rather than asserted, and why a wide prior is not a safe default.
+
+**[The statistical model](docs/statistical-model.md)** ([typeset PDF](docs/statistical-model.pdf)) states all of this properly, and closes with a dictionary mapping each term to its Bayesian, pharmacometrics/NLME, and simulation-based-inference names. It is the page to read first.
 
 ## How it works
 
@@ -83,6 +93,9 @@ log_p = prior.log_prob(samples)   # evaluates joint density
 
 ## Documentation
 
+Start with the model, then the chapter you need — [`docs/`](docs/README.md) is the full index.
+
+- **[The Statistical Model](docs/statistical-model.md)** — read first: the generative model, the two inference targets (single-unit vs. random-effects), why inference is likelihood-free, practical non-identifiability, the model-checking suite, and a three-way vocabulary dictionary. Also as a [typeset chapter](docs/statistical-model.pdf).
 - **[Submodel Inference Guide](docs/submodel-inference-guide.md)** — Stage 1: practical guide covering the Bayesian framework, SubmodelTarget YAML anatomy, maple workflows, the audit API, and diagnostics interpretation
 - **[Stage 2 SBI Guide](docs/stage2-sbi-guide.md)** — Stage 2: loading the Stage 1 posterior as an SBI prior, prior restriction with `RestrictionClassifier`, NPE data prep, the diagnostics suite, posterior predictive checks, OBED, and how Stage 2 outputs feed back into the audit report
 

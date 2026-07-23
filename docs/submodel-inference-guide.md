@@ -2,6 +2,8 @@
 
 A practical guide to calibrating QSP model parameters using the submodel inference pipeline. This guide is written for modelers familiar with typical QSP calibration workflows (e.g., SimBiology parameter estimation, Latin hypercube sampling) who want to move to a principled Bayesian approach.
 
+*This is the how-to. For the probability model it implements — and why the prior is built as a measurement model rather than asserted — see [The Statistical Model](statistical-model.md).*
+
 ## Why submodel inference?
 
 ### The posterior is the goal

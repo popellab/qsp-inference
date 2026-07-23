@@ -19,6 +19,20 @@ pdac-build → qsp-inference → maple (schemas only)
 
 qsp-inference imports `SubmodelTarget`, `SourceRelevanceAssessment`, and other Pydantic models from `maple.core.calibration`. It does NOT import inference code from maple — all inference lives here.
 
+## Read this first
+
+**[`docs/statistical-model.md`](docs/statistical-model.md)** states the probability model the package implements, and is the shared vocabulary for the rest of the docs. In short: one generative model (informative prior → QSP simulator → measurement noise) and two inference targets on it.
+
+- **Flat inference** — the single-unit posterior `p(θ | x_obs)`; fixed-effects, the "median patient".
+- **Virtual population (VPop)** — the random-effects version: `θᵢ ~ F(θ | μ, ω)`, data are cohort (median, IQR), a virtual patient is a draw from the fitted `F`.
+
+Two constraints drive most design decisions here, and are worth keeping in mind before proposing changes:
+
+1. **The likelihood is unavailable** — the mean map is an ODE solve, and the *default* observation noise (`inference/data_processing.py:add_observation_noise`) is an empirical bootstrap resampler, not a parametric density. Noise enters as augmentation on training pairs; nothing evaluates a likelihood. Do not describe the observation model as Gaussian — the parametric lognormal/Gaussian path is a per-observable *fallback* for targets with no bootstrap.
+2. **Only a handful of parameters are identified.** Along the rest the posterior equals the prior, so the prior carries the answer and must be built from external data (submodel targets, derived priors). Widening a prior is not a safe default — it over-disperses the population and masks mis-centering.
+
+`docs/README.md` indexes the docs as six chapters (model, priors, flat inference, population inference, model checking, experimental design).
+
 ## Installation
 
 ```bash
@@ -46,15 +60,24 @@ src/qsp_inference/
 │   ├── parameterizer.py         # Posterior → marginal fits + Gaussian copula
 │   ├── prior.py                 # Translation sigma rubric, distribution fitting
 │   ├── parameter_groups.py      # Hierarchical parameter groups + cascade cuts
+│   ├── freshness.py             # Content fingerprints / stale-posterior detection
 │   └── utils.py                 # ODE/algebraic forward model evaluation
 ├── inference/                   # SBI diagnostics and data processing
-│   ├── diagnostics.py           # Recovery, calibration, coverage, MMD, learning curves
-│   ├── data_processing.py       # NaN filtering, noise injection, simulator wrappers
+│   ├── diagnostics.py           # Recovery, calibration, coverage, SBC; misspecification:
+│   │                            #   sbi_self_reference_null (Mahalanobis D² + self-ref
+│   │                            #   null), sbi_loo_predictive_check (per-obs LOO influence)
+│   ├── data_processing.py       # NaN filtering, add_observation_noise (empirical
+│   │                            #   bootstrap default / parametric fallback), wrappers
+│   ├── restriction.py           # RestrictionClassifier — implausible-θ rejection
 │   ├── gaussian_copula_transform.py  # Quantile-based normalization
 │   ├── plot_distributions.py    # Posterior visualization (marginals, pairs)
 │   ├── posterior_predictive.py  # Prior/posterior predictive checks
-│   ├── active_subspace.py       # Active subspace analysis
-│   └── obed.py                  # Optimal Bayesian experimental design
+│   ├── trajectory_eval.py       # Trajectory-level scoring
+│   └── obed.py                  # Optimal Bayesian experimental design (+ LOO retraining)
+├── vpop/                        # Population inference — see docs ch. 4
+│   ├── weighting.py             # Prevalence weighting (Allen 2016 fixed-cloud VPop)
+│   └── diagnostics.py           # Joint-reachability scoring for a VPop
+├── auxiliary/                   # Auxiliary-parameter discovery and priors
 ├── data/                        # Data aggregation
 │   ├── test_stat_functions.py   # Test statistics from QSP outputs
 │   ├── aggregate_test_statistics.py
@@ -62,6 +85,8 @@ src/qsp_inference/
 │   ├── assess_normality.py
 │   └── combine_test_stats_chunks.py
 ├── priors/                      # Prior loading and transformation
+│   ├── copula_prior.py          # GaussianCopulaPrior: sample/log_prob/subset,
+│   │                            #   composite + overlay loaders, derived priors
 │   ├── load_sbi_priors.py       # Load priors from CSV
 │   ├── generate_sbi_priors.py   # Generate SBI-compatible priors
 │   └── truncated_distributions.py  # PyTorch truncation wrapper
