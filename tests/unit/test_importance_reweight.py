@@ -2,8 +2,9 @@
 
 import numpy as np
 import pytest
-import torch
 from scipy import stats
+
+torch = pytest.importorskip("torch")  # copula_prior pulls in torch (sbi extra)
 
 from qsp_inference.inference.importance import (
     ReweightResult,
