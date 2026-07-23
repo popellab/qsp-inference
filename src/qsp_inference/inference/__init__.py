@@ -63,6 +63,13 @@ try:
         plot_ppc_histograms,
         plot_posterior_predictive_spaghetti,
     )
+    from qsp_inference.inference.importance import (
+        ReweightResult,
+        log_importance_weights,
+        reweight_to_prior,
+        effective_sample_size,
+        weighted_quantile,
+    )
     from qsp_inference.inference.obed import (
         classify_mpr,
         classify_recist,
@@ -134,4 +141,10 @@ __all__ = [
     "loo_retrain_posterior_width",
     "summarize_loo_by_observable",
     "generate_tightened_theta_sets",
+    # Proposal -> prior importance reweighting
+    "ReweightResult",
+    "log_importance_weights",
+    "reweight_to_prior",
+    "effective_sample_size",
+    "weighted_quantile",
 ]
