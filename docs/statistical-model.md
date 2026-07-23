@@ -120,6 +120,27 @@ setting — species, indication, assay — sits from the one being modeled. This
 between-study heterogeneity of a **random-effects meta-analysis**, the $\tau^2$ that
 lets mouse data inform a human parameter without pretending to be human data.
 
+It is also, exactly, a **power prior** (Ibrahim & Chen 2000) — the standard device for
+borrowing strength from historical data under a discount. A power prior raises a
+historical dataset's likelihood to a fractional power,
+$\pi(\theta \mid D_0, a_0) \propto L(\theta \mid D_0)^{a_0}\,\pi_0(\theta)$, and for a
+Gaussian likelihood that is *identical* to inflating the variance:
+
+$$
+L^{a} \propto \exp\!\Big(-\tfrac{a\,(y - g(\theta))^2}{2\sigma^2}\Big)
+      = \text{kernel of } \mathcal{N}\big(y;\, g(\theta),\ \sigma^2/a\big).
+$$
+
+So discounting a source by inflating its σ *is* discounting its likelihood by an
+exponent $a_j = \sigma_j^2 / \tilde\sigma_j^2$; the two constructions coincide here and
+diverge only for non-Gaussian likelihoods. Worth stating plainly because it locates the
+relevance rubric in a literature with its own machinery: the rubric is a **fixed,
+hand-specified** choice of those exponents, while the *normalized* power prior treats
+$a_0$ as random and infers it from how consistent a source turns out to be with the
+others. That is the natural route to retiring the rubric as a manual surface, and it is
+affordable exactly here — Stage 1 chunks are small and already sampled with NUTS, so the
+normalizing constant that makes inferred $a_0$ expensive is within reach.
+
 Parameters informed by the same measurement are correlated, and throwing that away
 would overstate what we know. The per-parameter marginals are therefore joined by a
 **Gaussian copula** — Sklar's construction, marginals for the uncertainty and a
@@ -249,7 +270,7 @@ vocabulary to the others:
 | here | Bayesian statistics | pharmacometrics / NLME | reference |
 |---|---|---|---|
 | SubmodelTarget → Stage-1 posterior | measurement-error / meta-analytic prior | literature-informed prior | Box & Tiao 1973 |
-| translation sigma | between-study heterogeneity $\tau^2$ | inter-study variability | DerSimonian & Laird 1986 |
+| translation sigma | between-study heterogeneity $\tau^2$; equivalently a power-prior discount $a_0$ | inter-study variability | DerSimonian & Laird 1986; Ibrahim & Chen 2000 |
 | copula prior | marginals joined by a copula | correlated random effects | Sklar 1959; Nelsen 2006 |
 | derived prior | log-linear-Gaussian child | structural/covariate relation | — |
 | flat inference | single-unit posterior | typical-value fit | — |
@@ -301,6 +322,7 @@ in Bayesian Statistics 4. —
 Gelman & Hill (2007), *Data Analysis Using Regression and Multilevel/Hierarchical
 Models*. —
 Gelman et al. (2020), *Bayesian workflow*, arXiv:2011.01808. —
+Ibrahim & Chen (2000), *Power prior distributions for regression models*, Statist. Sci. —
 Greenberg, Nonnenmacher & Macke (2019), *Automatic posterior transformation for
 likelihood-free inference*, ICML. —
 Gutenkunst et al. (2007), *Universally sloppy parameter sensitivities in systems biology
