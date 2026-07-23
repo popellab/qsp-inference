@@ -282,6 +282,7 @@ def _log_transform_marginal(marginal_spec: dict):
 def load_composite_prior_log(
     yaml_path: str | Path,
     csv_path: str | Path,
+    derived_yaml: str | Path | None = None,
 ) -> tuple[GaussianCopulaPrior, list[str]]:
     """Load a composite log-space prior: copula for submodel params, independent for the rest.
 
@@ -293,6 +294,9 @@ def load_composite_prior_log(
     Args:
         yaml_path: Path to submodel_priors.yaml from the audit pipeline.
         csv_path: Path to the full priors CSV (e.g. pdac_priors.csv).
+        derived_yaml: Optional derived-parameter policy (see
+            :func:`apply_derived_priors`). When given, the listed params are
+            replaced by power-law children of their parents.
 
     Returns:
         (prior, param_names) where prior operates in log-space and covers
@@ -370,6 +374,9 @@ def load_composite_prior_log(
         correlation=R,
         param_names=param_names,
     )
+
+    if derived_yaml is not None:
+        prior = apply_derived_priors(prior, load_derived_specs(derived_yaml))
 
     return prior, param_names
 
@@ -541,6 +548,7 @@ def load_overlay_prior_log(
     vary_params: Iterable[str] | None = None,
     use_population_block: bool = True,
     pin_sigma: float = 1e-3,
+    derived_yaml: str | Path | None = None,
 ) -> tuple[GaussianCopulaPrior, list[str]]:
     """Load the cloud-generation prior: composite center with a sigma-overlay.
 
@@ -563,6 +571,9 @@ def load_overlay_prior_log(
             sigma with the population sigma for its params. Silently ignored when
             the block is absent.
         pin_sigma: Log-space sigma for pinned params.
+        derived_yaml: Optional derived-parameter policy. Applied LAST (after the
+            overlay), so derived params track their post-overlay parents and are
+            themselves neither pinned nor population-widened.
 
     Returns:
         ``(prior, param_names)`` covering all CSV params in CSV order.
@@ -587,12 +598,171 @@ def load_overlay_prior_log(
                 for i, nm in enumerate(pop_names)
             }
 
-    return compose_overlay_prior(
+    overlaid = compose_overlay_prior(
         center,
         population_sigma=population_sigma,
         pin_params=pin_params,
         pin_sigma=pin_sigma,
     )
+    prior, names = overlaid
+    if derived_yaml is not None:
+        # A derived param must NOT be pinned by the vary-allowlist (it has no
+        # free center to pin) — it is defined by its parents. Applied here, after
+        # the overlay, it overwrites whatever pin/population sigma it was given.
+        prior = apply_derived_priors(prior, load_derived_specs(derived_yaml))
+    return prior, names
+
+
+def load_derived_specs(path: str | Path) -> dict[str, dict]:
+    """Parse a derived-parameter policy YAML into a spec dict.
+
+    Schema (see the class docstring on :func:`apply_derived_priors`)::
+
+        parameters:
+          <derived_name>:
+            parents: {<parent_name>: <power>, ...}   # power on each parent
+            log_coeff: <float>                        # ln of the multiplicative constant
+            sigma_coeff: <float>                      # log-space scatter of the constant
+            provenance: <str>                         # optional, human note
+
+    Returns ``{name: {parents, log_coeff, sigma_coeff, provenance}}``.
+    """
+    from ruamel.yaml import YAML
+
+    yaml = YAML()
+    with open(path) as f:
+        data = yaml.load(f)
+    out: dict[str, dict] = {}
+    for name, spec in (data.get("parameters") or {}).items():
+        parents = {str(k): float(v) for k, v in (spec.get("parents") or {}).items()}
+        if not parents:
+            raise ValueError(f"derived param '{name}' has no parents.")
+        out[str(name)] = {
+            "parents": parents,
+            "log_coeff": float(spec.get("log_coeff", 0.0)),
+            "sigma_coeff": float(spec.get("sigma_coeff", 0.0)),
+            "provenance": spec.get("provenance", ""),
+        }
+    return out
+
+
+def _derived_topo_order(specs: dict[str, dict]) -> list[str]:
+    """Order derived params so each is processed after its derived parents.
+
+    A derived param may reference another derived param; that parent's marginal
+    must be finalized first. Non-derived (base) parents impose no ordering.
+    Raises on a cycle.
+    """
+    derived_names = set(specs)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    temp: set[str] = set()
+
+    def visit(nm: str):
+        if nm in seen:
+            return
+        if nm in temp:
+            raise ValueError(f"cycle in derived-parameter dependencies at '{nm}'.")
+        temp.add(nm)
+        for parent in specs[nm]["parents"]:
+            if parent in derived_names:
+                visit(parent)
+        temp.discard(nm)
+        seen.add(nm)
+        ordered.append(nm)
+
+    for nm in specs:
+        visit(nm)
+    return ordered
+
+
+def apply_derived_priors(
+    prior: GaussianCopulaPrior,
+    derived_specs: dict[str, dict],
+) -> GaussianCopulaPrior:
+    """Inject derived parameters into a log-space composite prior.
+
+    A derived parameter is a multiplicative (power-law) child of its parents::
+
+        value_d = coeff * prod_i parent_i ** power_i,   coeff ~ LogNormal(log_coeff, sigma_coeff)
+
+    In log-space this is a linear-Gaussian child:
+    ``log v_d = log_coeff + sum_i power_i * log parent_i + eps``, ``eps ~ N(0, sigma_coeff^2)``.
+    Because the composite prior is a Gaussian copula over log-normal marginals,
+    the child is exactly representable as one more copula dimension — so this
+    returns a plain ``GaussianCopulaPrior`` (``sample``/``log_prob``/``subset``
+    all keep working). The child's marginal and its correlation to every base
+    param are derived closed-form from the parents' marginals and the base
+    correlation ``R`` (with ``Sigma_ij = sigma_i sigma_j R_ij``)::
+
+        mu_d    = log_coeff + sum_i power_i * mu_i
+        sigma_d = sqrt(a^T Sigma a + sigma_coeff^2)          # a = power vector
+        R_dk    = (sum_i power_i sigma_i R_ik) / sigma_d
+
+    The derived param must already be a column of ``prior`` (from the CSV); its
+    CSV marginal is OVERWRITTEN here — the CSV row is only a fallback for when no
+    derived spec is supplied. Exact when parent marginals are normal-in-log
+    (lognormal CSV rows); a moment-matched approximation for fitted non-normal
+    marginals, consistent with how the copula already treats them.
+
+    Args:
+        prior: A log-space ``GaussianCopulaPrior`` (from ``load_composite_prior_log``
+            / ``load_overlay_prior_log``).
+        derived_specs: Output of :func:`load_derived_specs`.
+
+    Returns:
+        A new ``GaussianCopulaPrior`` with the derived columns replaced.
+    """
+    if not derived_specs:
+        return prior
+
+    names = list(prior._param_names)
+    idx = {nm: i for i, nm in enumerate(names)}
+    marginals = list(prior._marginals)
+    R = np.array(prior._R, dtype=np.float64).copy()
+    n = len(names)
+
+    missing = [nm for nm in derived_specs if nm not in idx]
+    if missing:
+        raise ValueError(
+            f"derived params not present as prior columns (add them to the CSV "
+            f"first): {missing}"
+        )
+
+    for nm in _derived_topo_order(derived_specs):
+        spec = derived_specs[nm]
+        d = idx[nm]
+        bad_parents = [p for p in spec["parents"] if p not in idx]
+        if bad_parents:
+            raise ValueError(f"derived '{nm}' references unknown parent(s): {bad_parents}")
+
+        # Current (μ, σ) of every column — parents already-processed derived
+        # columns carry their finalized values via topo order.
+        mu = np.array([_log_marginal_loc_scale(m)[0] for m in marginals])
+        sig = np.array([_log_marginal_loc_scale(m)[1] for m in marginals])
+        Sigma = np.outer(sig, sig) * R
+
+        a = np.zeros(n)
+        for p, power in spec["parents"].items():
+            a[idx[p]] = power
+
+        mu_d = spec["log_coeff"] + float(a @ mu)
+        var_d = float(a @ Sigma @ a) + spec["sigma_coeff"] ** 2
+        sigma_d = float(np.sqrt(max(var_d, 1e-12)))
+
+        # Correlation of the child to every base column k: (Σa)_k / (σ_d σ_k).
+        Sig_a = Sigma @ a
+        with np.errstate(divide="ignore", invalid="ignore"):
+            R_d = Sig_a / (sigma_d * sig)
+        R_d = np.nan_to_num(R_d, nan=0.0, posinf=0.0, neginf=0.0)
+        R_d = np.clip(R_d, -0.999, 0.999)
+
+        marginals[d] = stats.norm(loc=mu_d, scale=sigma_d)
+        R[d, :] = R_d
+        R[:, d] = R_d
+        R[d, d] = 1.0
+
+    return GaussianCopulaPrior(marginals=marginals, correlation=R, param_names=names)
 
 
 def load_copula_prior_log(
