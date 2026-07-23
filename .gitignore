@@ -13,3 +13,12 @@ venv/
 .ruff_cache/
 *.so
 .DS_Store
+
+# LaTeX build artifacts (docs/*.tex -> *.pdf is committed, intermediates are not)
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
