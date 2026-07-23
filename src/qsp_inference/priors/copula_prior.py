@@ -105,12 +105,8 @@ class GaussianCopulaPrior(Distribution):
             R = R / np.outer(d, d)
 
         self._R = R
-        self._L = torch.tensor(
-            np.linalg.cholesky(R), dtype=torch.float64
-        )
-        self._R_inv = torch.tensor(
-            np.linalg.inv(R), dtype=torch.float64
-        )
+        self._L = torch.tensor(np.linalg.cholesky(R), dtype=torch.float64)
+        self._R_inv = torch.tensor(np.linalg.inv(R), dtype=torch.float64)
         self._log_det_R = float(np.linalg.slogdet(R)[1])
         self._has_copula = not np.allclose(R, np.eye(n))
 
@@ -153,6 +149,7 @@ class GaussianCopulaPrior(Distribution):
     @property
     def support(self):
         from torch.distributions import constraints
+
         return constraints.independent(constraints.real, 1)
 
     @property
@@ -181,7 +178,9 @@ class GaussianCopulaPrior(Distribution):
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
         n = len(self._marginals)
-        shape = torch.Size(sample_shape) if not isinstance(sample_shape, torch.Size) else sample_shape
+        shape = (
+            torch.Size(sample_shape) if not isinstance(sample_shape, torch.Size) else sample_shape
+        )
         n_samples = int(shape.numel())
 
         # z ~ N(0, R) via Cholesky
@@ -196,17 +195,13 @@ class GaussianCopulaPrior(Distribution):
             return x.reshape(*shape, n).float()
 
         # z -> uniform via Phi
-        u = torch.tensor(
-            stats.norm.cdf(z.numpy()), dtype=torch.float64
-        )
+        u = torch.tensor(stats.norm.cdf(z.numpy()), dtype=torch.float64)
         u = torch.clamp(u, 1e-8, 1 - 1e-8)
 
         # uniform -> parameter space via marginal inverse CDF
         x = torch.empty_like(u)
         for j, marg in enumerate(self._marginals):
-            x[:, j] = torch.tensor(
-                marg.ppf(u[:, j].numpy()), dtype=torch.float64
-            )
+            x[:, j] = torch.tensor(marg.ppf(u[:, j].numpy()), dtype=torch.float64)
 
         return x.reshape(*shape, n).float()
 
@@ -225,11 +220,7 @@ class GaussianCopulaPrior(Distribution):
             # Phi^{-1}(F(x)) here, with no cdf/ppf round trip to underflow and
             # no u clamp, so this stays exact arbitrarily far into the tails.
             z = (value - self._locs) / self._scales
-            marginal_lp = (
-                -0.5 * (z * z).sum(dim=1)
-                - self._log_scales_sum
-                - 0.5 * n * _LOG_TWO_PI
-            )
+            marginal_lp = -0.5 * (z * z).sum(dim=1) - self._log_scales_sum - 0.5 * n * _LOG_TWO_PI
         else:
             # Marginal log-probs: sum_i log f_i(x_i)
             marginal_lp = torch.zeros(n_samples, dtype=torch.float64)
@@ -361,12 +352,14 @@ def load_composite_prior_log(
     with open(csv_path, "r", encoding="utf-8") as f:
         reader = csv_mod.DictReader(f)
         for row in reader:
-            csv_params.append({
-                "name": row["name"],
-                "distribution": row.get("distribution", "lognormal").strip(),
-                "p1": float(row["dist_param1"]),
-                "p2": float(row["dist_param2"]),
-            })
+            csv_params.append(
+                {
+                    "name": row["name"],
+                    "distribution": row.get("distribution", "lognormal").strip(),
+                    "p1": float(row["dist_param1"]),
+                    "p2": float(row["dist_param2"]),
+                }
+            )
 
     param_names = [p["name"] for p in csv_params]
     n = len(param_names)
@@ -390,6 +383,7 @@ def load_composite_prior_log(
         marginals.append(_csv_log_marginal(p))
     if fallback_params:
         import warnings
+
         warnings.warn(
             f"load_composite_prior_log: {len(fallback_params)} YAML marginal(s) "
             f"failed log-domain fit; falling back to CSV lognormal: {fallback_params}",
@@ -805,9 +799,7 @@ def apply_derived_priors(
     return GaussianCopulaPrior(marginals=marginals, correlation=R, param_names=names)
 
 
-def temper_prior(
-    prior: GaussianCopulaPrior, temperature: float
-) -> GaussianCopulaPrior:
+def temper_prior(prior: GaussianCopulaPrior, temperature: float) -> GaussianCopulaPrior:
     """Return ``prior^(1/T)`` — the prior flattened by a temperature.
 
     Used to build a *training proposal* from the anchored prior. Drawing training
@@ -877,9 +869,7 @@ def temper_prior(
             )
         # For a normal, mean() and std() are exactly loc and scale, and are
         # robust to whether the frozen dist was built positionally or by keyword.
-        tempered.append(
-            stats.norm(loc=float(marg.mean()), scale=scale * float(marg.std()))
-        )
+        tempered.append(stats.norm(loc=float(marg.mean()), scale=scale * float(marg.std())))
 
     return GaussianCopulaPrior(
         marginals=tempered,
