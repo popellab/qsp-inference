@@ -15,6 +15,7 @@ from qsp_inference.priors.copula_prior import (
     load_overlay_prior_log,
     apply_derived_priors,
     load_derived_specs,
+    temper_prior,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "load_overlay_prior_log",
     "apply_derived_priors",
     "load_derived_specs",
+    "temper_prior",
 ]

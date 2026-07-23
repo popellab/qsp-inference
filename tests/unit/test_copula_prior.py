@@ -415,3 +415,72 @@ class TestLoadCompositePriorLog:
             # k1-k3 should be independent
             corr_13 = np.corrcoef(samples[:, 0].numpy(), samples[:, 2].numpy())[0, 1]
             assert abs(corr_13) < 0.1
+
+
+class TestNormalMarginalFastPath:
+    """All-normal marginals + a Gaussian copula is exactly a multivariate normal.
+
+    That makes scipy's MVN an independent ground truth for both log_prob and
+    sample. It also used not to hold in the tails: normal scores were routed
+    through ``cdf -> clamp(u, 1e-8) -> ppf``, which capped |z| at ~5.61 and
+    overstated the density by up to ~29 log units at 9σ, and truncated draws at
+    the same point. Normal marginals are now standardized directly.
+    """
+
+    @staticmethod
+    def _prior_and_truth():
+        from scipy import stats as _st
+        R = np.array([[1.0, 0.6, -0.3], [0.6, 1.0, 0.2], [-0.3, 0.2, 1.0]])
+        loc = np.array([0.0, 1.0, -2.0])
+        scale = np.array([1.0, 0.5, 2.0])
+        prior = GaussianCopulaPrior(
+            [_st.norm(m, s) for m, s in zip(loc, scale)],
+            correlation=R,
+            param_names=list("abc"),
+        )
+        D = np.diag(scale)
+        return prior, _st.multivariate_normal(mean=loc, cov=D @ R @ D)
+
+    def test_fast_path_is_active(self):
+        prior, _ = self._prior_and_truth()
+        assert prior._all_normal
+
+    def test_log_prob_matches_mvn_in_the_bulk(self):
+        prior, mvn = self._prior_and_truth()
+        torch.manual_seed(0)
+        theta = prior.sample((5000,))
+        got = prior.log_prob(theta).double().numpy()
+        want = mvn.logpdf(theta.double().numpy())
+        assert np.max(np.abs(got - want)) < 1e-3
+
+    @pytest.mark.parametrize(
+        "point", [[7.5, 1.0, -2.0], [0.0, 1.0, 14.0], [-9.0, 1.0, -2.0]]
+    )
+    def test_log_prob_matches_mvn_in_the_deep_tail(self, point):
+        prior, mvn = self._prior_and_truth()
+        got = float(prior.log_prob(torch.tensor([point], dtype=torch.float64)))
+        assert got == pytest.approx(float(mvn.logpdf(np.array(point))), abs=1e-2)
+
+    def test_sample_is_loc_plus_scale_times_z(self):
+        """Exact, rather than a cdf/ppf round trip that truncates at ~5.61σ."""
+        prior, _ = self._prior_and_truth()
+        torch.manual_seed(123)
+        got = prior.sample((2000,)).double().numpy()
+
+        torch.manual_seed(123)
+        z = (torch.randn(2000, 3, dtype=torch.float64) @ prior._L.T).numpy()
+        want = prior._locs.numpy() + prior._scales.numpy() * z
+
+        assert np.max(np.abs(got - want)) < 1e-5
+
+    def test_non_normal_marginals_still_supported(self):
+        from scipy import stats as _st
+        prior = GaussianCopulaPrior(
+            [_st.lognorm(s=0.5, scale=1.0), _st.gamma(a=2.0)],
+            correlation=np.array([[1.0, 0.4], [0.4, 1.0]]),
+            param_names=["a", "b"],
+        )
+        assert not prior._all_normal
+        s = prior.sample((200,))
+        assert s.shape == (200, 2)
+        assert torch.isfinite(prior.log_prob(s)).all()
