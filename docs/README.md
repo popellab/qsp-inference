@@ -22,7 +22,7 @@ The package is organized as the parts of that model:
 | 2 | **Priors as a measurement model** | literature → informative joint prior $\pi$; translation sigma; copula; derived children | [submodel-inference-guide.md](submodel-inference-guide.md) | `priors/`, `submodel/` |
 | 3 | **Flat inference** | intractable-likelihood posterior $p(\theta\mid x_{\text{obs}})$ via NPE; restriction; TSNPE; proposal↔prior reweight | [stage2-sbi-guide.md](stage2-sbi-guide.md) | `inference/` |
 | 4 | **Population inference (VPops)** | hierarchical $(\mu,\omega)$; virtual patients as random-effects draws; eigenbasis = identified subspace; prevalence-weighting fallback | *framing in Ch. 1; full guide lands with Stage 3* | `vpop/` |
-| 5 | **Model checking & calibration** | the Bayesian-workflow suite: SBC gate → prior-data conflict → reachability → joint discrepancy → LOO-PIT | [stage2-sbi-guide.md §Diagnostics](stage2-sbi-guide.md#diagnostics) | `inference/diagnostics.py`, `vpop/diagnostics.py`, `audit/` |
+| 5 | **Model checking & calibration** | the Bayesian-workflow suite: SBC gate → prior-data conflict → reachability → joint discrepancy → LOO-PIT | [stage2-sbi-guide.md §Diagnostics](stage2-sbi-guide.md#diagnostics) | `inference/sbc.py`, `inference/diagnostics.py`, `vpop/diagnostics.py`, `audit/` |
 | 6 | **Experimental design** | OBED — which measurement would identify a soft parameter | [stage2-sbi-guide.md §OBED](stage2-sbi-guide.md#optimal-bayesian-experimental-design-obed) | `inference/obed.py` |
 
 ## Slides & talks

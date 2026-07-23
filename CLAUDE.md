@@ -63,7 +63,16 @@ src/qsp_inference/
 │   ├── freshness.py             # Content fingerprints / stale-posterior detection
 │   └── utils.py                 # ODE/algebraic forward model evaluation
 ├── inference/                   # SBI diagnostics and data processing
-│   ├── diagnostics.py           # Recovery, calibration, coverage, SBC; misspecification:
+│   ├── sbc.py                   # Weighted SBC — the end-to-end calibration gate.
+│   │                            #   Ranks θ* ~ π inside importance-weighted draws,
+│   │                            #   so it checks train-on-π̃-then-reweight-to-π.
+│   │                            #   Distinct from diagnostics.sbi_calibration_ecdf,
+│   │                            #   which ranks θ_test ~ π̃ in *unweighted* draws
+│   │                            #   (an estimator check that can pass while the
+│   │                            #   reported posterior is wrong).
+│   ├── importance.py            # π/π̃ reweighting: log_importance_weights,
+│   │                            #   reweight_to_prior, ESS, weighted_quantile
+│   ├── diagnostics.py           # Recovery, calibration, coverage; misspecification:
 │   │                            #   sbi_self_reference_null (Mahalanobis D² + self-ref
 │   │                            #   null), sbi_loo_predictive_check (per-obs LOO influence)
 │   ├── data_processing.py       # NaN filtering, add_observation_noise (empirical
