@@ -15,5 +15,17 @@ from qsp_inference.targets.anchors import (
     anchors_from_sources,
     cohort_quantiles,
 )
+from qsp_inference.targets.samples import load_population_samples
+from qsp_inference.targets.resolver import (
+    parse_observed_distribution,
+    population_n_biological,
+)
 
-__all__ = ["ObservedAnchors", "anchors_from_sources", "cohort_quantiles"]
+__all__ = [
+    "ObservedAnchors",
+    "anchors_from_sources",
+    "cohort_quantiles",
+    "load_population_samples",
+    "parse_observed_distribution",
+    "population_n_biological",
+]
