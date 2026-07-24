@@ -18,7 +18,7 @@ import torch
 import matplotlib.pyplot as plt
 
 
-def sbi_recovery(samples, theta_test, param_names, figsize=(16, 12), max_cols=4, param_indices=None, plot=True):
+def parameter_recovery(samples, theta_test, param_names, figsize=(16, 12), max_cols=4, param_indices=None, plot=True):
     """
     Recovery plot: median of posterior samples vs true parameters.
 
@@ -102,7 +102,7 @@ def sbi_recovery(samples, theta_test, param_names, figsize=(16, 12), max_cols=4,
     return fig, axes, r2_values
 
 
-def sbi_z_score_contraction(samples, theta_test, prior, param_names, figsize=(16, 12), max_cols=4, param_indices=None, plot=True, prior_var=None):
+def eta_shrinkage(samples, theta_test, prior, param_names, figsize=(16, 12), max_cols=4, param_indices=None, plot=True, prior_var=None):
     """
     Z-score vs contraction plot: checks global model sensitivity.
 
@@ -211,7 +211,7 @@ def sbi_z_score_contraction(samples, theta_test, prior, param_names, figsize=(16
     return fig, axes, z_scores, contractions
 
 
-def compute_per_param_calibration(samples, theta_test, z_scores=None):
+def per_parameter_calibration(samples, theta_test, z_scores=None):
     """Per-parameter calibration metrics reduced across test points.
 
     Complements ``sbi_z_score_contraction`` (which returns per-test-point arrays)
@@ -258,7 +258,7 @@ def compute_per_param_calibration(samples, theta_test, z_scores=None):
     }
 
 
-def sbi_calibration_ecdf(samples, theta_test, param_names, figsize=(16, 12), max_cols=4, difference=True, param_indices=None, plot=True):
+def sbc_rank_ecdf(samples, theta_test, param_names, figsize=(16, 12), max_cols=4, difference=True, param_indices=None, plot=True):
     """
     Calibration check using empirical CDF (rank statistics).
 
@@ -379,7 +379,7 @@ def sbi_calibration_ecdf(samples, theta_test, param_names, figsize=(16, 12), max
     return fig, axes, ranks, ks_stats
 
 
-def sbi_mmd_misspecification(obs_transformed_tensor, x_train, inference, mode="x_space"):
+def misspecification_mmd(obs_transformed_tensor, x_train, inference, mode="x_space"):
     """
     Run MMD misspecification test from sbi.
 
@@ -411,49 +411,7 @@ def sbi_mmd_misspecification(obs_transformed_tensor, x_train, inference, mode="x
     }
 
 
-def sbi_coverage_check(x_train_raw, obs_values, observable_names):
-    """
-    Check whether observed values fall within the training simulation range.
-
-    Args:
-        x_train_raw: Raw (untransformed) training observables, shape (n_train, n_obs)
-        obs_values: Observed values, shape (n_obs,) or dict {name: value}
-        observable_names: List of observable names
-
-    Returns:
-        coverage_df: DataFrame with columns [observable, obs_value, train_min,
-            train_max, train_mean, train_std, z_score, in_range]
-    """
-    if isinstance(obs_values, dict):
-        obs_arr = np.array([float(np.squeeze(obs_values[n])) for n in observable_names])
-    else:
-        obs_arr = np.asarray(obs_values).flatten()
-
-    records = []
-    for i, name in enumerate(observable_names):
-        obs_val = float(obs_arr[i])
-        col = x_train_raw[:, i]
-        train_min = float(np.nanmin(col))
-        train_max = float(np.nanmax(col))
-        train_mean = float(np.nanmean(col))
-        train_std = float(np.nanstd(col))
-        z = (obs_val - train_mean) / train_std if train_std > 0 else 0.0
-        in_range = bool(train_min <= obs_val <= train_max)
-        records.append({
-            'observable': name,
-            'obs_value': obs_val,
-            'train_min': train_min,
-            'train_max': train_max,
-            'train_mean': train_mean,
-            'train_std': train_std,
-            'z_score': z,
-            'in_range': in_range,
-        })
-
-    return pd.DataFrame(records)
-
-
-def sbi_boundary_piling(post_samples_dict, priors_df, threshold=0.2, tail_fraction=0.05):
+def boundary_piling(post_samples_dict, priors_df, threshold=0.2, tail_fraction=0.05):
     """
     Detect posterior boundary piling against prior bounds.
 
@@ -521,7 +479,7 @@ def sbi_boundary_piling(post_samples_dict, priors_df, threshold=0.2, tail_fracti
     return pd.DataFrame(records).sort_values('fraction', ascending=False).reset_index(drop=True)
 
 
-def sbi_self_reference_null(x_samples, obs_values, observable_names, loo_bias_correction=True):
+def joint_npde(x_samples, obs_values, observable_names, loo_bias_correction=True):
     """
     Compute a self-reference null distribution for Mahalanobis D² and per-observable
     LOO influence, using the predictive samples themselves as the null.
@@ -724,7 +682,7 @@ def sbi_self_reference_null(x_samples, obs_values, observable_names, loo_bias_co
     return result, fig
 
 
-def sbi_loo_predictive_check(x_train, obs_values, observable_names):
+def loo_influence(x_train, obs_values, observable_names):
     """
     Leave-one-out predictive check: identify which observables drive misspecification.
 
@@ -804,7 +762,7 @@ def sbi_loo_predictive_check(x_train, obs_values, observable_names):
     return df, fig
 
 
-def sbi_posterior_predictive_check(
+def posterior_predictive_check(
     theta_train, x_train_raw, posterior_samples, obs_values,
     observable_names, k=10,
 ):
@@ -917,7 +875,7 @@ def sbi_posterior_predictive_check(
     return df, fig
 
 
-def sbi_posterior_predictive_coverage(x_posterior_pred, obs_values, observable_names,
+def posterior_predictive_coverage(x_posterior_pred, obs_values, observable_names,
                                       log_scale=False):
     """
     Per-observable coverage check using actual posterior predictive simulations.
@@ -1037,7 +995,7 @@ def sbi_posterior_predictive_coverage(x_posterior_pred, obs_values, observable_n
     return coverage_df, fig
 
 
-def sbi_posterior_correlations(posterior_samples, param_names, threshold=0.5, figsize=None):
+def posterior_correlations(posterior_samples, param_names, threshold=0.5, figsize=None):
     """
     Pairwise posterior correlation matrix.
 
@@ -1107,361 +1065,6 @@ def sbi_posterior_correlations(posterior_samples, param_names, threshold=0.5, fi
     plt.tight_layout()
 
     return corr_df, strong_pairs, fig
-
-
-def sbi_learning_curve(
-    theta_train, x_train, theta_test,
-    train_and_sample_fn,
-    param_names,
-    fractions=(0.1, 0.2, 0.4, 0.6, 0.8, 1.0),
-    seed=42,
-):
-    """
-    Sample-size scaling: retrain at various fractions of training data.
-
-    Evaluates how posterior quality (R²) improves with more training data.
-    A saturating curve suggests more simulations won't help; a rising curve
-    suggests the network needs more data.
-
-    Args:
-        theta_train: Full training parameters (log-transformed), shape (n_train, n_params)
-        x_train: Full training observables (transformed), shape (n_train, n_obs)
-        theta_test: Test parameters (log-transformed), shape (n_test, n_params)
-        train_and_sample_fn: Callable(theta_sub, x_sub, seed) -> samples
-            where samples has shape (n_post, n_test, n_params). The function
-            should train an NPE on the provided subset and sample posterior
-            for each test observation.
-        param_names: List of parameter names
-        fractions: Fractions of training data to use
-        seed: Random seed for subset selection
-
-    Returns:
-        curve_df: DataFrame with columns [fraction, n_train, r2_median,
-            r2_mean, r2_q25, r2_q75, n_r2_positive, n_r2_above_0.5]
-        fig: Learning curve plot (R² vs training set size)
-    """
-    from sklearn.metrics import r2_score
-
-    if torch.is_tensor(theta_train):
-        theta_train_np = theta_train.detach().cpu().numpy()
-    else:
-        theta_train_np = np.asarray(theta_train)
-    if torch.is_tensor(theta_test):
-        theta_test_np = theta_test.detach().cpu().numpy()
-    else:
-        theta_test_np = np.asarray(theta_test)
-
-    n_train_full = len(theta_train_np)
-    rng = np.random.RandomState(seed)
-
-    records = []
-    for frac in fractions:
-        n_sub = max(100, int(frac * n_train_full))
-        n_sub = min(n_sub, n_train_full)
-
-        # Random subset
-        idx = rng.choice(n_train_full, size=n_sub, replace=False)
-        if torch.is_tensor(theta_train):
-            theta_sub = theta_train[idx]
-            x_sub = x_train[idx]
-        else:
-            theta_sub = theta_train_np[idx]
-            x_sub = np.asarray(x_train)[idx]
-
-        # Train and sample
-        samples = train_and_sample_fn(theta_sub, x_sub, seed)
-        if torch.is_tensor(samples):
-            samples = samples.detach().cpu().numpy()
-
-        # Compute R² per parameter
-        median_post = np.median(samples, axis=0)  # (n_test, n_params)
-        r2_vals = []
-        for j in range(len(param_names)):
-            r2 = float(r2_score(theta_test_np[:, j], median_post[:, j]))
-            r2_vals.append(r2)
-
-        records.append({
-            'fraction': float(frac),
-            'n_train': n_sub,
-            'r2_median': float(np.median(r2_vals)),
-            'r2_mean': float(np.mean(r2_vals)),
-            'r2_q25': float(np.percentile(r2_vals, 25)),
-            'r2_q75': float(np.percentile(r2_vals, 75)),
-            'n_r2_positive': int(sum(r > 0 for r in r2_vals)),
-            'n_r2_above_0.5': int(sum(r > 0.5 for r in r2_vals)),
-        })
-
-    curve_df = pd.DataFrame(records)
-
-    # Plot
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    ax = axes[0]
-    ax.plot(curve_df['n_train'], curve_df['r2_median'], 'o-', label='Median R²')
-    ax.fill_between(
-        curve_df['n_train'], curve_df['r2_q25'], curve_df['r2_q75'], alpha=0.3
-    )
-    ax.set_xlabel('Training Set Size')
-    ax.set_ylabel('R²')
-    ax.set_title('Learning Curve: Recovery R²')
-    ax.legend()
-    ax.grid(alpha=0.3)
-
-    ax = axes[1]
-    ax.plot(curve_df['n_train'], curve_df['n_r2_above_0.5'],
-            'o-', color='green', label='R² > 0.5')
-    ax.plot(curve_df['n_train'], curve_df['n_r2_positive'],
-            's-', color='orange', label='R² > 0')
-    ax.set_xlabel('Training Set Size')
-    ax.set_ylabel('Number of Parameters')
-    ax.set_title('Learning Curve: Well-Recovered Parameters')
-    ax.legend()
-    ax.grid(alpha=0.3)
-
-    plt.tight_layout()
-    return curve_df, fig
-
-
-def sbi_seed_stability(
-    theta_train, x_train, theta_test,
-    train_and_sample_fn,
-    param_names,
-    seeds=(42, 123, 456, 789, 1234),
-):
-    """
-    Seed stability: retrain with different random seeds and compare posteriors.
-
-    High variance across seeds indicates the posterior estimate is noisy and
-    may benefit from ensembling or more training data.
-
-    Args:
-        theta_train: Training parameters (log-transformed), shape (n_train, n_params)
-        x_train: Training observables (transformed), shape (n_train, n_obs)
-        theta_test: Test parameters (log-transformed), shape (n_test, n_params)
-        train_and_sample_fn: Callable(theta, x, seed) -> samples
-            where samples has shape (n_post, n_test, n_params)
-        param_names: List of parameter names
-        seeds: Random seeds to test
-
-    Returns:
-        stability_df: Long-format DataFrame [seed, parameter, r2]
-        summary_df: Per-parameter summary [parameter, r2_mean, r2_std,
-            r2_min, r2_max, r2_range], sorted by r2_mean descending
-        fig: Stability plots (R² distributions across seeds, top-20 bar chart)
-    """
-    from sklearn.metrics import r2_score
-
-    if torch.is_tensor(theta_test):
-        theta_test_np = theta_test.detach().cpu().numpy()
-    else:
-        theta_test_np = np.asarray(theta_test)
-
-    all_r2 = {}  # seed -> {param: r2}
-
-    for s in seeds:
-        samples = train_and_sample_fn(theta_train, x_train, s)
-        if torch.is_tensor(samples):
-            samples = samples.detach().cpu().numpy()
-
-        median_post = np.median(samples, axis=0)
-        r2_vals = {}
-        for j, name in enumerate(param_names):
-            r2_vals[name] = float(r2_score(theta_test_np[:, j], median_post[:, j]))
-        all_r2[s] = r2_vals
-
-    # Long-format DataFrame
-    stability_rows = []
-    for s, r2_vals in all_r2.items():
-        for name, r2 in r2_vals.items():
-            stability_rows.append({'seed': s, 'parameter': name, 'r2': r2})
-    stability_df = pd.DataFrame(stability_rows)
-
-    # Per-parameter summary
-    summary_rows = []
-    for name in param_names:
-        vals = [all_r2[s][name] for s in seeds]
-        summary_rows.append({
-            'parameter': name,
-            'r2_mean': float(np.mean(vals)),
-            'r2_std': float(np.std(vals)),
-            'r2_min': float(np.min(vals)),
-            'r2_max': float(np.max(vals)),
-            'r2_range': float(np.max(vals) - np.min(vals)),
-        })
-    summary_df = (
-        pd.DataFrame(summary_rows)
-        .sort_values('r2_mean', ascending=False)
-        .reset_index(drop=True)
-    )
-
-    # Plot
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    # R² distribution per seed
-    ax = axes[0]
-    for s in seeds:
-        r2_vals = list(all_r2[s].values())
-        ax.hist(r2_vals, bins=20, alpha=0.3, label=f'seed={s}')
-    ax.set_xlabel('R²')
-    ax.set_ylabel('Count')
-    ax.set_title('R² Distribution Across Seeds')
-    ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
-
-    # Top-20 parameters by mean R² with error bars
-    ax = axes[1]
-    top = summary_df.head(20)
-    x_pos = range(len(top))
-    ax.bar(x_pos, top['r2_mean'], yerr=top['r2_std'], capsize=3)
-    ax.set_xticks(x_pos)
-    ax.set_xticklabels(top['parameter'], rotation=90, fontsize=7)
-    ax.set_ylabel('R² (mean ± std)')
-    ax.set_title('Seed Stability: Top 20 Parameters')
-    ax.grid(alpha=0.3)
-
-    plt.tight_layout()
-    return stability_df, summary_df, fig
-
-
-def sbi_dimensionality_sweep(
-    theta_train, x_train, theta_test,
-    train_and_sample_fn,
-    param_names,
-    param_ranking,
-    subsets=(10, 20, 30, 50),
-    seed=42,
-):
-    """
-    Dimensionality sweep: retrain NPE with top-N parameters and measure recovery.
-
-    Tests whether reducing parameter dimensionality improves identifiability.
-    For each subset size, selects the top-N parameters by sensitivity ranking,
-    retrains the NPE on the subsetted theta (keeping all observables), and
-    computes R² recovery metrics.
-
-    Args:
-        theta_train: Training parameters (log-transformed), shape (n_train, n_params)
-        x_train: Training observables (transformed), shape (n_train, n_obs)
-        theta_test: Test parameters (log-transformed), shape (n_test, n_params)
-        train_and_sample_fn: Callable(theta_sub, x_sub, seed) -> samples
-            where samples has shape (n_post, n_test, n_params_sub).
-            The callable must construct an NPE prior matching theta_sub's
-            dimensionality (inferred from theta_sub.shape[1]).
-        param_names: List of all parameter names (matching theta columns)
-        param_ranking: List of parameter names in priority order (best first).
-            Names not in param_names are silently ignored.
-        subsets: Tuple of top-N values to test. The full parameter set is
-            appended automatically.
-        seed: Random seed for training
-
-    Returns:
-        sweep_df: DataFrame with columns [n_params, r2_median, r2_mean,
-            r2_q25, r2_q75, n_r2_positive, n_r2_above_0.5]
-        per_param_df: Long-format DataFrame [n_params, parameter, r2]
-        fig: 2-panel plot (R² vs D, well-recovered count vs D)
-    """
-    from sklearn.metrics import r2_score
-
-    if torch.is_tensor(theta_train):
-        theta_train_np = theta_train.detach().cpu().numpy()
-    else:
-        theta_train_np = np.asarray(theta_train)
-    if torch.is_tensor(theta_test):
-        theta_test_np = theta_test.detach().cpu().numpy()
-    else:
-        theta_test_np = np.asarray(theta_test)
-
-    n_full = len(param_names)
-
-    # Build ordered list of param indices from ranking, filtering to active params
-    ranked_indices = []
-    for name in param_ranking:
-        if name in param_names:
-            ranked_indices.append(param_names.index(name))
-    # Append any params not in ranking (preserves all params for full set)
-    for i in range(n_full):
-        if i not in ranked_indices:
-            ranked_indices.append(i)
-
-    # Ensure full set is included, deduplicate subset sizes
-    subset_sizes = sorted(set(s for s in subsets if s < n_full))
-    subset_sizes.append(n_full)
-
-    records = []
-    per_param_rows = []
-
-    for n_sub in subset_sizes:
-        top_idx = ranked_indices[:n_sub]
-        sub_names = [param_names[i] for i in top_idx]
-
-        # Subset theta columns
-        if torch.is_tensor(theta_train):
-            theta_sub_train = theta_train[:, top_idx]
-            theta_sub_test = theta_test[:, top_idx]
-        else:
-            theta_sub_train = theta_train_np[:, top_idx]
-            theta_sub_test = theta_test_np[:, top_idx]
-
-        # Train and sample (x stays full-dimensional)
-        samples = train_and_sample_fn(theta_sub_train, x_train, seed)
-        if torch.is_tensor(samples):
-            samples = samples.detach().cpu().numpy()
-
-        # Subset test theta for R² computation
-        theta_sub_test_np = theta_test_np[:, top_idx]
-
-        # Compute R² per parameter
-        median_post = np.median(samples, axis=0)  # (n_test, n_sub)
-        r2_vals = []
-        for j in range(n_sub):
-            r2 = float(r2_score(theta_sub_test_np[:, j], median_post[:, j]))
-            r2_vals.append(r2)
-            per_param_rows.append({
-                'n_params': n_sub,
-                'parameter': sub_names[j],
-                'r2': r2,
-            })
-
-        records.append({
-            'n_params': n_sub,
-            'r2_median': float(np.median(r2_vals)),
-            'r2_mean': float(np.mean(r2_vals)),
-            'r2_q25': float(np.percentile(r2_vals, 25)),
-            'r2_q75': float(np.percentile(r2_vals, 75)),
-            'n_r2_positive': int(sum(r > 0 for r in r2_vals)),
-            'n_r2_above_0.5': int(sum(r > 0.5 for r in r2_vals)),
-        })
-
-    sweep_df = pd.DataFrame(records)
-    per_param_df = pd.DataFrame(per_param_rows)
-
-    # Plot
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    ax = axes[0]
-    ax.plot(sweep_df['n_params'], sweep_df['r2_median'], 'o-', label='Median R²')
-    ax.fill_between(
-        sweep_df['n_params'], sweep_df['r2_q25'], sweep_df['r2_q75'], alpha=0.3
-    )
-    ax.set_xlabel('Number of Parameters (D)')
-    ax.set_ylabel('R²')
-    ax.set_title('Dimensionality Sweep: Recovery R²')
-    ax.legend()
-    ax.grid(alpha=0.3)
-
-    ax = axes[1]
-    ax.plot(sweep_df['n_params'], sweep_df['n_r2_above_0.5'],
-            'o-', color='green', label='R² > 0.5')
-    ax.plot(sweep_df['n_params'], sweep_df['n_r2_positive'],
-            's-', color='orange', label='R² > 0')
-    ax.set_xlabel('Number of Parameters (D)')
-    ax.set_ylabel('Number of Parameters')
-    ax.set_title('Dimensionality Sweep: Well-Recovered Parameters')
-    ax.legend()
-    ax.grid(alpha=0.3)
-
-    plt.tight_layout()
-    return sweep_df, per_param_df, fig
 
 
 def save_diagnostics(
@@ -1661,3 +1264,25 @@ def save_diagnostics(
         written['summary'] = str(path)
 
     return written
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases.
+#
+# These diagnostics were named ``sbi_*`` before the pipeline adopted the
+# nonlinear mixed-effects (NLME) vocabulary it actually speaks. The NLME names
+# above are canonical; the ``sbi_*`` names are kept as aliases so existing
+# callers keep working and the migration can be gradual. New code should prefer
+# the canonical names.
+# ---------------------------------------------------------------------------
+sbi_recovery = parameter_recovery
+sbi_z_score_contraction = eta_shrinkage
+compute_per_param_calibration = per_parameter_calibration
+sbi_calibration_ecdf = sbc_rank_ecdf
+sbi_mmd_misspecification = misspecification_mmd
+sbi_boundary_piling = boundary_piling
+sbi_self_reference_null = joint_npde
+sbi_loo_predictive_check = loo_influence
+sbi_posterior_predictive_check = posterior_predictive_check
+sbi_posterior_predictive_coverage = posterior_predictive_coverage
+sbi_posterior_correlations = posterior_correlations
