@@ -390,3 +390,43 @@ class TestSummary:
         pair = build_prior_pair(composite, load_population=True)
         assert pair.population_prior is None
         assert isinstance(pair, PriorPair)
+
+
+class TestImportsWithoutTorch:
+    """A simulation host asks which theta to run; it should not need torch.
+
+    The spec and pool objects are pure numpy, and the CSV-only sampler is too.
+    Only the composite copula prior needs torch, and it says so itself. This is
+    what lets qsp-hpc-tools depend on this package without carrying a
+    deep-learning stack onto every simulation node.
+    """
+
+    def test_csv_only_pool_works_with_torch_blocked(self, tmp_path, monkeypatch):
+        import subprocess
+        import sys
+        import textwrap
+
+        csv = tmp_path / "p.csv"
+        csv.write_text(CSV_HEADER + "k1,1.0,1/day,lognormal,0.0,0.5\n" + "f,0.1,-,beta,2.0,18.0\n")
+        script = textwrap.dedent(f"""
+            import sys
+            class Blocker:
+                def find_module(self, name, path=None):
+                    return self if name == "torch" or name.startswith("torch.") else None
+                def load_module(self, name):
+                    raise ImportError("No module named 'torch'")
+            sys.meta_path.insert(0, Blocker())
+
+            from qsp_inference.priors import PriorSpec, ThetaPoolSpec, get_theta_pool
+
+            spec = ThetaPoolSpec(
+                prior=PriorSpec(priors_csv={str(csv)!r}), seed=1, n_total=64
+            )
+            pool = get_theta_pool(spec, {str(tmp_path / "pools")!r})
+            assert pool.shape == (64, 2)
+            assert (pool[:, 1] > 0).all() and (pool[:, 1] < 1).all()
+            print("OK")
+            """)
+        out = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        assert "OK" in out.stdout
