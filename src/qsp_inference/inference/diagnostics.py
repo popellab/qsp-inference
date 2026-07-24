@@ -521,74 +521,6 @@ def sbi_boundary_piling(post_samples_dict, priors_df, threshold=0.2, tail_fracti
     return pd.DataFrame(records).sort_values('fraction', ascending=False).reset_index(drop=True)
 
 
-def sbi_prior_predictive_pvalues(x_train_raw, obs_values, observable_names):
-    """
-    Per-observable prior predictive p-values.
-
-    For each observable, computes the two-sided p-value: the probability that
-    a simulation from the prior produces a value at least as extreme as the
-    observed value. Small p-values indicate the observation is unlikely under
-    the model prior.
-
-    Args:
-        x_train_raw: Prior predictive simulations (untransformed), shape (n_sims, n_obs)
-        obs_values: Observed values, shape (n_obs,) or dict {name: value}
-        observable_names: List of observable names
-
-    Returns:
-        pval_df: DataFrame sorted by p-value with columns
-            [observable, p_value, percentile, tail]
-        fig: Horizontal bar plot of p-values
-    """
-    if isinstance(obs_values, dict):
-        obs_arr = np.array([float(np.squeeze(obs_values[n])) for n in observable_names])
-    else:
-        obs_arr = np.asarray(obs_values).flatten()
-
-    records = []
-    for i, name in enumerate(observable_names):
-        obs_val = float(obs_arr[i])
-        sims = x_train_raw[:, i]
-        valid = sims[~np.isnan(sims)]
-        if len(valid) == 0:
-            records.append({
-                'observable': name, 'p_value': np.nan,
-                'percentile': np.nan, 'tail': 'nan',
-            })
-            continue
-
-        percentile = float((valid <= obs_val).mean())
-        p_value = float(2 * min(percentile, 1 - percentile))
-        p_value = min(p_value, 1.0)
-        tail = 'lower' if percentile < 0.5 else 'upper'
-
-        records.append({
-            'observable': name,
-            'p_value': p_value,
-            'percentile': percentile,
-            'tail': tail,
-        })
-
-    df = pd.DataFrame(records).sort_values('p_value').reset_index(drop=True)
-
-    # Bar plot
-    fig, ax = plt.subplots(figsize=(10, max(6, len(observable_names) * 0.35)))
-    colors = ['red' if p < 0.05 else 'orange' if p < 0.1 else 'steelblue'
-              for p in df['p_value']]
-    ax.barh(range(len(df)), df['p_value'], color=colors)
-    ax.set_yticks(range(len(df)))
-    ax.set_yticklabels(df['observable'], fontsize=9)
-    ax.axvline(0.05, color='red', linestyle='--', alpha=0.7, label='α = 0.05')
-    ax.axvline(0.1, color='orange', linestyle='--', alpha=0.7, label='α = 0.1')
-    ax.set_xlabel('Prior Predictive p-value')
-    ax.set_title('Prior Predictive p-values (two-sided)')
-    ax.legend()
-    ax.invert_yaxis()
-    plt.tight_layout()
-
-    return df, fig
-
-
 def sbi_self_reference_null(x_samples, obs_values, observable_names, loo_bias_correction=True):
     """
     Compute a self-reference null distribution for Mahalanobis D² and per-observable
@@ -1568,7 +1500,7 @@ def save_diagnostics(
         coverage_df: DataFrame from sbi_coverage_check
         piling_df: DataFrame from sbi_boundary_piling
         mmd_p_value: Float from calc_misspecification_mmd
-        prior_predictive_pval_df: DataFrame from sbi_prior_predictive_pvalues
+        prior_predictive_pval_df: DataFrame from prediction_discrepancy (predictive_checks)
         loo_df: DataFrame from sbi_loo_predictive_check
         ppc_df: DataFrame from sbi_posterior_predictive_check
         corr_strong_pairs: DataFrame from sbi_posterior_correlations (strong pairs)
