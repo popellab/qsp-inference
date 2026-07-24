@@ -40,22 +40,31 @@ from qsp_inference.inference.predictive_checks import (
 # the sbi extra) can still import the restriction module.
 try:
     from qsp_inference.inference.diagnostics import (
+        # NLME canonical names
+        parameter_recovery,
+        eta_shrinkage,
+        per_parameter_calibration,
+        sbc_rank_ecdf,
+        misspecification_mmd,
+        boundary_piling,
+        joint_npde,
+        loo_influence,
+        posterior_predictive_check,
+        posterior_predictive_coverage,
+        posterior_correlations,
+        save_diagnostics,
+        # Backward-compatible sbi_* aliases
         sbi_recovery,
         sbi_z_score_contraction,
         compute_per_param_calibration,
         sbi_calibration_ecdf,
-        sbi_coverage_check,
-        sbi_boundary_piling,
         sbi_mmd_misspecification,
+        sbi_boundary_piling,
         sbi_loo_predictive_check,
         sbi_self_reference_null,
         sbi_posterior_predictive_check,
         sbi_posterior_predictive_coverage,
         sbi_posterior_correlations,
-        sbi_learning_curve,
-        sbi_seed_stability,
-        sbi_dimensionality_sweep,
-        save_diagnostics,
     )
     from qsp_inference.inference.plot_distributions import (
         plot_posterior_marginals,
@@ -113,23 +122,31 @@ except ImportError:
     pass
 
 __all__ = [
-    # Diagnostics
+    # Diagnostics (NLME canonical names)
+    "parameter_recovery",
+    "eta_shrinkage",
+    "per_parameter_calibration",
+    "sbc_rank_ecdf",
+    "misspecification_mmd",
+    "boundary_piling",
+    "joint_npde",
+    "loo_influence",
+    "posterior_predictive_check",
+    "posterior_predictive_coverage",
+    "posterior_correlations",
+    "save_diagnostics",
+    # Diagnostics (backward-compatible sbi_* aliases)
     "sbi_recovery",
     "sbi_z_score_contraction",
     "compute_per_param_calibration",
     "sbi_calibration_ecdf",
-    "sbi_coverage_check",
-    "sbi_boundary_piling",
     "sbi_mmd_misspecification",
+    "sbi_boundary_piling",
     "sbi_loo_predictive_check",
     "sbi_self_reference_null",
     "sbi_posterior_predictive_check",
     "sbi_posterior_predictive_coverage",
     "sbi_posterior_correlations",
-    "sbi_learning_curve",
-    "sbi_seed_stability",
-    "sbi_dimensionality_sweep",
-    "save_diagnostics",
     # Prior restriction
     "RestrictionClassifier",
     "train_restriction_classifier",
