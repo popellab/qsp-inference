@@ -20,6 +20,14 @@ from qsp_inference.targets.resolver import (
     parse_observed_distribution,
     population_n_biological,
 )
+from qsp_inference.targets.omega import (
+    OmegaEntry,
+    shrink_toward_prior,
+    build_omega_center,
+    load_omega_overrides,
+    load_population_n,
+    write_provenance,
+)
 
 __all__ = [
     "ObservedAnchors",
@@ -28,4 +36,10 @@ __all__ = [
     "load_population_samples",
     "parse_observed_distribution",
     "population_n_biological",
+    "OmegaEntry",
+    "shrink_toward_prior",
+    "build_omega_center",
+    "load_omega_overrides",
+    "load_population_n",
+    "write_provenance",
 ]
