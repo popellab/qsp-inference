@@ -35,7 +35,7 @@ ungated pipeline can be an estimator artifact rather than a model conflict.
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Sequence, Union
+from typing import Optional, Sequence, Union
 
 import numpy as np
 

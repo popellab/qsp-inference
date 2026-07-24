@@ -5,7 +5,6 @@ are calibrated (uniform pd, large p), and each check fires on the miss it is
 meant to see -- center for prediction_discrepancy, center AND spread for the VPC.
 """
 import numpy as np
-import pytest
 
 from qsp_inference.inference.predictive_checks import (
     iqr,
