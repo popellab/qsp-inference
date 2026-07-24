@@ -64,6 +64,20 @@ class ObservedAnchors:
         return [(float(p), float(v)) for p, v in zip(self.p_levels, self.values)]
 
 
+def _resolvable_grid(quantiles, n) -> tuple:
+    """Drop anchors more extreme than a sample of size ``n`` can resolve.
+
+    Keep ``p`` in ``[1/(n+1), n/(n+1)]`` -- the range a rank statistic of ``n``
+    draws actually informs; a 6-donor study cannot resolve ``Q(0.95)``. The
+    median always survives (for ``n >= 1``). ``n=None`` leaves the grid untouched.
+    """
+    if n is None:
+        return tuple(quantiles)
+    lo, hi = 1.0 / (n + 1.0), n / (n + 1.0)
+    keep = tuple(p for p in quantiles if lo <= p <= hi)
+    return keep if keep else (0.5,)
+
+
 def _ci95_expand(median, lo, hi, p_levels) -> np.ndarray:
     """Expand a median + 95% interval into ``Q(p)`` at ``p_levels``.
 
@@ -89,14 +103,27 @@ def anchors_from_sources(
     ci95_hi: np.ndarray,
     *,
     observed_distributions: Optional[Sequence[Optional[object]]] = None,
+    n: "Optional[Sequence[Optional[int]] | int]" = None,
     quantiles: Sequence[float] = (0.25, 0.5, 0.75),
     min_samples: int = 4,
+    seed: int = 0,
 ) -> tuple[list, int]:
     """Assemble per-observable observed quantile anchors from resolved sources.
 
     Pure (no maple I/O): a caller resolves the maple targets into ``samples`` /
     ``observed_distributions`` / scalars and passes them here, so this is unit-
     testable in isolation and shared across projects.
+
+    **Finite-sample handling.** A ``samples`` array is typically a large MC
+    *population reconstruction* (e.g. 10k draws from a reported mean +/- SD), not
+    the real ``n`` biological units, so its quantiles are denoised population
+    values. To keep the observed anchor on the same finite-sample footing as the
+    training summaries and the VPC null (which are ``n``-cohort statistics), when
+    ``n`` is given the ``samples`` branch draws a single seeded ``n``-subsample
+    from the pool and takes *its* quantiles, and the anchor grid is clipped to
+    what ``n`` can resolve (:func:`_resolvable_grid`). A reported
+    ``observed_distribution`` is already an ``n``-statistic, so it is taken
+    verbatim.
 
     Args:
         obs_names: observable ids.
@@ -107,8 +134,13 @@ def anchors_from_sources(
             ``_anchor_pairs()`` and ``feeds_population_spread`` (a maple
             ``ObservedDistribution``); ``None`` where absent. Takes precedence
             over ``samples`` when present.
+        n: real biological sample size per observable (int broadcast, or a
+            sequence, or ``None``). Drives the ``n``-subsample of the ``samples``
+            pool and the grid clip. ``None`` keeps the legacy denoised
+            full-pool quantile at the full grid.
         quantiles: default anchor grid for the ``samples`` / ci95 branches.
         min_samples: minimum finite samples to trust the empirical branch.
+        seed: RNG seed for the per-observable ``n``-subsample (deterministic).
 
     Returns:
         ``(anchors, n_from_samples)`` -- ``anchors`` a list of
@@ -118,11 +150,19 @@ def anchors_from_sources(
     grid = tuple(sorted(float(p) for p in quantiles))
     if not all(0.0 < p < 1.0 for p in grid):
         raise ValueError(f"quantiles must lie in (0, 1), got {quantiles}")
-    n = len(obs_names)
+    n_obs = len(obs_names)
+    if n is None or np.isscalar(n):
+        n_per = [None if n is None else int(n)] * n_obs
+    else:
+        n_per = [None if v is None else int(v) for v in n]
+        if len(n_per) != n_obs:
+            raise ValueError(f"n has {len(n_per)} entries, need {n_obs}")
+
+    rng = np.random.default_rng(seed)
     anchors: list = []
     n_from_samples = 0
 
-    for i in range(n):
+    for i in range(n_obs):
         od = None if observed_distributions is None else observed_distributions[i]
         if od is not None:
             pairs = sorted(od._anchor_pairs())            # [(p, value), ...]
@@ -134,19 +174,26 @@ def anchors_from_sources(
             ))
             continue
 
+        ni = n_per[i]
+        gi = _resolvable_grid(grid, ni)
         s = samples[i]
         if s is not None:
             arr = np.asarray(s, dtype=np.float64)
             arr = arr[np.isfinite(arr)]
             if arr.size >= min_samples:
-                anchors.append(ObservedAnchors(
-                    grid, np.quantile(arr, grid), True, "samples",
-                ))
+                if ni is not None and ni >= 2 and arr.size > ni:
+                    # Observed at real n: one seeded n-subsample of the pool, so
+                    # the anchor carries the same finite-sample law as training.
+                    draw = rng.choice(arr, size=int(ni), replace=False)
+                    vals = np.quantile(draw, gi)
+                else:
+                    vals = np.quantile(arr, gi)          # n unknown / pool <= n
+                anchors.append(ObservedAnchors(gi, vals, True, "samples"))
                 n_from_samples += 1
                 continue
 
         anchors.append(ObservedAnchors(
-            grid, _ci95_expand(medians[i], ci95_lo[i], ci95_hi[i], grid),
+            gi, _ci95_expand(medians[i], ci95_lo[i], ci95_hi[i], gi),
             False, "ci95",
         ))
 
