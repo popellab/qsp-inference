@@ -43,6 +43,7 @@ __all__ = [
     "prediction_discrepancy",
     "population_vpc",
     "quantile_vpc",
+    "inflate_cloud",
     "pit_calibration",
     "loo_pit",
     "label_marginal_conflict",
@@ -81,6 +82,82 @@ def _normalized_weights(n: int, weights: Optional[np.ndarray]) -> np.ndarray:
 def _two_sided_pd(pctl: float) -> float:
     """Two-sided tail probability from a lower-tail rank ``pctl`` in [0, 1]."""
     return float(min(2.0 * min(pctl, 1.0 - pctl), 1.0))
+
+
+def inflate_cloud(
+    cloud: np.ndarray,
+    noise_sd: Union[float, ArrayLike],
+    *,
+    asinh_scale: Optional[ArrayLike] = None,
+    seed: int = 0,
+):
+    """Fold a per-observable additive-error budget into a predictive cloud.
+
+    When the cloud comes from a **surrogate** forward model rather than the real
+    one -- e.g. a GBM emulator standing in for the QSP ODE -- its approximation
+    error is epistemic uncertainty about the *true* model's predictive. A
+    predictive check that scores an observation against the raw surrogate null
+    would charge that surrogate error as model misspecification: a deterministic
+    emulator produces an artificially tight, biased null, and a real conflict
+    cannot be told apart from a surrogate slip. Folding the error budget into the
+    null fixes that: it convolves each observable's predictive with independent
+    ``N(0, noise_sd_j)`` noise, widening the null so a discrepancy must *exceed*
+    the surrogate error to be flagged. The test becomes conservative with respect
+    to the budget -- the honest direction, because an error *magnitude* (which is
+    all a held-out residual SD gives you) never licenses *narrowing* a null.
+
+    The widening is applied in the space where the error was measured. GBM
+    surrogate error is measured on ``asinh(obs / scale)`` (a signed-log transform,
+    roughly homoscedastic across the observable's dynamic range), so pass
+    ``asinh_scale`` to inject the noise there and map back to raw space; the
+    injected raw-space spread then tracks the observable's local magnitude the way
+    the residual does. Omit ``asinh_scale`` to add the noise in the cloud's own
+    space.
+
+    Args:
+        cloud: ``(n_sim, n_obs)`` predictive samples (raw space). Non-finite
+            entries stay non-finite.
+        noise_sd: per-observable error SD -- a scalar (shared) or ``(n_obs,)``.
+            In the ``asinh`` space when ``asinh_scale`` is given, else raw space.
+            Non-finite or non-positive entries leave that observable untouched.
+        asinh_scale: optional ``(n_obs,)`` per-observable asinh scale. When given,
+            noise is additive on ``asinh(cloud / scale)`` and mapped back via
+            ``scale * sinh(.)``; entries must be positive.
+        seed: RNG seed (deterministic output).
+
+    Returns:
+        A new ``(n_sim, n_obs)`` array; ``cloud`` is not modified.
+    """
+    cloud = np.asarray(cloud, dtype=float)
+    if cloud.ndim != 2:
+        raise ValueError(f"cloud must be 2-D (n_sim, n_obs), got {cloud.shape}")
+    n_sim, n_obs = cloud.shape
+
+    sd = np.asarray(noise_sd, dtype=float)
+    if sd.ndim == 0:
+        sd = np.full(n_obs, float(sd))
+    elif sd.shape != (n_obs,):
+        raise ValueError(f"noise_sd must be scalar or ({n_obs},), got {sd.shape}")
+    # A non-finite / non-positive budget means "no correction for this observable".
+    sd = np.where(np.isfinite(sd) & (sd > 0), sd, 0.0)
+
+    if asinh_scale is not None:
+        scale = np.asarray(asinh_scale, dtype=float)
+        if scale.shape != (n_obs,):
+            raise ValueError(f"asinh_scale must be ({n_obs},), got {scale.shape}")
+        if np.any(~np.isfinite(scale)) or np.any(scale <= 0):
+            raise ValueError("asinh_scale entries must be finite and positive")
+
+    if not sd.any():
+        return cloud.copy()
+
+    rng = np.random.default_rng(seed)
+    eps = rng.normal(0.0, 1.0, size=(n_sim, n_obs)) * sd[None, :]
+
+    if asinh_scale is None:
+        return cloud + eps
+    a = np.arcsinh(cloud / scale[None, :]) + eps
+    return scale[None, :] * np.sinh(a)
 
 
 def prediction_discrepancy(
