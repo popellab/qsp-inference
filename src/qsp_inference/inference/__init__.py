@@ -23,6 +23,8 @@ from qsp_inference.inference.sbc import (
     ParameterCalibration,
     SBCResult,
     SBCGate,
+    expected_coverage,
+    CoverageResult,
     uniform_band_halfwidth,
     plot_sbc_ecdf,
 )
@@ -161,9 +163,11 @@ __all__ = [
     "loo_pit",
     "label_marginal_conflict",
     "iqr",
-    # Weighted SBC (the end-to-end calibration gate)
+    # Weighted SBC (the end-to-end calibration gate) + joint TARP coverage
     "weighted_pit",
     "weighted_sbc",
+    "expected_coverage",
+    "CoverageResult",
     "ParameterCalibration",
     "SBCResult",
     "SBCGate",
