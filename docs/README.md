@@ -21,7 +21,7 @@ The package is organized as the parts of that model:
 | 1 | **The statistical model** | generative spec, two targets, vocabulary | [statistical-model.md](statistical-model.md) | — |
 | 2 | **Priors as a measurement model** | literature → informative joint prior $\pi$; translation sigma; copula; derived children | [submodel-inference-guide.md](submodel-inference-guide.md) | `priors/`, `submodel/` |
 | 3 | **Flat inference** | intractable-likelihood posterior $p(\theta\mid x_{\text{obs}})$ via NPE; restriction; TSNPE; proposal↔prior reweight | [stage2-sbi-guide.md](stage2-sbi-guide.md) | `inference/` |
-| 4 | **Population inference (VPops)** | hierarchical $(\mu,\omega)$; virtual patients as random-effects draws; eigenbasis = identified subspace; prevalence-weighting fallback | *framing in Ch. 1; full guide lands with Stage 3* | `vpop/` |
+| 4 | **Population inference (VPops)** | hierarchical $(\mu,\omega)$; virtual patients as random-effects draws; eigenbasis = identified subspace; $\tilde\pi$/TSNPE/reweight loop; prevalence-weighting fallback | [population-inference-guide.md](population-inference-guide.md) | `vpop/` |
 | 5 | **Model checking & calibration** | the Bayesian-workflow suite: SBC gate → prior-data conflict → reachability → joint discrepancy → LOO-PIT | [stage2-sbi-guide.md §Diagnostics](stage2-sbi-guide.md#diagnostics) | `inference/sbc.py`, `inference/diagnostics.py`, `vpop/diagnostics.py`, `audit/` |
 | 6 | **Experimental design** | OBED — which measurement would identify a soft parameter | [stage2-sbi-guide.md §OBED](stage2-sbi-guide.md#optimal-bayesian-experimental-design-obed) | `inference/obed.py` |
 
@@ -34,9 +34,9 @@ The package is organized as the parts of that model:
 ## Status of the docs spine
 
 The model front-door (Ch. 1) and this index are the statistician-facing entry point.
-Chapters 2, 3, 5 and 6 have existing guides. **Chapter 4 (population inference)** is
-framed in the model page but does not yet have a guide of its own: today `vpop/` holds
-the prevalence-weighting construction, while the hierarchical $(\mu,\omega)$ model it is
-being superseded by still lives in a downstream project's runner. The guide lands, and
-the package namespace converges on these chapter names, when that machinery migrates
-into the package.
+All six chapters now have guides. **Chapter 4 (population inference)** states the
+hierarchical $(\mu,\omega)$ design — the $\pi$/$\tilde\pi$/$(\mu,\omega)$ loop, the
+eigenbasis, reweight-to-$\pi$, and the full-path SBC gate. Today `vpop/` holds the
+eigenbasis and the prevalence-weighting fallback; the round loop itself still lives in
+a downstream project's runner, and the package namespace converges on these chapter
+names as that machinery migrates in (Stage 3).

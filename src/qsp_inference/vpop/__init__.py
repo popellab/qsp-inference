@@ -24,6 +24,11 @@ from qsp_inference.vpop.eigenbasis import (
     prior_covariance,
     prior_metric_eigenbasis,
 )
+from qsp_inference.vpop.proposal import (
+    EigenbasisPopulation,
+    widen_on_identified,
+    reachable_accept_fn,
+)
 
 __all__ = [
     "VPopResult",
@@ -44,4 +49,7 @@ __all__ = [
     "sensitivity_gram",
     "prior_covariance",
     "prior_metric_eigenbasis",
+    "EigenbasisPopulation",
+    "widen_on_identified",
+    "reachable_accept_fn",
 ]
