@@ -16,6 +16,14 @@ from qsp_inference.vpop.weighting import (
     build_quantile_constraints,
     fit_prevalence_weights,
 )
+from qsp_inference.vpop.eigenbasis import (
+    PriorMetricEigenbasis,
+    fit_local_jacobian,
+    whiten_sensitivity_rows,
+    sensitivity_gram,
+    prior_covariance,
+    prior_metric_eigenbasis,
+)
 
 __all__ = [
     "VPopResult",
@@ -30,4 +38,10 @@ __all__ = [
     "greedy_core",
     "paired_effect_sizes",
     "self_target_control",
+    "PriorMetricEigenbasis",
+    "fit_local_jacobian",
+    "whiten_sensitivity_rows",
+    "sensitivity_gram",
+    "prior_covariance",
+    "prior_metric_eigenbasis",
 ]
