@@ -63,8 +63,8 @@ try:
     from qsp_inference.inference.data_processing import (
         get_observed_data,
         add_observation_noise,
-        processed_simulator,
-        processed_multi_scenario_simulator,
+        ScenarioTransform,
+        fit_scenario_transform,
         prepare_observed_data,
         convert_posterior_samples_to_original_space,
     )
@@ -140,8 +140,8 @@ __all__ = [
     # Data processing
     "get_observed_data",
     "add_observation_noise",
-    "processed_simulator",
-    "processed_multi_scenario_simulator",
+    "ScenarioTransform",
+    "fit_scenario_transform",
     "prepare_observed_data",
     "convert_posterior_samples_to_original_space",
     # Posterior predictive
