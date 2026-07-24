@@ -89,6 +89,8 @@ __all__ = [
     "ParameterCalibration",
     "SBCResult",
     "SBCGate",
+    "expected_coverage",
+    "CoverageResult",
     "uniform_band_halfwidth",
     "plot_sbc_ecdf",
 ]
@@ -620,3 +622,149 @@ def plot_sbc_ecdf(
 
     fig.tight_layout()
     return fig, axes
+
+
+# ---------------------------------------------------------------------------
+# Expected coverage (weighted TARP)
+# ---------------------------------------------------------------------------
+@dataclass
+class CoverageResult:
+    """Expected-coverage curve and its calibration reading.
+
+    Attributes:
+        alpha: nominal credibility grid on ``[0, 1]``.
+        ecp: empirical coverage probability at each ``alpha`` (the empirical CDF
+            of the per-replicate credibility values). Calibration is ``ecp ==
+            alpha`` (the diagonal).
+        credibility: ``(n_replicates,)`` per-replicate TARP statistic, Uniform on
+            ``(0, 1)`` under a calibrated joint posterior.
+        ks_stat, ks_p: Kolmogorov-Smirnov test of ``credibility`` against
+            Uniform(0, 1) -- the omnibus calibration test.
+        atc: area to calibration, ``mean(ecp - alpha)``. Zero when calibrated;
+            negative under undercoverage (an over-confident posterior), positive
+            under over-coverage (a conservative one).
+        verdict: ``ok`` when the KS test does not reject uniformity, else
+            ``overconfident`` / ``conservative`` by the sign of ``atc``.
+        n_replicates: number of test replicates.
+    """
+
+    alpha: np.ndarray
+    ecp: np.ndarray
+    credibility: np.ndarray
+    ks_stat: float
+    ks_p: float
+    atc: float
+    verdict: str
+    n_replicates: int
+
+    def summary(self) -> str:
+        return (
+            f"Expected coverage (TARP): {self.verdict} "
+            f"(ATC {self.atc:+.3f}, KS p {self.ks_p:.3f}, "
+            f"{self.n_replicates} replicates)"
+        )
+
+
+def expected_coverage(
+    posterior_samples,
+    theta_star,
+    *,
+    weights=None,
+    n_alpha: int = 100,
+    standardize: bool = True,
+    alpha_level: float = 0.05,
+    seed: int = 0,
+) -> CoverageResult:
+    """Weighted TARP expected-coverage test of the *joint* posterior.
+
+    TARP (Lemos, Coogan, Hezaveh & Perreault-Levasseur 2023) reduces a joint
+    coverage test to a one-dimensional uniformity test with random reference
+    points, so it scales to the full parameter vector without constructing a
+    high-dimensional credible region. For each replicate it draws a reference
+    point ``r`` and computes the (importance-weighted) fraction of posterior
+    draws closer to ``r`` than the truth is,
+
+        f = sum_l w_l 1[ d(theta_l, r) < d(theta*, r) ],
+
+    which is Uniform on ``(0, 1)`` exactly when the joint posterior is calibrated.
+    The empirical CDF of ``f`` across replicates is the expected-coverage curve;
+    its departure from the diagonal is miscalibration.
+
+    This is the joint complement to :func:`weighted_sbc`, which tests each
+    parameter's marginal rank and is therefore blind to a posterior that is
+    marginally calibrated but has the wrong correlation structure -- exactly what
+    a joint coverage test catches. It takes the *same* inputs as the SBC gate
+    (per-replicate draws, truths, and the ``pi/pi_tilde`` weights), so both read
+    off one set of posterior samples; the weights carry the check onto the
+    reporting prior ``pi`` and are uniform (pass ``None``) at temperature 1.
+
+    Args:
+        posterior_samples: ``(n_replicates, L, d)`` posterior draws per replicate.
+        theta_star: ``(n_replicates, d)`` ground truths.
+        weights: ``(n_replicates, L)`` self-normalized importance weights, or
+            ``None`` for uniform.
+        n_alpha: resolution of the returned coverage curve.
+        standardize: z-score each dimension by the pooled scale before measuring
+            distance, so no single wide parameter dominates the Euclidean metric.
+        alpha_level: KS significance for the ``ok`` vs miscalibrated verdict.
+        seed: RNG seed for the reference points (deterministic output).
+
+    Returns:
+        A :class:`CoverageResult`.
+    """
+    s = _as_array(posterior_samples)
+    t = _as_array(theta_star)
+    if s.ndim != 3:
+        raise ValueError(f"posterior_samples must be (n_rep, L, d); got {s.shape}")
+    n_rep, n_draws, d = s.shape
+    if t.shape != (n_rep, d):
+        raise ValueError(f"theta_star must be ({n_rep}, {d}); got {t.shape}")
+    if n_rep < 2:
+        raise ValueError("need at least 2 replicates")
+
+    if standardize:
+        pooled = np.concatenate([t, s.reshape(-1, d)], axis=0)
+        mu = pooled.mean(axis=0)
+        sd = pooled.std(axis=0)
+        sd[sd == 0] = 1.0
+        t = (t - mu) / sd
+        s = (s - mu) / sd
+
+    rng = np.random.default_rng(seed)
+    lo, hi = t.min(axis=0), t.max(axis=0)
+    refs = rng.uniform(lo, hi, size=(n_rep, d))  # one reference per replicate
+
+    d_truth = np.linalg.norm(t - refs, axis=1)                 # (n_rep,)
+    d_draws = np.linalg.norm(s - refs[:, None, :], axis=2)     # (n_rep, L)
+    closer = (d_draws < d_truth[:, None]).astype(np.float64)   # (n_rep, L)
+
+    if weights is None:
+        f = closer.mean(axis=1)
+    else:
+        w = _as_array(weights)
+        if w.shape != (n_rep, n_draws):
+            raise ValueError(f"weights must be ({n_rep}, {n_draws}); got {w.shape}")
+        if np.any(w < 0):
+            raise ValueError("weights must be non-negative")
+        w = w / w.sum(axis=1, keepdims=True)
+        f = (w * closer).sum(axis=1)
+
+    alpha = np.linspace(0.0, 1.0, n_alpha)
+    ecp = (f[:, None] <= alpha[None, :]).mean(axis=0)
+    ks = stats.kstest(f, "uniform")
+    atc = float(np.mean(ecp - alpha))
+    if ks.pvalue >= alpha_level:
+        verdict = "ok"
+    else:
+        verdict = "overconfident" if atc < 0 else "conservative"
+
+    return CoverageResult(
+        alpha=alpha,
+        ecp=ecp,
+        credibility=f,
+        ks_stat=float(ks.statistic),
+        ks_p=float(ks.pvalue),
+        atc=atc,
+        verdict=verdict,
+        n_replicates=n_rep,
+    )
