@@ -12,6 +12,7 @@ from qsp_inference.targets import (
     anchors_from_sources,
     cohort_quantiles,
 )
+from qsp_inference.targets.anchors import _resolvable_grid
 
 
 class _StubOD:
@@ -99,6 +100,87 @@ def test_bad_quantiles_raise():
     with pytest.raises(ValueError, match="quantiles must lie in"):
         anchors_from_sources(["o"], [None], np.array([1.0]),
                              np.array([0.5]), np.array([2.0]), quantiles=(0.0, 0.5))
+
+
+# --- finite-sample handling (n-subsample + grid clip) -----------------------
+
+def test_resolvable_grid_clips_by_n():
+    # n=2 can resolve only the median out of the quartiles; n=6 keeps all.
+    assert _resolvable_grid((0.25, 0.5, 0.75), 2) == (0.5,)
+    assert _resolvable_grid((0.25, 0.5, 0.75), 6) == (0.25, 0.5, 0.75)
+    # deciles need a larger n to resolve the 0.1/0.9 tails.
+    assert 0.1 not in _resolvable_grid((0.1, 0.5, 0.9), 6)
+    assert _resolvable_grid((0.1, 0.5, 0.9), 20) == (0.1, 0.5, 0.9)
+    # n=None leaves the grid untouched.
+    assert _resolvable_grid((0.1, 0.9), None) == (0.1, 0.9)
+
+
+def test_n_grid_clip_applied_to_samples_branch():
+    rng = np.random.default_rng(10)
+    arr = rng.normal(size=5000)
+    anchors, _ = anchors_from_sources(
+        ["o"], [arr], np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        quantiles=(0.1, 0.5, 0.9), n=6,
+    )
+    # n=6 cannot resolve the 0.1/0.9 deciles -> only the median survives.
+    assert anchors[0].p_levels == (0.5,)
+
+
+def test_observed_at_n_is_noisier_than_full_pool():
+    """The n-subsampled observed differs from the denoised full-pool quantile
+    and varies with the seed (finite-sample noise), while n=None reproduces the
+    population quantile."""
+    rng = np.random.default_rng(11)
+    arr = rng.normal(size=20000)
+    full, _ = anchors_from_sources(
+        ["o"], [arr], np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        quantiles=(0.25, 0.5, 0.75), n=None,
+    )
+    at_n_a, _ = anchors_from_sources(
+        ["o"], [arr], np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        quantiles=(0.25, 0.5, 0.75), n=30, seed=1,
+    )
+    at_n_b, _ = anchors_from_sources(
+        ["o"], [arr], np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        quantiles=(0.25, 0.5, 0.75), n=30, seed=2,
+    )
+    # full-pool ~ population quantiles; n=30 draw deviates from them...
+    np.testing.assert_allclose(full[0].values, np.quantile(arr, [0.25, 0.5, 0.75]))
+    assert not np.allclose(at_n_a[0].values, full[0].values, atol=1e-3)
+    # ...and different seeds give different observed draws.
+    assert not np.allclose(at_n_a[0].values, at_n_b[0].values)
+
+
+def test_observed_at_n_is_seed_reproducible():
+    rng = np.random.default_rng(12)
+    arr = rng.normal(size=5000)
+    a1, _ = anchors_from_sources(["o"], [arr], np.array([0.0]),
+                                 np.array([-2.0]), np.array([2.0]), n=20, seed=7)
+    a2, _ = anchors_from_sources(["o"], [arr], np.array([0.0]),
+                                 np.array([-2.0]), np.array([2.0]), n=20, seed=7)
+    np.testing.assert_array_equal(a1[0].values, a2[0].values)
+
+
+def test_n_per_observable_sequence():
+    rng = np.random.default_rng(13)
+    arrs = [rng.normal(size=5000), rng.normal(size=5000)]
+    anchors, _ = anchors_from_sources(
+        ["a", "b"], arrs, np.array([0.0, 0.0]), np.array([-2.0, -2.0]),
+        np.array([2.0, 2.0]), quantiles=(0.1, 0.5, 0.9), n=[2, 50],
+    )
+    assert anchors[0].p_levels == (0.5,)              # n=2 -> median only
+    assert anchors[1].p_levels == (0.1, 0.5, 0.9)     # n=50 -> full grid
+
+
+def test_observed_distribution_ignores_n():
+    """Reported anchors are already n-statistics -> taken verbatim, no clip/draw."""
+    od = _StubOD([(0.05, -2.0), (0.5, 0.0), (0.95, 2.0)], feeds=True)
+    anchors, _ = anchors_from_sources(
+        ["o"], [np.random.default_rng(0).normal(size=1000)],
+        np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        observed_distributions=[od], n=3,   # n=3 would clip 0.05/0.95 if applied
+    )
+    assert anchors[0].p_levels == (0.05, 0.5, 0.95)
 
 
 # --- cohort_quantiles -------------------------------------------------------
