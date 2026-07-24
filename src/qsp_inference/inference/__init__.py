@@ -27,6 +27,15 @@ from qsp_inference.inference.sbc import (
     plot_sbc_ecdf,
 )
 
+# Lightweight too: the NLME predictive checks (prediction discrepancy, VPC) are
+# pure numpy/pandas over a predictive cloud, so the model-conflict labeler runs
+# without the sbi extra.
+from qsp_inference.inference.predictive_checks import (
+    prediction_discrepancy,
+    population_vpc,
+    iqr,
+)
+
 # Heavy — require torch/sbi/etc. Guard so partial installs (e.g. CI without
 # the sbi extra) can still import the restriction module.
 try:
@@ -38,7 +47,6 @@ try:
         sbi_coverage_check,
         sbi_boundary_piling,
         sbi_mmd_misspecification,
-        sbi_prior_predictive_pvalues,
         sbi_loo_predictive_check,
         sbi_self_reference_null,
         sbi_posterior_predictive_check,
@@ -113,7 +121,6 @@ __all__ = [
     "sbi_coverage_check",
     "sbi_boundary_piling",
     "sbi_mmd_misspecification",
-    "sbi_prior_predictive_pvalues",
     "sbi_loo_predictive_check",
     "sbi_self_reference_null",
     "sbi_posterior_predictive_check",
@@ -127,6 +134,10 @@ __all__ = [
     "RestrictionClassifier",
     "train_restriction_classifier",
     "sample_restricted",
+    # NLME predictive checks (prediction discrepancy + VPC)
+    "prediction_discrepancy",
+    "population_vpc",
+    "iqr",
     # Weighted SBC (the end-to-end calibration gate)
     "weighted_pit",
     "weighted_sbc",
