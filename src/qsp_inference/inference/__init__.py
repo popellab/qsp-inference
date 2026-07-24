@@ -35,6 +35,7 @@ from qsp_inference.inference.sbc import (
 from qsp_inference.inference.predictive_checks import (
     prediction_discrepancy,
     population_vpc,
+    quantile_vpc,
     pit_calibration,
     loo_pit,
     label_marginal_conflict,
@@ -159,6 +160,7 @@ __all__ = [
     # NLME predictive checks (prediction discrepancy, VPC, LOO-PIT, labeler)
     "prediction_discrepancy",
     "population_vpc",
+    "quantile_vpc",
     "pit_calibration",
     "loo_pit",
     "label_marginal_conflict",

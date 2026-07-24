@@ -42,6 +42,7 @@ import numpy as np
 __all__ = [
     "prediction_discrepancy",
     "population_vpc",
+    "quantile_vpc",
     "pit_calibration",
     "loo_pit",
     "label_marginal_conflict",
@@ -299,6 +300,152 @@ def population_vpc(
     df = pd.DataFrame(records)
     df["_min_p"] = df[["median_p", "iqr_p"]].min(axis=1)
     df = df.sort_values("_min_p").drop(columns="_min_p").reset_index(drop=True)
+    return df
+
+
+def quantile_vpc(
+    cloud: np.ndarray,
+    anchors: Sequence[Sequence[tuple]],
+    *,
+    cohort_size: Union[int, Sequence[int]],
+    weights: Optional[np.ndarray] = None,
+    n_replicates: int = 2000,
+    seed: int = 0,
+    observable_names: Optional[Sequence[str]] = None,
+    center_band: float = 0.15,
+):
+    """Population VPC on the general quantile-anchor summary -- the maple
+    ``ObservedDistribution`` contract, of which median/IQR is the special case.
+
+    A reported distribution is a quantile function: the source gives the value at
+    a set of probability levels (the median at ``p=0.5``, IQR edges at 0.25/0.75,
+    or quartiles/deciles/a dense empirical function). :func:`population_vpc` is
+    this check pinned to the three anchors ``{0.25, 0.5, 0.75}``; here the anchors
+    are whatever maple reports per observable, so the check confronts the *shape*
+    the data actually carries rather than a fixed two-moment reduction.
+
+    For each observable it resamples weighted cohorts of ``cohort_size`` from the
+    population-predictive ``cloud`` and locates **each** observed anchor
+    ``Q(p)`` as a prediction discrepancy against the predictive distribution of
+    that cohort quantile. An anchor near ``p=0.5`` probes the **center** (fixed
+    effect); an anchor in the tails probes the **spread** (random effect /
+    ``omega``) -- the axis a fixed-effects check cannot see. A per-observable
+    spread verdict comes from the widest anchor pair's inter-quantile width, the
+    direct generalization of the IQR arm.
+
+    Args:
+        cloud: ``(n_sim, n_obs)`` population-predictive samples of individuals
+            (each row one ``theta ~ pi`` pushed through the structural and
+            measurement models).
+        anchors: length ``n_obs``; ``anchors[i]`` is a sequence of
+            ``(p, observed_value)`` pairs for observable ``i`` (``p`` in
+            ``(0, 1)``). Ragged across observables is allowed; an empty list
+            skips that observable.
+        cohort_size: individuals per simulated cohort; an int (shared) or a
+            per-observable sequence (each target's real published ``n``).
+        weights: optional ``(n_sim,)`` importance weights onto ``pi``; uniform if
+            None.
+        n_replicates: simulated cohorts forming each predictive summary null.
+        seed: RNG seed for the cohort resampling (deterministic output).
+        observable_names: optional labels, length ``n_obs``.
+        center_band: an anchor with ``|p - 0.5| <= center_band`` is a ``center``
+            anchor, otherwise ``spread``. The default 0.15 makes 0.5 the center
+            and 0.25/0.75 spread, matching :func:`population_vpc`.
+
+    Returns:
+        A ``pandas.DataFrame`` with one row per ``(observable, p)`` anchor:
+        ``observable``, ``p``, ``kind`` (``center``/``spread``), ``observed``,
+        ``pd`` (lower-tail rank), ``p_value`` (two-sided), and ``spread_verdict``
+        (per observable, repeated on its rows: ``over``/``under``/``ok`` at the
+        0.05 level from the widest anchor pair -- ``under`` = observed spread
+        below the predictive, i.e. the model is over-dispersed; ``center_only``
+        when fewer than two anchors span a width). Sorted by each observable's
+        smallest anchor ``p_value`` ascending.
+    """
+    import pandas as pd
+
+    cloud = np.asarray(cloud, dtype=float)
+    if cloud.ndim != 2:
+        raise ValueError(f"cloud must be 2-D (n_sim, n_obs), got {cloud.shape}")
+    n_sim, n_obs = cloud.shape
+    if len(anchors) != n_obs:
+        raise ValueError(f"anchors has {len(anchors)} entries, cloud has {n_obs} observables")
+
+    if np.isscalar(cohort_size):
+        sizes = [int(cohort_size)] * n_obs
+    else:
+        sizes = [int(s) for s in cohort_size]
+        if len(sizes) != n_obs:
+            raise ValueError(f"cohort_size sequence has {len(sizes)} entries, need {n_obs}")
+    if any(s < 2 for s in sizes):
+        raise ValueError("cohort_size must be >= 2 for a spread anchor to be defined")
+
+    if observable_names is None:
+        observable_names = [f"obs_{i}" for i in range(n_obs)]
+    else:
+        observable_names = list(observable_names)
+        if len(observable_names) != n_obs:
+            raise ValueError("observable_names length must match cloud n_obs")
+
+    w_full = _normalized_weights(n_sim, weights)
+    rng = np.random.default_rng(seed)
+
+    records = []
+    for i, name in enumerate(observable_names):
+        anc = [(float(p), float(v)) for p, v in anchors[i]]
+        if not anc:
+            continue
+        for p, _ in anc:
+            if not (0.0 < p < 1.0):
+                raise ValueError(f"anchor p must be in (0, 1) for {name}, got {p}")
+        col = cloud[:, i]
+        finite = np.isfinite(col)
+        if finite.sum() < sizes[i]:
+            for p, val in anc:
+                records.append({
+                    "observable": name, "p": p,
+                    "kind": "center" if abs(p - 0.5) <= center_band else "spread",
+                    "observed": val, "pd": np.nan, "p_value": np.nan,
+                    "spread_verdict": "nan",
+                })
+            continue
+
+        c = col[finite]
+        w = w_full[finite]
+        w = w / w.sum()
+        idx = rng.choice(c.shape[0], size=(n_replicates, sizes[i]), replace=True, p=w)
+        cohorts = c[idx]  # (n_replicates, n)
+
+        ps = np.array([p for p, _ in anc])
+        q_null = np.quantile(cohorts, ps, axis=1)  # (n_anchor, n_replicates)
+
+        # Per-observable spread verdict from the widest anchor pair's width.
+        if len(anc) >= 2:
+            lo, hi = int(np.argmin(ps)), int(np.argmax(ps))
+            width_null = q_null[hi] - q_null[lo]
+            width_obs = anc[hi][1] - anc[lo][1]
+            w_pd = float(np.mean(width_null <= width_obs))
+            w_p = _two_sided_pd(w_pd)
+            verdict = "ok" if w_p >= 0.05 else ("under" if w_pd < 0.5 else "over")
+        else:
+            verdict = "center_only"
+
+        for j, (p, val) in enumerate(anc):
+            pd_j = float(np.mean(q_null[j] <= val))
+            records.append({
+                "observable": name, "p": p,
+                "kind": "center" if abs(p - 0.5) <= center_band else "spread",
+                "observed": val, "pd": pd_j, "p_value": _two_sided_pd(pd_j),
+                "spread_verdict": verdict,
+            })
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
+    order = df.groupby("observable")["p_value"].transform("min")
+    df = df.assign(_min_p=order).sort_values(
+        ["_min_p", "observable", "p"]
+    ).drop(columns="_min_p").reset_index(drop=True)
     return df
 
 
