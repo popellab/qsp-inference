@@ -13,9 +13,12 @@ Two things live here, one for each half of the measurement model:
   other array the NPE must compare against (held-out test, the observed vector,
   later-round or posterior-predictive draws) into that same latent space.
 
-Both are pure per-scenario steps: joint NaN filtering across scenarios, the
-train/test split, cohort random effects and cross-scenario alignment are
-orchestration the caller owns, not concerns of this module.
+Plus two array/index utilities the multi-scenario assembly needs around those:
+:func:`joint_finite_mask` (a draw is usable only if it produced finite
+observables under *every* scenario) and :func:`train_test_split_indices` (a
+reproducible split with no global-RNG side effect). Cohort random effects and
+cross-scenario alignment stay with the caller: they are modelling choices, not
+generic data plumbing.
 
 Usage:
     from qsp_inference.inference import fit_scenario_transform
@@ -34,7 +37,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 try:
     import torch
@@ -326,6 +329,80 @@ def fit_scenario_transform(
     quantiles = compute_quantiles_from_array(x_noisy, n_quantiles=n_quantiles)
     transform = ScenarioTransform(quantiles=quantiles)
     return transform.transform(x_noisy), transform
+
+
+def joint_finite_mask(x_arrays: Sequence[np.ndarray]) -> np.ndarray:
+    """Boolean mask of the rows finite across *every* array.
+
+    Multi-scenario amortized inference evaluates the SAME parameter draws under
+    each scenario, and a draw is usable only if it produced finite observables in
+    all of them: one solver failure anywhere disqualifies that row everywhere, or
+    the scenarios' observables would no longer come from a common set of draws.
+    So the mask is the logical AND of the per-array all-finite-row masks.
+
+    Args:
+        x_arrays: one ``(n, d_s)`` observable array per scenario, all sharing the
+            same row count ``n`` (row i is the same draw in each). Must be
+            non-empty.
+
+    Returns:
+        ``(n,)`` boolean mask, ``True`` where the row is finite in every array.
+    """
+    arrays = list(x_arrays)
+    if not arrays:
+        raise ValueError("joint_finite_mask requires at least one array")
+    n = arrays[0].shape[0]
+    mask = np.ones(n, dtype=bool)
+    for i, x in enumerate(arrays):
+        x = np.asarray(x)
+        if x.shape[0] != n:
+            raise ValueError(
+                f"row-count mismatch: array 0 has {n} rows, array {i} has "
+                f"{x.shape[0]}; the arrays must be aligned draw-for-draw"
+            )
+        mask &= np.all(np.isfinite(x), axis=1)
+    return mask
+
+
+def train_test_split_indices(
+    n: int,
+    *,
+    test_fraction: float = 0.1,
+    seed: int,
+    subsample: Optional[int] = None,
+    subsample_seed_offset: int = 1,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Reproducible ``(train_idx, test_idx)`` over ``n`` rows.
+
+    The permutation is drawn from a *local* ``np.random.RandomState(seed)``, which
+    yields indices identical to the legacy ``np.random.seed(seed);
+    np.random.permutation(n)`` idiom while leaving the global NumPy RNG state
+    untouched. The first ``(1 - test_fraction)`` fraction of the permutation is
+    train, the remainder test.
+
+    Args:
+        n: number of rows to split.
+        test_fraction: fraction assigned to the test set (floored to an int).
+        seed: seed for the split permutation.
+        subsample: if given and smaller than the train set, keep this many train
+            rows, drawn without replacement from a ``default_rng(seed +
+            subsample_seed_offset)``. The test set is never subsampled.
+        subsample_seed_offset: offset added to ``seed`` for the subsample RNG, so
+            the subsample is independent of the split permutation.
+
+    Returns:
+        ``(train_idx, test_idx)`` integer arrays.
+    """
+    perm = np.random.RandomState(seed).permutation(n)
+    n_test = int(n * test_fraction)
+    n_train = n - n_test
+    train_idx = perm[:n_train]
+    test_idx = perm[n_train:]
+    if subsample is not None and subsample < n_train:
+        sub_rng = np.random.default_rng(seed + subsample_seed_offset)
+        keep = sub_rng.choice(n_train, size=subsample, replace=False)
+        train_idx = train_idx[keep]
+    return train_idx, test_idx
 
 
 def prepare_observed_data(test_stats_csv, observable_names, obs_quantiles):

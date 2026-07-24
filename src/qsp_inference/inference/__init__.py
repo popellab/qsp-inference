@@ -65,6 +65,8 @@ try:
         add_observation_noise,
         ScenarioTransform,
         fit_scenario_transform,
+        joint_finite_mask,
+        train_test_split_indices,
         prepare_observed_data,
         convert_posterior_samples_to_original_space,
     )
@@ -142,6 +144,8 @@ __all__ = [
     "add_observation_noise",
     "ScenarioTransform",
     "fit_scenario_transform",
+    "joint_finite_mask",
+    "train_test_split_indices",
     "prepare_observed_data",
     "convert_posterior_samples_to_original_space",
     # Posterior predictive
