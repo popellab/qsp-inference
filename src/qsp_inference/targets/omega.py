@@ -94,13 +94,15 @@ def load_population_n(targets_dir: Path | str) -> dict[str, int]:
 
     Walks the submodel targets under ``targets_dir`` and, for every parameter a
     target constrains, takes the largest ``n_biological`` among that target's
-    population-feeding ``observed_distribution`` entries. That n weighs the data
-    against the class prior in the level-4 shrinkage; a parameter with no such
-    target simply does not appear and its prior stands.
+    population-feeding ``observed_distribution`` entries -- read through the shared
+    :func:`~qsp_inference.targets.resolver.population_n_biological`, so provenance
+    resolution is validated and consistent with the anchor half. A parameter with
+    no such target simply does not appear and its prior stands.
     """
     import yaml
 
-    pop_sources = {"across_patient", "biological_experimental"}
+    from qsp_inference.targets.resolver import population_n_biological
+
     out: dict[str, int] = {}
     for path in sorted(Path(targets_dir).glob("*.yaml")):
         if "submodel_config" in path.name:
@@ -113,16 +115,10 @@ def load_population_n(targets_dir: Path | str) -> dict[str, int]:
         entries = cal.get("error_model") or []
         if isinstance(entries, dict):
             entries = [entries]
-        ns = [
-            int(od["n_biological"])
-            for e in entries
-            if isinstance(e, dict)
-            for od in [e.get("observed_distribution") or {}]
-            if od.get("spread_source") in pop_sources and od.get("n_biological")
-        ]
-        if not ns:
+        ods = [e.get("observed_distribution") for e in entries if isinstance(e, dict)]
+        n_max = population_n_biological(ods)
+        if not n_max:
             continue
-        n_max = max(ns)
         for spec in cal.get("parameters") or []:
             name = spec.get("name") if isinstance(spec, dict) else spec
             if not name or (isinstance(spec, dict) and spec.get("nuisance")):
