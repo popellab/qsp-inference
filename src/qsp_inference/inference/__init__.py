@@ -33,6 +33,9 @@ from qsp_inference.inference.sbc import (
 from qsp_inference.inference.predictive_checks import (
     prediction_discrepancy,
     population_vpc,
+    pit_calibration,
+    loo_pit,
+    label_marginal_conflict,
     iqr,
 )
 
@@ -151,9 +154,12 @@ __all__ = [
     "RestrictionClassifier",
     "train_restriction_classifier",
     "sample_restricted",
-    # NLME predictive checks (prediction discrepancy + VPC)
+    # NLME predictive checks (prediction discrepancy, VPC, LOO-PIT, labeler)
     "prediction_discrepancy",
     "population_vpc",
+    "pit_calibration",
+    "loo_pit",
+    "label_marginal_conflict",
     "iqr",
     # Weighted SBC (the end-to-end calibration gate)
     "weighted_pit",

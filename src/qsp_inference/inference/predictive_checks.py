@@ -42,6 +42,9 @@ import numpy as np
 __all__ = [
     "prediction_discrepancy",
     "population_vpc",
+    "pit_calibration",
+    "loo_pit",
+    "label_marginal_conflict",
     "iqr",
 ]
 
@@ -296,4 +299,209 @@ def population_vpc(
     df = pd.DataFrame(records)
     df["_min_p"] = df[["median_p", "iqr_p"]].min(axis=1)
     df = df.sort_values("_min_p").drop(columns="_min_p").reset_index(drop=True)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# PIT calibration (LOO-PIT)
+# ---------------------------------------------------------------------------
+def pit_calibration(pit_values: ArrayLike, *, n_bins: int = 10) -> dict:
+    """Marginal-calibration summary of a set of PIT values.
+
+    The probability-integral-transform (PIT) of an observation is its rank within
+    its own predictive distribution. Under a correctly specified model those PITs
+    are Uniform(0, 1); systematic departure is the classic NLME calibration
+    signal, and its *shape* names the failure:
+
+    - mean far from 1/2        -> a center bias (predictions systematically off);
+    - variance below 1/12      -> an **over-dispersed** predictive (PITs bunch at
+      1/2 because the model's spread is wider than the data's);
+    - variance above 1/12      -> an **under-dispersed** predictive (PITs pile at
+      0 and 1).
+
+    Uniform(0, 1) has mean 1/2 and variance 1/12, so those are the reference
+    values. The Kolmogorov-Smirnov test against Uniform(0, 1) is the omnibus
+    check; the moments say which way it fails.
+
+    Args:
+        pit_values: one PIT per observation/observable (e.g. the ``pd`` column of
+            :func:`prediction_discrepancy`). Non-finite entries are dropped.
+        n_bins: histogram resolution returned for a PIT plot.
+
+    Returns:
+        A dict with ``ks_stat``, ``ks_p`` (vs Uniform(0, 1)), ``mean``, ``var``,
+        ``dispersion`` (``over`` / ``under`` / ``ok`` at var vs 1/12, 20% band),
+        ``n``, and ``hist`` / ``bin_edges``.
+    """
+    from scipy import stats
+
+    pit = np.asarray(pit_values, dtype=float)
+    pit = pit[np.isfinite(pit)]
+    n = pit.size
+    if n == 0:
+        return {
+            "ks_stat": np.nan, "ks_p": np.nan, "mean": np.nan, "var": np.nan,
+            "dispersion": "nan", "n": 0, "hist": np.array([]), "bin_edges": np.array([]),
+        }
+    ks = stats.kstest(pit, "uniform")
+    var = float(pit.var())
+    uniform_var = 1.0 / 12.0
+    if var < uniform_var * 0.8:
+        dispersion = "over"     # predictive too wide -> PITs bunch near 1/2
+    elif var > uniform_var * 1.2:
+        dispersion = "under"    # predictive too narrow -> PITs pile at the ends
+    else:
+        dispersion = "ok"
+    hist, bin_edges = np.histogram(pit, bins=n_bins, range=(0.0, 1.0))
+    return {
+        "ks_stat": float(ks.statistic),
+        "ks_p": float(ks.pvalue),
+        "mean": float(pit.mean()),
+        "var": var,
+        "dispersion": dispersion,
+        "n": int(n),
+        "hist": hist,
+        "bin_edges": bin_edges,
+    }
+
+
+def loo_pit(
+    predictive: np.ndarray,
+    observed: ArrayLike,
+    *,
+    weights: Optional[np.ndarray] = None,
+    observable_names: Optional[Sequence[str]] = None,
+    n_bins: int = 10,
+):
+    """Leave-one-out PIT calibration across observables.
+
+    For each observable the PIT is the (weighted) rank of the observed value in
+    its predictive -- the ``pd`` of :func:`prediction_discrepancy` -- and the set
+    of PITs is checked for uniformity by :func:`pit_calibration`. Uniform PITs are
+    a calibrated fit; a systematic shape is a marginal miss whose direction the
+    calibration summary names (center vs over/under-dispersion).
+
+    **What makes it leave-one-out is the** ``predictive`` **the caller passes.**
+    A proper LOO-PIT predicts observable *j* from the *other* observables (obs *j*
+    held out of the conditioning), so obs *j* never informs its own predictive and
+    the check is not optimistic. That needs a masking-capable / set-based
+    conditioning the fixed-dimensional embedding does not support yet (the
+    redesign stages it as a planned addition). Until it lands, pass the posterior
+    predictive of each observable and read the result as **in-sample** marginal
+    calibration -- honest, but optimistic, because each observable helped fit the
+    posterior it is then scored against. The statistic is identical; only the
+    conditioning differs, which is why it lives in one function.
+
+    Args:
+        predictive: ``(n_sim, n_obs)`` predictive samples, already through the
+            measurement model. Leave-one-out if produced with obs *j* masked,
+            posterior-predictive otherwise.
+        observed: ``(n_obs,)`` observed values or a ``{name: value}`` mapping.
+        weights: optional importance weights onto the reporting prior.
+        observable_names: optional labels.
+        n_bins: PIT-histogram resolution.
+
+    Returns:
+        ``(pit_df, calibration)`` where ``pit_df`` is the per-observable
+        :func:`prediction_discrepancy` frame (its ``pd`` column is the PIT) and
+        ``calibration`` is the :func:`pit_calibration` summary over those PITs.
+    """
+    pit_df = prediction_discrepancy(
+        predictive, observed, weights=weights, observable_names=observable_names
+    )
+    calibration = pit_calibration(pit_df["pd"].to_numpy(), n_bins=n_bins)
+    return pit_df, calibration
+
+
+# ---------------------------------------------------------------------------
+# The marginal misfit labeler (redesign steps 2 -> 3)
+# ---------------------------------------------------------------------------
+def label_marginal_conflict(
+    prior_predictive: np.ndarray,
+    observed: ArrayLike,
+    *,
+    posterior_resim: Optional[np.ndarray] = None,
+    weights_prior: Optional[np.ndarray] = None,
+    weights_resim: Optional[np.ndarray] = None,
+    alpha: float = 0.05,
+    observable_names: Optional[Sequence[str]] = None,
+):
+    """Per-observable ``consistent`` / ``prior_limited`` / ``structural`` label.
+
+    The marginal arm of the principled labeler, combining the two tests that have
+    a simulation null:
+
+    - **Step 2, prior-data conflict.** :func:`prediction_discrepancy` of the
+      observed value in the *prior* predictive (the model under the anchored prior
+      pi, with residual error). ``p >= alpha`` -> ``consistent``: the anchor
+      already predicts it, it is a fit.
+    - **Step 3, reachability.** For a conflicting observable, the same discrepancy
+      in the *posterior-at-x_obs resimulated* predictive -- the observables you get
+      by drawing theta from the NPE posterior at ``x_obs``, keeping the admissible
+      ones, and simulating them forward (a TSNPE round pointed at ``x_obs``). If
+      the resim now reaches the observation (``p >= alpha``) a plausible theta does
+      produce it and the anchor simply did not put mass there -> ``prior_limited``
+      (re-anchor). If the model's own best attempt still misses -> ``structural``
+      (the mechanism cannot produce it).
+
+    Structural is only asserted when ``posterior_resim`` is supplied: the doc's OOD
+    caveat is that "cannot fit" is untrustworthy unless the sampler actually tried,
+    so a conflicting observable with no resim is labeled ``conflict_unresolved``,
+    not structural. The resimulation itself needs the simulator and is the caller's
+    (this function owns only the decision from the two predictive samples).
+
+    Args:
+        prior_predictive: ``(n_sim, n_obs)`` prior-predictive samples (with
+            residual error).
+        observed: ``(n_obs,)`` observed values or a ``{name: value}`` mapping.
+        posterior_resim: ``(n_resim, n_obs)`` observables resimulated from the
+            posterior at ``x_obs``. ``None`` leaves conflicts unresolved.
+        weights_prior, weights_resim: optional importance weights onto pi for each
+            predictive.
+        alpha: two-sided significance for both the conflict and reachability calls.
+        observable_names: optional labels (also orders a dict ``observed``).
+
+    Returns:
+        A ``pandas.DataFrame`` with one row per observable: ``observable``,
+        ``prior_p`` (step 2), ``resim_p`` (step 3, NaN if no resim), and ``label``
+        in {``consistent``, ``prior_limited``, ``structural``,
+        ``conflict_unresolved``}. Sorted with the unresolved/structural misses
+        first.
+    """
+    import pandas as pd
+
+    prior_dd = prediction_discrepancy(
+        prior_predictive, observed, weights=weights_prior, observable_names=observable_names
+    ).set_index("observable")
+
+    names = list(prior_dd.index)
+    resim_p_by_name = {}
+    if posterior_resim is not None:
+        resim_dd = prediction_discrepancy(
+            posterior_resim, observed, weights=weights_resim, observable_names=observable_names
+        ).set_index("observable")
+        resim_p_by_name = resim_dd["p_value"].to_dict()
+
+    records = []
+    for name in names:
+        prior_p = float(prior_dd.loc[name, "p_value"])
+        resim_p = float(resim_p_by_name.get(name, np.nan))
+        if not np.isfinite(prior_p):
+            label = "nan"
+        elif prior_p >= alpha:
+            label = "consistent"
+        elif posterior_resim is None or not np.isfinite(resim_p):
+            label = "conflict_unresolved"
+        elif resim_p >= alpha:
+            label = "prior_limited"
+        else:
+            label = "structural"
+        records.append(
+            {"observable": name, "prior_p": prior_p, "resim_p": resim_p, "label": label}
+        )
+
+    order = {"structural": 0, "conflict_unresolved": 1, "prior_limited": 2, "consistent": 3, "nan": 4}
+    df = pd.DataFrame(records)
+    df["_o"] = df["label"].map(order).fillna(5)
+    df = df.sort_values(["_o", "prior_p"]).drop(columns="_o").reset_index(drop=True)
     return df
