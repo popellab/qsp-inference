@@ -134,49 +134,6 @@ class ThetaPoolSpec:
         suffix = ("_restricted" if self.is_restricted else "") + (f"_{label}" if label else "")
         return Path(cache_dir) / f"theta_pool_{self.fingerprint()}_n{self.n_total}{suffix}.npy"
 
-    def legacy_cache_path(self, cache_dir: PathLike = "cache/theta_pools") -> Path:
-        """Path this pool had before construction moved into this package.
-
-        Read-only compatibility. Pools are expensive (each row is a simulation
-        downstream), so a spec whose new path is missing but whose legacy path
-        exists loads the legacy file rather than regenerating. The byte sequence
-        below is a transcription of the old
-        ``qsp_hpc.simulation.theta_pool.theta_pool_cache_path`` and must not be
-        "cleaned up": its only job is to reproduce hashes computed by code that
-        no longer exists.
-        """
-        p = self.prior
-        h = hashlib.sha256()
-        h.update(Path(p.priors_csv).read_text().encode("utf-8"))
-        if p.submodel_priors_yaml is not None and Path(p.submodel_priors_yaml).exists():
-            h.update(Path(p.submodel_priors_yaml).read_text().encode("utf-8"))
-        h.update(str(int(self.seed)).encode("utf-8"))
-        h.update(str(int(self.n_total)).encode("utf-8"))
-        h.update(self._classifier_bytes())
-        overlay_suffix = ""
-        if p.vary_policy is not None:
-            if Path(p.vary_policy).exists():
-                h.update(b"|vary_policy|")
-                h.update(Path(p.vary_policy).read_text().encode("utf-8"))
-            overlay_suffix = "_overlay"
-        derived_suffix = ""
-        if p.derived_yaml is not None:
-            if Path(p.derived_yaml).exists():
-                h.update(b"|derived_yaml|")
-                h.update(Path(p.derived_yaml).read_text().encode("utf-8"))
-            derived_suffix = "_derived"
-        proposal_suffix = ""
-        if p.is_tempered:
-            h.update(f"|proposal_temperature={p.proposal_temperature:.12g}".encode("utf-8"))
-            proposal_suffix = f"_T{p.proposal_temperature:g}"
-        suffix = (
-            ("_restricted" if self.is_restricted else "")
-            + overlay_suffix
-            + derived_suffix
-            + proposal_suffix
-        )
-        return Path(cache_dir) / f"theta_pool_{h.hexdigest()[:16]}_n{self.n_total}{suffix}.npy"
-
 
 def _draw(spec: ThetaPoolSpec, n: int, seed: int) -> tuple[np.ndarray, list]:
     pair = build_prior_pair(spec.prior)
@@ -186,18 +143,18 @@ def _draw(spec: ThetaPoolSpec, n: int, seed: int) -> tuple[np.ndarray, list]:
 def get_theta_pool(
     spec: ThetaPoolSpec,
     cache_dir: PathLike = "cache/theta_pools",
-    *,
-    allow_legacy_cache: bool = True,
 ) -> np.ndarray:
     """Return the ``(n_total, n_params)`` pool, generating it if needed.
+
+    Pools cached by the pre-consolidation implementation are not read. Their
+    hashes were computed by code that no longer exists, so honouring them would
+    mean carrying a transcription of it forever and trusting that the
+    transcription stayed right. A pool is cheap to regenerate; a pool loaded
+    under a key whose meaning nobody can check is not.
 
     Args:
         spec: Which pool.
         cache_dir: Where pools live.
-        allow_legacy_cache: Fall back to reading a pool cached under the
-            pre-consolidation path. Set False to force regeneration, which is
-            the honest thing to do if you suspect a legacy pool is not what its
-            name claims.
 
     Returns:
         Rows in *original* parameter space.
@@ -205,10 +162,6 @@ def get_theta_pool(
     path = spec.cache_path(cache_dir)
     if path.exists():
         return np.load(path)
-    if allow_legacy_cache:
-        legacy = spec.legacy_cache_path(cache_dir)
-        if legacy.exists():
-            return np.load(legacy)
 
     if not spec.is_restricted:
         theta, _ = _draw(spec, spec.n_total, spec.seed)
