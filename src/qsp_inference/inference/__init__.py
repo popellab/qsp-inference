@@ -70,6 +70,11 @@ try:
         prepare_observed_data,
         convert_posterior_samples_to_original_space,
     )
+    from qsp_inference.inference.npe_training import (
+        NpeTrainingResult,
+        build_npe,
+        train_npe,
+    )
     from qsp_inference.inference.posterior_predictive import (
         generate_prior_predictive_checks,
         generate_posterior_predictive_checks,
@@ -148,6 +153,10 @@ __all__ = [
     "train_test_split_indices",
     "prepare_observed_data",
     "convert_posterior_samples_to_original_space",
+    # NPE training
+    "NpeTrainingResult",
+    "build_npe",
+    "train_npe",
     # Posterior predictive
     "generate_prior_predictive_checks",
     "generate_posterior_predictive_checks",
