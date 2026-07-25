@@ -19,12 +19,15 @@ estimator that does not have that wall.
 
 That reading skipped a step. A low ESS in prevalence weighting is not a property of
 the method, it is a **measurement of how hard the tilt had to work to reconcile the
-model's simulated cloud with the observed data**, and there are at least five
+model's simulated cloud with the observed data**, and there are at least six
 distinct reasons it can be small. Only one of them is structural misspecification,
 and if that is the one, then **no estimator fixes it.** A more sophisticated fit on a
-misspecified mechanism produces a more confident wrong answer, not a better one.
+misspecified mechanism produces a more confident wrong answer, not a better one. Nor
+does an estimator fix the one that is currently *measured* to be present (cause 3, a
+cloud pinned narrow by the simulation design), because that one is upstream of every
+fitter.
 
-So the order is: find out which of the five it was, fix that, and only then decide
+So the order is: find out which of the six it was, fix that, and only then decide
 how much estimator the problem deserves. That is the whole argument of this chapter,
 and Part II is the observation that once the diagnosis is done, the fit the data can
 support is much smaller than Ch. 4.
@@ -48,7 +51,7 @@ treating a low fixed-cloud ESS as a nuisance to engineer around.
 
 ## Part I. What a low ESS actually means
 
-### The five causes, in triage order
+### The six causes, in triage order
 
 Check them in this order, because the cheap ones are also the most likely and they
 mask the interesting one.
@@ -68,7 +71,26 @@ all of them. 46 observables at 5 bins is 230 constraints. There is no threshold 
 makes this interpretable in the abstract, which is the argument for the null
 distribution below: it prices in $C$ automatically.
 
-**3. Support deficiency.** The cloud does not reach the data. `VPopResult` already
+**3. The cloud is narrow by construction, because the simulations pinned most of the
+population.** `vary_policy` pins a non-varying parameter by driving its sigma to ~0,
+which conflates "does not vary across patients" with "we know its value exactly"
+(pdac-build `30967d1`). The consequence for the cloud is measurable and currently
+large: 227 of 271 parameters have a pool log-sd of $0.001$, so
+$\Sigma\omega_{\text{eff}}^2/\Sigma\omega^2 = 0.17$. **The cloud carries 17% of the
+population variance the omega layer specifies.** A tilt asked to reproduce the
+observed *spread* from a cloud that concentrated has to strain, and it pays for that
+in effective sample size.
+
+Check it first among the cloud-side causes because it is one number
+(`omega_supported_frac`, emitted by the emulator budget) and because it is
+diagnostically distinct from cause 4: a pinned-narrow cloud can still cover every
+bin, so `support_deficient` stays clean while the ESS collapses. Distinct from cause
+6 too, and in the opposite direction: the model is not wrong, the *simulation design*
+never asked it the question. The fix is a re-simulation varying those parameters at
+their real $\omega$, not a change to the fitter, and until that lands the reported
+population is narrow for a reason that has nothing to do with the data.
+
+**4. Support deficiency.** The cloud does not reach the data. `VPopResult` already
 reports this (`support_deficient`, any bin with fewer than `MIN_SUPPORT` cloud
 members). Reweighting cannot conjure a patient the cloud does not contain, so the
 weights strain toward a corner. This is a *reachability* failure, and it splits
@@ -76,14 +98,14 @@ further: a too-narrow cloud generator (fixable) versus a mechanism that cannot
 produce the observation at any admissible $\theta$ (not fixable by widening).
 Ch. 5's reachability labeler is what separates those.
 
-**4. Contradictory constraints from tied bin edges.** The continuity correction in
+**5. Contradictory constraints from tied bin edges.** The continuity correction in
 `build_quantile_constraints` documents this failure mode precisely: two observables
 the model treats as the same variable receive incompatible targets at the same
 threshold, the dual has no solution, weights blow up, and the ESS collapses **while
 the TV distance still looks perfect**. It reads exactly like a joint conflict and is
 not one. The correction is in the code; confirm the low-ESS run had it.
 
-**5. Genuine structural misspecification.** What is left after the first four. This
+**6. Genuine structural misspecification.** What is left after the first five. This
 is the interesting case and the rest of Part I is about characterizing it rather than
 just detecting it.
 
@@ -207,17 +229,24 @@ Ch. 4. The middle three are prior work, which is where Ch. 1 says the human belo
 
 1. Confirm `n_obs` was passed and the tie correction is in. If not, rerun; you may be
    done.
-2. Check `support_deficient`. If any, that is reachability, not conflict, and it goes
+2. Read `omega_supported_frac`. Below ~0.5 the cloud is not the population the omega
+   layer describes and the ESS is partly measuring the simulation design. It is 0.17
+   today, so this fires now, and it is the one step whose fix is a re-simulation
+   rather than an afternoon.
+3. Check `support_deficient`. If any, that is reachability, not conflict, and it goes
    to Ch. 5's labeler before anything else.
-3. Compute the ESS and $\tau^2$ null, both references. If $p$ is unremarkable, the
+4. Compute the ESS and $\tau^2$ null, both references. If $p$ is unremarkable, the
    low ESS was the constraint count and the population fit is fine.
-4. If $p$ is small: localize (LOO, $|\lambda|$, per-observable $\tau^2$).
-5. For each flagged readout, name the direction and take the corresponding action.
-6. Refit. The ESS after step 5 is the measure of whether the diagnosis was right.
+5. If $p$ is small: localize (LOO, $|\lambda|$, per-observable $\tau^2$).
+6. For each flagged readout, name the direction and take the corresponding action.
+7. Refit. The ESS after step 6 is the measure of whether the diagnosis was right.
 
-Steps 1 to 5 cost a day and reuse simulations you already have. That is the
-comparison to keep in mind against building `vpop/hyperprior.py` and
-`vpop/cohorts.py`.
+All of these except step 2 cost a day and reuse simulations you already have. That is
+the comparison to keep in mind against building `vpop/hyperprior.py` and
+`vpop/cohorts.py`. Step 2 is the exception in both directions: it is the cheapest to
+*check* (one number) and the most expensive to *fix* (a re-simulation campaign), and
+until it is fixed every other number in this list is being read off a cloud that
+carries a sixth of the population's variance.
 
 ## Part II. Then fit
 
@@ -553,7 +582,10 @@ These are correctness, not elaboration, and they apply to the fixed-cloud fit to
 - The discrepancy layer, $\eta_s$ and $\delta_j$.
 - The variance budget, and reporting $F_{\mathcal V}(\theta\mid\hat\varphi)$ separately
   from the posterior-predictive marginal, with $\varphi$ drawn once per simulated
-  trial.
+  trial. Including its **not representable** row (Ch. 4 §*Reporting*): the share of
+  $\operatorname{tr}\Gamma_\omega$ on parameters the pool never varied, which is 83%
+  today and is distinct from *asserted*. Asserted means the data were silent; not
+  representable means we never asked.
 - SBC as the gate.
 
 ## What the current build actually supplies

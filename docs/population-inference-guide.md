@@ -568,11 +568,31 @@ fraction of $\operatorname{tr}\Gamma_\omega$ that is
   prior-to-posterior contraction (§*Which reweight is legitimate*);
 - **asserted**, the sloppy complement riding the omega layer, broken down by which
   omega level supplied it (global default / role class / explicit / data-shrunk);
+- **not representable**, the share of $\operatorname{tr}\Gamma_\omega$ on parameters
+  the *simulation pool never varied*, below;
 - **hyperparameter uncertainty**, the difference between the two population objects
   above.
 
 One table, and it is the difference between "we inferred the population" and "we
 inferred $K$ numbers".
+
+**Why the third line is separate from the second, and not a pedantic split.** Both
+report the omega prior rather than an inference, so it is tempting to merge them. They
+answer different questions and only one is fixable by thinking harder about priors.
+*Asserted* means the data were silent along that direction, which is correct Bayesian
+behaviour and is what the prior is for. *Not representable* means **we never asked**:
+the parameter was pinned in the simulations, so no cloud, emulator, or fit built on
+that pool can say anything about it, and reporting its omega-layer value as though it
+had survived a fit is reporting a design limitation as a result.
+
+The seam is `vary_policy`, which pins a non-varying parameter by driving its sigma to
+~0 and so conflates $\omega_j = 0$ with $\mu_j$ known. Measured on the current pdac
+pool: 227 of 271 parameters have a pool log-sd of $0.001$, giving
+$\Sigma\omega_{\text{eff}}^2/\Sigma\omega^2 = 0.17$. **83% of the reported population
+variance is currently in this category and is being accounted as *asserted*.** That is
+the single largest line in the budget and the most over-readable, so it ships as its
+own row with `omega_supported_frac` next to it. The fix is a re-simulation varying
+those parameters at their real $\omega$; nothing on the estimator side reaches it.
 
 **ESS is gated, as a numerical check, not as a conflict diagnostic.** These are two
 separate claims and only the second is about misspecification. Under prior-data
