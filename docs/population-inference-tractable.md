@@ -336,15 +336,45 @@ readouts, giving an anchor-vector correlation of only 0.14 against 0.63 within a
 observable. Independence costs about four points of coverage, not an order of
 magnitude.
 
-The dependence is **concentrated in a few near-duplicate pairs** rather than spread
-across the cohort. In that same group $\max\lvert\rho\rvert = 0.992$, and the two-target
-studies `(cd8_pct, cd8gzmb_pct)` at $\rho = 0.990$ and `(cd8_fc, cd8gzmb_fc)` at
-$\rho = 0.994$ carry anchor correlations of 0.63 and 0.67. Those are where independence
-is genuinely wrong, and they are the same pairs `vpop/diagnostics.py:duplicate_observables`
-already flags at its 0.99 threshold as a *model-structure* finding: two readouts the
-model cannot tell apart, handed two different observed distributions. So the covariance
-correction and the misspecification triage point at the same objects, which is a reason
-to run the triage before concluding the block is merely a bookkeeping fix.
+The dependence is **concentrated in a few pairs** rather than spread across the cohort:
+in that same group $\max\lvert\rho\rvert = 0.992$, and the two-target studies
+`(cd8_pct, cd8gzmb_pct)` at $\rho = 0.990$ and `(cd8_fc, cd8gzmb_fc)` at $\rho = 0.994$
+carry anchor correlations of 0.63 and 0.67.
+
+**Those correlations are not a model degeneracy, and they are not a fixed number.** The
+tempting reading, which `vpop/diagnostics.py:duplicate_observables` invites at its 0.99
+threshold, is that the model cannot tell the two readouts apart. Checked, it can:
+GZMB+ CD8 cells are a subset of CD8 cells, and the model's per-patient GZMB *fraction*
+varies with log-sd 0.31 to 0.41. It is simply small next to the level, which varies with
+log-sd 2.4 to 2.6. Writing $\log X_{\text{gzmb}} = \log X_{\text{cd8}} + \log r$ with the
+two roughly independent gives
+
+$$\rho \;=\; \big(1 + (\sigma_r/\sigma_L)^2\big)^{-1/2},$$
+
+which is $0.99$ at $\sigma_L = 2.55$ and reproduces the measurement. So $\rho$ is
+manufactured by the width of the population it is evaluated on, and **the cloud is a
+deliberately generous proposal, not the fitted population**: its log-sd for
+`cd8_pct_baseline` is 2.55 against 1.03 in the published patient values. At the observed
+width the same decomposition gives $\rho \approx 0.93$. That is the right way round for
+the implementation, since $C_{jl}$ is evaluated at the current $\varphi$ and so is
+computed on the fitted population rather than on the proposal, but it means the numbers
+in the table above are an upper bound on how much the block will matter in the fit.
+
+The screen is still worth running, and it does find one real duplicate:
+`treg_fraction_cd4` and `treg_fraction_cd4_hiraoka2006` are byte-identical columns in
+the cloud, the same simulated quantity emitted under two target names. That is the case
+the diagnostic is for. The lesson for the diagnostic itself is that a Spearman screen on
+*levels* conflates "the same variable" with "the same scale, different fraction"; a
+subset-versus-total pair fires it without any model defect.
+
+**A provenance limit worth knowing before relying on any of this.** The per-patient
+pairing is not recoverable from the targets: all 21 rows of
+`vpop_marginal_targets.csv` carrying a `values` list have it stored **sorted**, so those
+are marginal samples with the patient correspondence discarded. The covariance block is
+unaffected, since it needs only the *model's* copula. What is not answerable from the
+current target data is the validation question, whether the model's cross-observable
+dependence is right. Recovering that needs the paired per-patient records from the
+source, not the digitized marginals.
 
 **$\eta_s$ does not cover this, and pretending it does corrupts a misspecification
 statistic.** The study offset is a shared systematic *shift* with an inferred scale;
