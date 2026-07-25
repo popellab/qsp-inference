@@ -12,7 +12,11 @@ from qsp_inference.targets import (
     anchors_from_sources,
     cohort_quantiles,
 )
-from qsp_inference.targets.anchors import _resolvable_grid
+from qsp_inference.targets.anchors import (
+    MIN_PATIENTS_PER_ANCHOR,
+    QUANTILE_METHOD,
+    _resolvable_grid,
+)
 
 
 class _StubOD:
@@ -38,7 +42,9 @@ def test_samples_branch_uses_empirical_quantiles():
     a = anchors[0]
     assert a.source == "samples" and a.feeds_spread is True
     assert a.p_levels == (0.25, 0.5, 0.75)
-    np.testing.assert_allclose(a.values, np.quantile(arr, [0.25, 0.5, 0.75]))
+    np.testing.assert_allclose(
+        a.values, np.quantile(arr, [0.25, 0.5, 0.75], method=QUANTILE_METHOD)
+    )
 
 
 def test_ci95_fallback_when_no_samples():
@@ -80,7 +86,9 @@ def test_custom_grid_deciles_from_samples():
         quantiles=grid,
     )
     assert anchors[0].p_levels == grid
-    np.testing.assert_allclose(anchors[0].values, np.quantile(arr, grid), atol=1e-9)
+    np.testing.assert_allclose(
+        anchors[0].values, np.quantile(arr, grid, method=QUANTILE_METHOD), atol=1e-9
+    )
 
 
 def test_too_few_samples_falls_back_to_ci95():
@@ -145,7 +153,9 @@ def test_observed_at_n_is_noisier_than_full_pool():
         quantiles=(0.25, 0.5, 0.75), n=30, seed=2,
     )
     # full-pool ~ population quantiles; n=30 draw deviates from them...
-    np.testing.assert_allclose(full[0].values, np.quantile(arr, [0.25, 0.5, 0.75]))
+    np.testing.assert_allclose(
+        full[0].values, np.quantile(arr, [0.25, 0.5, 0.75], method=QUANTILE_METHOD)
+    )
     assert not np.allclose(at_n_a[0].values, full[0].values, atol=1e-3)
     # ...and different seeds give different observed draws.
     assert not np.allclose(at_n_a[0].values, at_n_b[0].values)
@@ -196,8 +206,14 @@ def test_cohort_quantiles_shape_and_values():
     assert summary.shape == (n_cohorts, 6)
     assert valid.all()
     xr = x.reshape(n_cohorts, n_cohort, n_obs)
-    np.testing.assert_allclose(summary[:, 0], np.nanpercentile(xr[:, :, 0], 25, axis=1))
-    np.testing.assert_allclose(summary[:, 4], np.nanpercentile(xr[:, :, 1], 50, axis=1))
+    np.testing.assert_allclose(
+        summary[:, 0],
+        np.nanpercentile(xr[:, :, 0], 25, axis=1, method=QUANTILE_METHOD),
+    )
+    np.testing.assert_allclose(
+        summary[:, 4],
+        np.nanpercentile(xr[:, :, 1], 50, axis=1, method=QUANTILE_METHOD),
+    )
 
 
 def test_cohort_quantiles_ragged_widths():
@@ -218,3 +234,76 @@ def test_cohort_quantiles_marks_sparse_cohorts_invalid():
 def test_cohort_quantiles_shape_mismatch_raises():
     with pytest.raises(ValueError, match="anchor_p_levels has"):
         cohort_quantiles(np.zeros((10, 2)), 2, 5, [(0.5,)], min_patients=1)
+
+
+# --- small-n estimator + anchor-density budget ------------------------------
+
+def test_resolvable_grid_density_cap_falls_back_to_quartiles():
+    """Individually resolvable is not enough: the anchor VECTOR needs n >= 2k.
+
+    At n=11 every decile passes the resolvability filter ([1/12, 11/12]), but
+    nine anchors from eleven patients is not a Gaussian vector, so the grid
+    drops to a symmetric triple. At n=21 the budget is met and deciles stay.
+    """
+    deciles = tuple(round(0.1 * i, 2) for i in range(1, 10))
+    # ties break outward, keeping the wider (more spread-informative) pair
+    assert _resolvable_grid(deciles, 11) == (0.2, 0.5, 0.8)
+    assert _resolvable_grid(deciles, 21) == deciles
+    # a grid that does contain the quartiles falls back to exactly them
+    mixed = (0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9)
+    assert _resolvable_grid(mixed, 11) == (0.25, 0.5, 0.75)
+    # quartiles themselves need n >= 2 * 3; below that, median only
+    assert _resolvable_grid((0.25, 0.5, 0.75), 6) == (0.25, 0.5, 0.75)
+    assert _resolvable_grid((0.25, 0.5, 0.75), 5) == (0.5,)
+
+
+def test_density_cap_reaches_the_samples_branch():
+    rng = np.random.default_rng(20)
+    arr = rng.normal(size=5000)
+    deciles = tuple(round(0.1 * i, 2) for i in range(1, 10))
+    anchors, _ = anchors_from_sources(
+        ["o"], [arr], np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        quantiles=deciles, n=11,
+    )
+    assert len(anchors[0].p_levels) * MIN_PATIENTS_PER_ANCHOR <= 11
+
+
+def test_small_n_iqr_is_not_shrunk():
+    """The regression test for QUANTILE_METHOD.
+
+    numpy's default quantile estimator shrinks the sample IQR by ~15% at n=9.
+    Anything comparing that summary against a POPULATION IQR inherits the
+    shrinkage as a low bias on sigma_u_hat, so pin both the fix and the failure.
+    """
+    n_cohorts, n_cohort = 8000, 9
+    rng = np.random.default_rng(21)
+    x = rng.standard_normal((n_cohorts * n_cohort, 1))
+    iqr_pop = 2 * 0.6744897501960817          # standard normal IQR
+
+    summary, valid = cohort_quantiles(
+        x, n_cohorts, n_cohort, [(0.25, 0.5, 0.75)], min_patients=n_cohort
+    )
+    assert valid.all()
+    ratio = float((summary[:, 2] - summary[:, 0]).mean() / iqr_pop)
+    assert 0.97 < ratio < 1.06, f"IQR ratio {ratio:.3f} away from 1"
+
+    xr = x.reshape(n_cohorts, n_cohort)
+    q = np.nanpercentile(xr, [25, 75], axis=1)            # numpy default
+    assert float((q[1] - q[0]).mean() / iqr_pop) < 0.90   # the bias being avoided
+
+
+def test_observed_and_cohort_summaries_share_the_estimator():
+    """Matched footing at the summary level: one estimator, both sides."""
+    rng = np.random.default_rng(22)
+    pool = rng.normal(size=4000)
+    n = 30
+    anchors, _ = anchors_from_sources(
+        ["o"], [pool], np.array([0.0]), np.array([-2.0]), np.array([2.0]),
+        quantiles=(0.25, 0.5, 0.75), n=n, seed=3,
+    )
+    # rebuild the same seeded n-subsample and summarise it through the training path
+    draw = np.random.default_rng(3).choice(pool, size=n, replace=False)
+    summary, _ = cohort_quantiles(
+        draw.reshape(n, 1), 1, n, [(0.25, 0.5, 0.75)], min_patients=2
+    )
+    np.testing.assert_allclose(anchors[0].values, summary[0])

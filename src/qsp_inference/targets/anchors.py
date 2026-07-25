@@ -25,6 +25,11 @@ Source priority per observable (highest first):
 This is the observed-data half of the maple target-data contract; the prior
 half (population ``omega`` from ``n_biological`` / ``spread_source``) is the
 sibling that a shared target resolver will factor against.
+
+**Two small-``n`` choices are load-bearing and are made here, once, for both
+sides of the contract** (the observed anchor and the training cohort summary):
+the quantile estimator (:data:`QUANTILE_METHOD`) and the anchor-count budget
+(:data:`MIN_PATIENTS_PER_ANCHOR`). See their docs for the measurements.
 """
 from __future__ import annotations
 
@@ -34,9 +39,78 @@ from typing import Optional, Sequence
 import numpy as np
 from scipy.stats import norm
 
-__all__ = ["ObservedAnchors", "anchors_from_sources", "cohort_quantiles"]
+__all__ = [
+    "ObservedAnchors",
+    "anchors_from_sources",
+    "cohort_quantiles",
+    "QUANTILE_METHOD",
+    "MIN_PATIENTS_PER_ANCHOR",
+]
 
 _Z_95 = 1.959963984540054  # Phi^-1(0.975)
+
+QUANTILE_METHOD = "normal_unbiased"
+"""The quantile estimator, for the observed anchor AND the cohort summary alike.
+
+NumPy's default (``method='linear'``, Hyndman-Fan type 7) shrinks the sample IQR
+badly at the ``n`` published QSP targets actually carry. Measured
+``E[IQR_hat_n] / IQR_pop`` on a Gaussian population:
+
+===  ========  ===============  =================
+ n    linear   median_unbiased  normal_unbiased
+===  ========  ===============  =================
+  6     0.788            1.028              1.009
+  9     0.848            1.026              1.015
+ 12     0.891            1.018              1.010
+ 16     0.917            1.012              1.006
+ 30     0.954            1.005              1.001
+===  ========  ===============  =================
+
+The same shrinkage was measured on a 2000-patient PDAC cloud at each target's
+real published ``n`` (ratio 0.78 at n=6, 0.87 at n=9-12), i.e. it is a property
+of the estimator and ``n``, not of any particular population shape.
+
+**Why the default is not merely cosmetic.** Any estimator that compares an
+observed sample quantile against a *population* quantile (the summary-likelihood
+path of docs ch. 4b, whose mean model is ``Q_j(phi)``) inherits the shrinkage
+directly as a **low** bias on ``sigma_u_hat`` of 15-25% at n=6-12 -- the failure
+mode ch. 4's matched footing exists to prevent, arriving from a different source.
+The amortized path (ch. 4) is only partly protected: the shrinkage cancels when
+both sides are summarised by this module, but NOT for a target taking the
+``observed_distribution`` branch, whose quantiles were computed by the reporting
+paper's own software.
+
+Do not set this per call site. Both sides must use the same estimator, and a
+module constant is what enforces that.
+"""
+
+MIN_PATIENTS_PER_ANCHOR = 2.0
+"""Patients required per retained anchor, beyond mere resolvability.
+
+:func:`_resolvable_grid` drops anchors a sample of size ``n`` cannot *resolve*.
+That is necessary and not sufficient: a grid can be individually resolvable and
+still too dense for the **joint** sampling law of the anchor vector to be
+Gaussian. Measured on the PDAC cloud, log scale, corrected estimator, as the
+Mahalanobis ``D^2/k`` of the anchor vector against its asymptotic covariance
+(1.00 is exact; below 1 means the asymptotic covariance overstates the true
+joint spread):
+
+=======  ==========  ============  ============  =========
+   n      quartiles   (.2,.5,.8)    (.1,.5,.9)    deciles
+=======  ==========  ============  ============  =========
+   6-8        0.976         0.813            --      0.559
+  9-12        0.949         0.963         0.975      0.751
+ 21-60        0.993         0.945         0.952      0.936
+   >60        1.015         0.965         0.954      0.999
+=======  ==========  ============  ============  =========
+
+Nine anchors from <= 12 patients is not a Gaussian vector; three anchors are, at
+every spacing tried. The failure direction is conservative rather than invalid,
+but it is not harmless for ``omega``: an over-flat likelihood lets the
+``log sigma_u`` prior dominate, so a population genuinely wider than the anchored
+omega goes undetected. ``n >= 2k`` covers every cell measured (quartiles at n=6
+is 2.0; deciles at n=21 is 2.3; deciles at n <= 16 is <= 1.8 and fails).
+"""
 
 
 @dataclass
@@ -64,18 +138,53 @@ class ObservedAnchors:
         return [(float(p), float(v)) for p, v in zip(self.p_levels, self.values)]
 
 
-def _resolvable_grid(quantiles, n) -> tuple:
-    """Drop anchors more extreme than a sample of size ``n`` can resolve.
+def _resolvable_grid(quantiles, n, *, min_per_anchor: float = MIN_PATIENTS_PER_ANCHOR) -> tuple:
+    """Drop anchors a sample of size ``n`` cannot support. Two filters, in order.
 
-    Keep ``p`` in ``[1/(n+1), n/(n+1)]`` -- the range a rank statistic of ``n``
-    draws actually informs; a 6-donor study cannot resolve ``Q(0.95)``. The
-    median always survives (for ``n >= 1``). ``n=None`` leaves the grid untouched.
+    **Resolvability (per anchor).** Keep ``p`` in ``[1/(n+1), n/(n+1)]`` -- the
+    range a rank statistic of ``n`` draws actually informs; a 6-donor study
+    cannot resolve ``Q(0.95)``. The median always survives (for ``n >= 1``).
+
+    **Density (the anchor vector as a whole).** Resolvable-one-at-a-time does not
+    make the *joint* sampling law Gaussian: nine deciles from 11 patients all pass
+    the first filter and are still not a Gaussian vector
+    (:data:`MIN_PATIENTS_PER_ANCHOR` carries the measurement). So require
+    ``n >= min_per_anchor * len(grid)``, and when that binds, fall back to a
+    symmetric **3-anchor** subset (:func:`_coarse_triple`), then to the median
+    below that. Three is where the fallback stops rather than some thinned
+    intermediate count because ``k=3`` is what was measured calibrated, at every
+    spacing from ``(0.25, 0.5, 0.75)`` out to ``(0.1, 0.5, 0.9)``; an
+    interpolated anchor count would assert a calibration nobody checked.
+
+    ``n=None`` leaves the grid untouched (a denoised full-pool quantile, not an
+    ``n``-statistic, so neither filter applies).
     """
     if n is None:
         return tuple(quantiles)
     lo, hi = 1.0 / (n + 1.0), n / (n + 1.0)
     keep = tuple(p for p in quantiles if lo <= p <= hi)
-    return keep if keep else (0.5,)
+    if not keep:
+        return (0.5,)
+    if len(keep) * min_per_anchor <= n:
+        return keep
+    coarse = _coarse_triple(keep)
+    if len(coarse) * min_per_anchor <= n:
+        return coarse
+    return (min(keep, key=lambda p: (abs(p - 0.5), p)),)
+
+
+def _coarse_triple(keep: tuple) -> tuple:
+    """The 3-anchor symmetric subset of ``keep`` nearest ``(0.25, 0.5, 0.75)``.
+
+    Ties break *outward*, so deciles reduce to ``(0.2, 0.5, 0.8)`` rather than
+    ``(0.3, 0.5, 0.7)``: the wider pair carries more spread information at the
+    same anchor count, and both were measured calibrated (see
+    :data:`MIN_PATIENTS_PER_ANCHOR`).
+    """
+    lower = min(keep, key=lambda p: (abs(p - 0.25), p))
+    mid = min(keep, key=lambda p: (abs(p - 0.5), p))
+    upper = min(keep, key=lambda p: (abs(p - 0.75), -p))
+    return tuple(sorted({lower, mid, upper}))
 
 
 def _ci95_expand(median, lo, hi, p_levels) -> np.ndarray:
@@ -121,9 +230,17 @@ def anchors_from_sources(
     training summaries and the VPC null (which are ``n``-cohort statistics), when
     ``n`` is given the ``samples`` branch draws a single seeded ``n``-subsample
     from the pool and takes *its* quantiles, and the anchor grid is clipped to
-    what ``n`` can resolve (:func:`_resolvable_grid`). A reported
-    ``observed_distribution`` is already an ``n``-statistic, so it is taken
-    verbatim.
+    what ``n`` can resolve *and* support jointly (:func:`_resolvable_grid`).
+    Quantiles use :data:`QUANTILE_METHOD`, not numpy's default.
+
+    A reported ``observed_distribution`` is already an ``n``-statistic, so it is
+    taken verbatim. **Two known holes in that branch**, both benign today because
+    no target carries one yet, both real once they do: its quantiles were computed
+    by the reporting paper's own software, so the estimator correction of
+    :data:`QUANTILE_METHOD` does not apply to it and does not cancel against the
+    training side; and its grid bypasses the density budget of
+    :data:`MIN_PATIENTS_PER_ANCHOR`, so a paper reporting deciles from 9 patients
+    would deliver a nine-anchor vector whose joint law is not Gaussian.
 
     Args:
         obs_names: observable ids.
@@ -185,9 +302,9 @@ def anchors_from_sources(
                     # Observed at real n: one seeded n-subsample of the pool, so
                     # the anchor carries the same finite-sample law as training.
                     draw = rng.choice(arr, size=int(ni), replace=False)
-                    vals = np.quantile(draw, gi)
+                    vals = np.quantile(draw, gi, method=QUANTILE_METHOD)
                 else:
-                    vals = np.quantile(arr, gi)          # n unknown / pool <= n
+                    vals = np.quantile(arr, gi, method=QUANTILE_METHOD)  # n unknown / pool <= n
                 anchors.append(ObservedAnchors(gi, vals, True, "samples"))
                 n_from_samples += 1
                 continue
@@ -214,6 +331,12 @@ def cohort_quantiles(
     *values* at that observable's anchor p-levels, concatenated across
     observables (ragged widths allowed).
 
+    Uses :data:`QUANTILE_METHOD`, the same estimator
+    :func:`anchors_from_sources` applies to the observed anchor. That pairing is
+    the point: numpy's default shrinks the sample IQR by 15-25% at n=6-12, and a
+    summary statistic computed one way on the observed side and another way here
+    is a matched-footing failure that lands straight on ``sigma_u_hat``.
+
     Args:
         x_flat: ``(n_cohorts * n_cohort, n_obs)`` cohort-major patient matrix.
         anchor_p_levels: length ``n_obs``; the p-levels for each observable.
@@ -239,7 +362,11 @@ def cohort_quantiles(
         for j in range(n_obs):
             ps = np.asarray(anchor_p_levels[j], dtype=np.float64)
             # nanpercentile over the patient axis -> (len(ps), C); transpose.
-            q = np.nanpercentile(x[:, :, j], ps * 100.0, axis=1)  # (len(ps), C)
+            # Same estimator as the observed anchor (QUANTILE_METHOD) -- a
+            # mismatch here is a matched-footing failure at the summary level.
+            q = np.nanpercentile(
+                x[:, :, j], ps * 100.0, axis=1, method=QUANTILE_METHOD
+            )  # (len(ps), C)
             cols.append(np.atleast_2d(q).T)                       # (C, len(ps))
     summary = np.hstack(cols)                                     # (C, sum len)
     return summary, valid
