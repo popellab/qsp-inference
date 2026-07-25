@@ -180,16 +180,35 @@ its own hyperprior, and the observations are cohort summaries. We infer
 $p(\varphi \mid \text{summaries})$ by amortized inference over simulated cohorts, and
 emit the virtual population as draws at $\hat\varphi$.
 
-Two choices here are statistical rather than incidental. The first: you cannot estimate
-two hundred population spreads when only a few directions carry signal, so $\log\omega$
-is inferred along the leading eigen-directions of $\pi$'s covariance — the directions
-the data speak to — and left at its anchored prior value everywhere else. The
-identifiability limit that governs the flat posterior governs the population spread in
-exactly the same way, and the eigenbasis is where that limit is imposed. The second:
-the amount a target says about the spread should match how many patients it was measured
-in. A target reported over six patients constrains $\omega$ weakly; one over nine
-hundred constrains it tightly. Cohort summaries are drawn at each target's real
+Four choices here are statistical rather than incidental. The first: the population
+covariance is not $\pi$'s covariance. $\pi$ measures *epistemic* uncertainty about the
+typical patient, and between-patient variability is a different quantity with its own
+prior, built per parameter from class defaults and from population blocks shrunk by
+their own sample size. Reading the population off $\pi$'s marginal widths would report
+wide variability wherever the literature is thin and narrow variability wherever it is
+dense, which is a statement about us and not about patients. Only the *correlations* are
+borrowed from $\pi$, and that borrowing is a declared assumption.
+
+The second: you cannot estimate two hundred population spreads when only a few
+directions carry signal, so $\log\omega$ is inferred along the leading directions of the
+data Fisher whitened by that population covariance (the directions the data speak to per
+unit of between-patient variance) and left at its anchored prior value everywhere else.
+The identifiability limit that governs the flat posterior governs the population spread
+in exactly the same way, and the eigenbasis is where that limit is imposed. How many such
+directions there are is capped by how many targets report genuine across-patient spread,
+not by how promising the spectrum looks.
+
+The third: the amount a target says about the spread should match how many patients it
+was measured in. A target reported over six patients constrains $\omega$ weakly; one over
+nine hundred constrains it tightly. Cohort summaries are drawn at each target's real
 published $n$, so the evidence is weighted honestly.
+
+The fourth: structural misfit gets an explicit home rather than being absorbed into the
+spread. A study-level offset and a per-observable discrepancy term sit alongside
+$(\mu,\omega)$, so a mechanism that is wrong for one readout, or a cohort recruited under
+different criteria, is reported as that rather than as extra between-patient variability.
+Without them the only place a residual can go is $\omega$, and the population comes out
+wide for reasons that have nothing to do with patients.
 
 An older construction — generate a cloud of plausible patients and reweight it to match
 the observed marginals (Allen et al. 2016) — remains available as a fixed-cloud
@@ -298,7 +317,7 @@ full map.
 |---|---|---|
 | building the prior $\pi$ | `priors/`, `submodel/` | [Submodel Inference Guide](submodel-inference-guide.md) |
 | the flat posterior | `inference/` | [Stage 2 SBI Guide](stage2-sbi-guide.md) |
-| the population $F(\theta\mid\hat\varphi)$ | `vpop/` | *(guide lands with the hierarchical path)* |
+| the population $F(\theta\mid\hat\varphi)$ | `vpop/`, `targets/` | [the model](population-inference-guide.md); [diagnose first, then fit](population-inference-tractable.md) |
 | the workflow checks | `inference/diagnostics.py`, `vpop/diagnostics.py`, `audit/` | [Stage 2 SBI Guide](stage2-sbi-guide.md#diagnostics) |
 | experimental design | `inference/obed.py` | [Stage 2 SBI Guide](stage2-sbi-guide.md#optimal-bayesian-experimental-design-obed) |
 
@@ -327,6 +346,8 @@ Greenberg, Nonnenmacher & Macke (2019), *Automatic posterior transformation for
 likelihood-free inference*, ICML. —
 Gutenkunst et al. (2007), *Universally sloppy parameter sensitivities in systems biology
 models*, PLoS Comput. Biol. —
+Hesterberg (1995), *Weighted average importance sampling and defensive mixture
+distributions*, Technometrics. —
 Kong, Liu & Wong (1994), *Sequential imputation and Bayesian missing data problems*,
 JASA. —
 Nelsen (2006), *An Introduction to Copulas*. —
