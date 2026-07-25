@@ -1,4 +1,10 @@
-"""Virtual-population construction: plausible-patient cloud + prevalence weighting."""
+"""Virtual-population construction: plausible-patient cloud + prevalence weighting,
+plus the closed-form summary likelihood and its NUTS fit (docs ch. 4b).
+
+The ch. 4b modules need torch (and pyro-ppl to sample), so they are imported
+under try/except like the rest of the package's optional-dep surface; import
+``qsp_inference.vpop.summary_likelihood`` directly for a clear ImportError.
+"""
 
 from qsp_inference.vpop.diagnostics import (
     CoreResult,
@@ -30,7 +36,40 @@ from qsp_inference.vpop.proposal import (
     reachable_accept_fn,
 )
 
-__all__ = [
+try:  # torch-only: the ch. 4b summary likelihood and its fit
+    from qsp_inference.vpop.summary_likelihood import (
+        StudyBlock,
+        SummaryLikelihood,
+        TargetAnchor,
+        anchor_covariance,
+        build_study_blocks,
+        bvn_cdf,
+        normal_score_correlation,
+    )
+    from qsp_inference.vpop.population_fit import (
+        PopulationFit,
+        PopulationPosterior,
+        PopulationPrior,
+        run_nuts,
+    )
+
+    _CH4B = [
+        "StudyBlock",
+        "SummaryLikelihood",
+        "TargetAnchor",
+        "anchor_covariance",
+        "build_study_blocks",
+        "bvn_cdf",
+        "normal_score_correlation",
+        "PopulationFit",
+        "PopulationPosterior",
+        "PopulationPrior",
+        "run_nuts",
+    ]
+except ImportError:  # pragma: no cover - torch is an optional extra
+    _CH4B = []
+
+__all__ = _CH4B + [
     "VPopResult",
     "build_quantile_constraints",
     "fit_prevalence_weights",
