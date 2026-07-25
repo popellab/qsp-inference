@@ -498,6 +498,18 @@ and $\log\sigma_u$ and let the prior return the answer where the data are silent
 which is the correct posterior and what Ch. 1 says should happen. The eigenbasis
 stays, in two reduced roles that are both better than selection:
 
+**With one hard qualifier on "all $P$", which is a fact about the pool and not about
+the estimator.** 227 of the current 271 parameters have a pool log-sd of $0.001$: the
+simulations never varied them. Only about 44 directions carry any signal at all, and
+measured against the layered omega prior, $\Sigma\omega_{\text{eff}}^2/\Sigma\omega^2 =
+0.17$, so **83% of the population's nominal log-variance sits on parameters the
+emulator has never seen move.** Along those the likelihood is not merely flat, it is
+undefined, and pushing a $\theta$ that varies them through the emulator is
+extrapolation, not inference. "Infer all $P$ and let the prior answer" is right in
+principle and, on this pool, describes 44 parameters with a prior-only report on the
+rest that is an artifact of the simulation design rather than of the data. Widening
+the pool over the pinned parameters is the fix; reporting them as inferred is not.
+
 - **Parameterization.** $\theta = \exp(\mu + W(\sigma_u \odot z))$ is the non-centered,
   prior-whitened form, which is exactly the geometry NUTS needs to sample a few
   hundred correlated dimensions with a nearly flat likelihood in most of them.
@@ -543,6 +555,62 @@ These are correctness, not elaboration, and they apply to the fixed-cloud fit to
   from the posterior-predictive marginal, with $\varphi$ drawn once per simulated
   trial.
 - SBC as the gate.
+
+## What the current build actually supplies
+
+Everything above is the design. This section is the measured state of the machinery
+it has to run on, as of the current pools (`multi_scenario_v5_qual_migration`,
+$\theta$-hash `d1a0b1de72e6`, 5 scenarios x 50k rows). A build that starts from the
+design alone will make three wrong assumptions, so they are recorded here rather than
+left to be rediscovered.
+
+**The emulator is good, and it is not the binding constraint where $\omega$ lives.**
+`figures/emulator_nn.pt` (`scripts/compute_nn_emulator.py`, one shared-trunk MLP per
+scenario) reaches held-out $R^2 = 0.984$ against the GBM path's $0.966$, a 3.4x
+smaller residual. With $\varepsilon$ the held-out residual SD and SE the sampling SE
+of the log median at each target's real $n$:
+
+| $n$ | targets | $R^2$ | $\varepsilon/\text{SE}$ | $n_{\text{eff}}$ |
+|---|---|---|---|---|
+| ≤12 | 25 | 0.989 | 0.56 | 7.0 |
+| 13-30 | 4 | 0.976 | 1.26 | 7.2 |
+| 31-120 | 30 | 0.961 | 2.58 | 12.8 |
+| >120 | 6 | 0.988 | 2.55 | 23.7 |
+
+Small-$n$ targets, which is where $\sigma_u$ is identified and where every result in
+§*It was checked* applies, are sampling-limited rather than surrogate-limited. Larger-$n$
+targets are surrogate-limited and contribute far less than their $n$ suggests: 4767
+nominal patients carry the information of 835. Those mostly inform $\mu$, so it is not
+fatal, but do not quote a target's $n$ as its weight.
+
+**Read `omega_supported_frac` before quoting any of it.** It is 0.171, for the reason
+in §*$K$ is an artifact*. The budget above describes the 17% of population geometry the
+pool can express and is silent on the rest.
+
+**`within_cohort` is a live trap with a fixed version.** It used to be
+$\lVert J_i\rVert\,\omega_0$ with a flat $\omega_0 = 0.4$ (~400x the median pool
+log-sd) and $J$ from an unregularised lstsq over mostly-pinned columns. That produced
+a within-cohort spread 12x *larger* than the observable's total spread across the whole
+prior, and every `resid_over_within` and `iqr_inflation_pct` derived from it. It now
+comes from the layered omega prior, measured by pushing $\omega$-dispersed cohorts
+through the fitted emulator (`workflows/emulator.py:within_cohort_from_omega` in
+pdac-build). Any budget CSV predating that fix is not comparable.
+
+**Viability is 38%, not a rounding error.** Only 30.7k of 50k pool draws simulate at
+all, and it is nearly all-or-nothing per patient rather than per observable. So
+$Z(\varphi)$ in §*Common random numbers* is large, strongly $\varphi$-dependent, and
+the saturation it induces (as $\sigma_u$ grows, $Z$ shrinks and cohort spread stops
+responding) bites inside the range where $\sigma_u$ is being read. The smooth
+viability weight is `inference/restriction.py:RestrictionClassifier.score`, which
+already returns $P(\text{valid}\mid\theta)$ as a probability; `accept()` is the hard
+threshold on top of it and is what introduces the discontinuity. Its gradient is
+piecewise-constant (boosted trees), so decide deliberately whether
+$\partial w_{\mathcal V}/\partial\varphi$ needs to flow.
+
+**One broken observable.** `PDAC_IL10_tumor_tissue_Herremans2023` reaches $R^2 = 0.31$
+and is non-finite for every patient in the resimulated cloud. That is an output-extraction
+fault, not a modelling one, and it should be fixed or dropped before it contributes a
+target.
 
 ## When to escalate to Chapter 4
 
@@ -607,7 +675,10 @@ $\tau^2$, and the top-$|\lambda|$ dual localizer.
 | observed quantile anchors + provenance; `QUANTILE_METHOD`, `MIN_PATIENTS_PER_ANCHOR` | `targets/anchors.py` |
 | population omega prior feeding $\Gamma_\omega$ | `targets/omega.py` |
 | normal-score correlations for the copula block $C_{jl}$ | `inference/gaussian_copula_transform.py` |
-| smooth viability weight + weighted quantiles | `inference/importance.py:weighted_quantile` |
+| smooth viability weight ($P(\text{valid}\mid\theta)$, unthresholded) | `inference/restriction.py:RestrictionClassifier.score` |
+| weighted quantiles for that weight | `inference/importance.py:weighted_quantile` |
+| differentiable NN emulator + its error budget | pdac-build `workflows/nn_emulator.py`, `scripts/compute_nn_emulator.py` → `figures/emulator_nn.pt`, `figures/nn_emulator_error_budget.csv` |
+| $\omega$-based `within_cohort`, `omega_supported_frac` | pdac-build `workflows/emulator.py:within_cohort_from_omega` |
 | summary likelihood + NUTS population fit | `vpop/summary_likelihood.py` (to build) |
 | SBC gate | `inference/sbc.py` |
 | the full amortized path | [Chapter 4](population-inference-guide.md) |
