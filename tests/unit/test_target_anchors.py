@@ -307,3 +307,63 @@ def test_observed_and_cohort_summaries_share_the_estimator():
         draw.reshape(n, 1), 1, n, [(0.25, 0.5, 0.75)], min_patients=2
     )
     np.testing.assert_allclose(anchors[0].values, summary[0])
+
+
+# --- _ci95_expand: what a target actually supplies -------------------------
+
+
+def test_ci95_expand_uses_the_interval_when_no_center_is_reported():
+    """Qualitative mechanistic targets state a RANGE and no point estimate
+    ("tumour does not regress: fold change 1 to 5"). Before this branch they
+    produced NaN + z*sigma and dropped silently out of any log-scale consumer."""
+    from qsp_inference.targets.anchors import _ci95_expand
+
+    v = _ci95_expand(np.nan, 1.0, 5.0, (0.25, 0.5, 0.75))
+    assert np.isfinite(v).all() and (v > 0).all()
+    assert v[1] == pytest.approx(np.sqrt(5.0))          # geometric midpoint
+    assert v[0] < v[1] < v[2]
+    # the implied 95% interval reproduces the reported bounds
+    edges = _ci95_expand(np.nan, 1.0, 5.0, (0.025, 0.975))
+    assert edges[0] == pytest.approx(1.0)
+    assert edges[1] == pytest.approx(5.0)
+
+
+def test_ci95_expand_keeps_a_positive_quantity_positive_with_one_bound():
+    """A CI reported as touching zero must not throw a strictly positive
+    quantity onto the Gaussian branch, where it returns negative quantiles."""
+    from qsp_inference.targets.anchors import _ci95_expand
+
+    v = _ci95_expand(2.0, 0.0, 6.0, (0.1, 0.5, 0.9))
+    assert (v > 0).all()
+    assert v[1] == pytest.approx(2.0)
+    assert _ci95_expand(2.0, 0.0, 6.0, (0.975,))[0] == pytest.approx(6.0)
+    # and the mirror case, only a lower bound
+    w = _ci95_expand(2.0, 0.5, np.nan, (0.025, 0.5))
+    assert w[0] == pytest.approx(0.5) and w[1] == pytest.approx(2.0)
+
+
+def test_ci95_expand_two_sided_case_is_unchanged():
+    from qsp_inference.targets.anchors import _ci95_expand
+
+    v = _ci95_expand(3.0, 1.0, 9.0, (0.25, 0.5, 0.75))
+    sigma_log = (np.log(9.0) - np.log(1.0)) / (2 * 1.959963984540054)
+    from scipy.stats import norm as _n
+    assert np.allclose(v, np.exp(np.log(3.0) + _n.ppf((0.25, 0.5, 0.75)) * sigma_log))
+
+
+def test_ci95_expand_still_uses_a_gaussian_for_a_signed_quantity():
+    """A quantity that can be negative keeps the linear branch, and its anchors
+    may legitimately be negative. Those targets cannot feed a log-scale
+    likelihood and the caller has to exclude them."""
+    from qsp_inference.targets.anchors import _ci95_expand
+
+    v = _ci95_expand(-1.0, -4.0, 2.0, (0.25, 0.5, 0.75))
+    assert v[1] == pytest.approx(-1.0)
+    assert v[0] < v[1] < v[2]
+
+
+def test_ci95_expand_falls_back_to_a_bare_center():
+    from qsp_inference.targets.anchors import _ci95_expand
+
+    v = _ci95_expand(4.0, np.nan, np.nan, (0.25, 0.5, 0.75))
+    assert np.allclose(v, 4.0)
