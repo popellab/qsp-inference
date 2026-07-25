@@ -188,19 +188,53 @@ def _coarse_triple(keep: tuple) -> tuple:
 
 
 def _ci95_expand(median, lo, hi, p_levels) -> np.ndarray:
-    """Expand a median + 95% interval into ``Q(p)`` at ``p_levels``.
+    """Expand a center and/or a 95% interval into ``Q(p)`` at ``p_levels``.
 
-    Lognormal when all three are positive (the clinical default), else a linear
-    Gaussian around the median. Generalizes the legacy IQR-from-ci95 fallback to
-    an arbitrary anchor grid.
+    Lognormal whenever the quantity is positive, which is the clinical default
+    and the only branch a **log working scale** can consume (docs ch. 4b states
+    the summary likelihood on the log scale). Linear Gaussian only for a
+    genuinely signed quantity.
+
+    Three inputs, any of which may be missing, so the branches are stated by what
+    is actually available rather than by requiring all three:
+
+    - **center and both bounds positive** -- two-sided log-sd, centered on the
+      reported median. The ordinary case.
+    - **no center, both bounds positive** -- a target that specifies a *range and
+      no point estimate*. Common for qualitative mechanistic constraints ("tumour
+      does not regress: fold change 1 to 5"). A 95% interval implies its own
+      center under the same distribution used to expand it, so the geometric
+      midpoint ``sqrt(lo*hi)`` is used. Before this branch existed these targets
+      produced ``NaN + z*sigma`` and silently dropped out of any log-scale
+      consumer.
+    - **center positive, one bound usable** -- one-sided log-sd from whichever
+      side is informative. A CI reported as touching zero is otherwise thrown
+      onto the Gaussian branch, where it returns negative quantiles for a
+      strictly positive quantity.
+
+    A signed quantity (non-positive center) still gets the linear Gaussian, and
+    its anchors can legitimately be negative. Those targets cannot feed a
+    log-scale likelihood and the caller has to exclude them explicitly.
     """
     z = norm.ppf(p_levels)
-    if np.isfinite([median, lo, hi]).all() and median > 0 and lo > 0 and hi > 0:
+    med_ok = bool(np.isfinite(median)) and median > 0
+    lo_ok = bool(np.isfinite(lo)) and lo > 0
+    hi_ok = bool(np.isfinite(hi)) and hi > 0
+
+    center, sigma_log = None, None
+    if lo_ok and hi_ok:
+        center = median if med_ok else float(np.sqrt(lo * hi))
         sigma_log = (np.log(hi) - np.log(lo)) / (2 * _Z_95)
-        return np.exp(np.log(median) + z * sigma_log)
+    elif med_ok and hi_ok:
+        center, sigma_log = median, (np.log(hi) - np.log(median)) / _Z_95
+    elif med_ok and lo_ok:
+        center, sigma_log = median, (np.log(median) - np.log(lo)) / _Z_95
+    if center is not None and sigma_log is not None and sigma_log > 0:
+        return np.exp(np.log(center) + z * sigma_log)
+
     if np.isfinite([lo, hi]).all():
         sigma = (hi - lo) / (2 * _Z_95)
-        return median + z * sigma
+        return (median if np.isfinite(median) else 0.5 * (lo + hi)) + z * sigma
     return np.full(len(p_levels), median, dtype=np.float64)
 
 
