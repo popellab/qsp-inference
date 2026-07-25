@@ -288,11 +288,22 @@ about 1%). Ch. 4 is only partly protected: the shrinkage cancels when both sides
 summarized by that module, but not for a target on the `observed_distribution` branch,
 whose quantiles came from the reporting paper's own software.
 
-Two plug-ins in the covariance are choices, not consequences, and both need declaring.
+**The density plug-in is the weakest part, and weaker than the table above suggests.**
 $f_j$ is estimated from the simulated population predictive by quantile spacing, and
 the bandwidth matters: $D^2/k$ for $n\le20$ ran from 0.95 at $h=0.02$ to 0.76 at
-$h=0.15$. And $f_j$ is re-estimated at every $\varphi$, so it is a moving plug-in whose
-smoothness in $\varphi$ the sampler depends on; hold the bandwidth rule fixed and check.
+$h=0.15$. The table was measured against a smoothed population (the pool's
+piecewise-linear quantile function), which flatters the estimator. Measured against the
+raw discrete cloud instead, the same $h=0.035$ makes the asserted *variance* about 18%
+too large on two heavy-tailed fold-change marginals (`cd8_fc`, `cd8gzmb_fc`) while
+staying within 2% on the well-behaved ones. So the bandwidth is not one global number
+to declare once; it wants a per-observable rule and a per-observable check. And $f_j$ is
+re-estimated at every $\varphi$, so it is a moving plug-in whose smoothness in $\varphi$
+the sampler depends on.
+
+Note which way this cuts. An error in $f_j$ scales the whole covariance for that
+observable, so it acts as a *weight* on how much that target counts, not as a bias on
+$\hat\varphi$ through the mean. It is a precision-misallocation problem, not a
+correctness one, which is why it ranks below the mean-model issues above.
 
 #### Targets that share patients share sampling noise
 
@@ -303,10 +314,37 @@ from the GVAX arm. Those are one assay panel on one set of biopsies.
 
 Their sampling errors are correlated: a cohort that happened to draw high-CD8 patients
 reads high across every CD8 readout at once. A likelihood that factorizes over targets
-counts ten correlated readouts as ten independent observations, and the posterior on
-$\varphi$ comes out too tight by whatever factor the copula implies. In the perfectly
-correlated limit ten targets carry the information of one. That is the overconfident
-direction, which is the one that matters.
+counts correlated readouts as independent observations, which is the overconfident
+direction.
+
+**Measured, and it is smaller and more concentrated than that argument suggests.**
+Drawing cohorts as *rows* of the cloud (one set of $n$ patients, every one of a study's
+observables read off them) and comparing the measured study covariance against the
+formula:
+
+| study | $J$ | $n$ | median $\lvert\rho\rvert$ | $D^2/k$ copula | $D^2/k$ independent | cov90 independent |
+|---|---|---|---|---|---|---|
+| GVAX+nivo | 10 | 10 | 0.21 | 0.871 | 0.945 | 0.860 |
+| GVAX | 6 | 9 | 0.25 | 0.894 | 0.937 | 0.878 |
+| baseline | 7 | 113 | 0.08 | 1.010 | 1.005 | 0.873 |
+
+The formula is right: across-observable covariance entries reproduce to within a few
+percent (median measured/formula ratio 1.0 over all eight multi-target studies). But
+the *penalty for ignoring it* is modest, because **the model's own cross-observable
+dependence is weak**: median $\lvert\rho\rvert = 0.21$ across the ten GVAX+nivo
+readouts, giving an anchor-vector correlation of only 0.14 against 0.63 within an
+observable. Independence costs about four points of coverage, not an order of
+magnitude.
+
+The dependence is **concentrated in a few near-duplicate pairs** rather than spread
+across the cohort. In that same group $\max\lvert\rho\rvert = 0.992$, and the two-target
+studies `(cd8_pct, cd8gzmb_pct)` at $\rho = 0.990$ and `(cd8_fc, cd8gzmb_fc)` at
+$\rho = 0.994$ carry anchor correlations of 0.63 and 0.67. Those are where independence
+is genuinely wrong, and they are the same pairs `vpop/diagnostics.py:duplicate_observables`
+already flags at its 0.99 threshold as a *model-structure* finding: two readouts the
+model cannot tell apart, handed two different observed distributions. So the covariance
+correction and the misspecification triage point at the same objects, which is a reason
+to run the triage before concluding the block is merely a bookkeeping fix.
 
 **$\eta_s$ does not cover this, and pretending it does corrupts a misspecification
 statistic.** The study offset is a shared systematic *shift* with an inferred scale;
