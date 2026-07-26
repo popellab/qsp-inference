@@ -251,6 +251,10 @@ class TestWritePriorsYaml:
         assert m["scale"] == pytest.approx(1.4744178704979357e-11, rel=1e-5)
 
         # The whole point: the round-tripped spec must still admit a log fit.
+        # copula_prior pulls in torch, an optional extra, so this half of the
+        # check only runs where it is installed; the assertions above are the
+        # ones that must hold everywhere.
+        pytest.importorskip("torch")
         from qsp_inference.priors.copula_prior import _log_transform_marginal
 
         fitted = _log_transform_marginal(dict(m))
