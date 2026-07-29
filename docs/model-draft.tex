@@ -1,0 +1,474 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1.05in]{geometry}
+\usepackage{mathpazo}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage[colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent]{hyperref}
+
+\tcbuselibrary{skins,breakable}
+
+\definecolor{accent}{HTML}{1F5C6B}
+\definecolor{accentbg}{HTML}{DCE9EC}
+\definecolor{softgray}{HTML}{6B6B6B}
+\definecolor{warnrule}{HTML}{B8860B}
+\definecolor{warnbg}{HTML}{FBF0D9}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{\thesection}{0.7em}{}
+\setlist[itemize]{leftmargin=1.3em,itemsep=2pt,topsep=3pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.3pt}
+\lhead{\small\color{softgray}The model: a draft}
+\rhead{\small\color{softgray}\thepage}
+
+\newtcolorbox{notebox}{
+  enhanced, breakable, colback=accentbg!55, colframe=accent,
+  boxrule=0pt, leftrule=2.5pt, arc=1pt, left=10pt, right=10pt, top=8pt, bottom=8pt}
+
+\newcommand{\Ncal}{\mathcal{N}}
+\newcommand{\Mset}{\mathcal{M}}
+\newcommand{\Dset}{\mathcal{D}}
+\newcommand{\Rset}{\mathcal{R}}
+\newcommand{\Tr}{^{\!\top}}
+\DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator*{\Cov}{Cov}
+\DeclareMathOperator{\Corr}{corr}
+
+\title{\bfseries The model: a draft}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\section{Indices and dimensions}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+ & Range & \\
+\midrule
+$j$ & $1,\dots,P$ & model parameters \\
+$q$ & $1,\dots,Q$ & model species \\
+$r$ & $1,\dots,M$ & readouts \\
+$s$ & $1,\dots,S$ & scenarios \\
+$c$ & $1,\dots,C$ & study cohorts; $s(c)$ is the scenario cohort $c$ was run under \\
+$k$ & $1,\dots,K_{rc}$ & statistics that cohort $c$ reports for readout $r$ \\
+$i$ & $1,\dots,N$ & simulated patients \\
+$\Rset_c$ & $\subseteq\{1,\dots,M\}$ & the readouts that cohort $c$ reports \\
+$K_c$ & $\sum_{r\in\Rset_c}K_{rc}$ & the rows that cohort $c$ contributes \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\noindent
+$\theta\in\mathbb{R}^P_{+}$ are the parameters and $\vartheta=\log\theta$. A
+\emph{target} is a $(r,c)$ pair. Readouts are on the log scale. $n_c$ is the real
+cohort size, as from the actual data it comes from. A target names a row, not a
+unit of independence; the cohort is that.
+
+\section{The model}
+
+\paragraph{Population.}
+\begin{equation}
+\vartheta_i \mid \mu,\omega \;\sim\; \Ncal_P\big(\mu,\ \Omega\big),
+\qquad
+\Omega \;=\; D_\omega\,R\,D_\omega,
+\qquad
+D_\omega=\diag(\omega),
+\label{eq:pop}
+\end{equation}
+with $R$ a fixed correlation matrix. Realised with common random numbers, so
+that $\vartheta_i$ is a smooth function of $(\mu,\omega)$:
+\begin{equation}
+\vartheta_i \;=\; \mu + D_\omega L_R z_i,
+\qquad
+z_i \stackrel{\text{iid}}{\sim} \Ncal_P(0,I_P) \ \text{ drawn once},
+\qquad
+R = L_R L_R\Tr .
+\label{eq:crn}
+\end{equation}
+
+\paragraph{Mechanism.} Simulate patient $i$ under scenario $s$ and read off the
+species at the measured time:
+\begin{equation}
+y_i(s) \;=\; g\big(\vartheta_i;\,s\big) \;\in\; \mathbb{R}^Q_{+} .
+\label{eq:mech}
+\end{equation}
+A readout composes those species into the scalar a study reports, on the log
+scale:
+\begin{equation}
+x_{irc} \;=\; h_r\big(y_i(s(c))\big).
+\label{eq:readout}
+\end{equation}
+
+\paragraph{Discrepancy.} Two kinds of error, distinguished by where they enter
+and therefore by how they propagate:
+\begin{equation}
+\tilde x_{irc}
+\;=\;
+\kappa_r\;h_r\big(
+\underbrace{e^{\beta}\odot y_i(s(c))}_{\text{mechanism, upstream of }h_r}
+\big)
+\;+\;
+\gamma_r ,
+\qquad
+\underbrace{\gamma_r = Z_r\Tr a,
+\quad
+\log\kappa_r = Z_r\Tr b}_{\text{measurement, downstream of }h_r} .
+\label{eq:disc}
+\end{equation}
+$\gamma$ and $\kappa$ are the location and scale halves of a linear map on the
+readout.
+
+$\beta\in\mathbb{R}^Q$ is a log-scale bias on each \emph{species}, shared across
+readouts and scenarios. It enters upstream of $h_r$, so it propagates through the
+composition on its own: a ratio inherits $\beta_{q_1}-\beta_{q_2}$, a percentage
+inherits $\beta_q - \beta_{\text{nuc}}$, a sum inherits a weighted combination.
+
+$a$ and $b$ are measurement effects on the \emph{readout}, entering downstream of
+$h_r$, so they do not propagate. $Z_r$ holds attributes of the readout that have
+no mechanistic counterpart: assay modality, and whether the quantity is a
+density, a fraction or a concentration.
+
+$\beta=0$, $a=0$, $b=0$ is a model with no discrepancy, that is, a model that is not biased in scale or location on any of the observed species.
+
+\paragraph{The cohort vector of one patient.} Stack the corrected readouts that
+cohort $c$ reports, for a single patient:
+\begin{equation}
+\tilde x_{ic} \;=\; \big(\tilde x_{irc}\big)_{r\in\Rset_c}
+\;\in\; \mathbb{R}^{|\Rset_c|} .
+\label{eq:stack}
+\end{equation}
+Built from $\tilde x$ and not $x$: $\beta$ enters inside $h_r$, so
+\eqref{eq:disc} does not factor through \eqref{eq:readout}.
+
+\paragraph{Cohort selection.} Where cohort $c$ reports an eligibility criterion,
+$w^{(c)}_i\in[0,1]$ is a fixed smooth indicator of whether patient $i$ meets it,
+and $w^{(c)}_i \equiv 1$ otherwise. Write $\tilde F_{c}$ for the
+$w^{(c)}$-weighted empirical distribution of $\{\tilde x_{ic}\}_{i=1}^N$ on
+$\mathbb{R}^{|\Rset_c|}$, and $\tilde F_{rc}$ for its $r$-th marginal.
+
+\paragraph{Statistics.} Cohort $c$ reports statistics $T_{rc1},\dots,T_{rcK_{rc}}$
+for readout $r$, each a functional of a sample. The model computes the same
+functionals of its own predicted sample:
+\begin{equation}
+\tau_{rck}(\phi) \;=\; T_{rck}\big(\tilde F_{rc}\big).
+\label{eq:stat}
+\end{equation}
+Order the rows of cohort $c$ by $r\in\Rset_c$ and then by $k$ within $r$, and
+stack them into $\tau_c(\phi)\in\mathbb{R}^{K_c}$, and the reported values the
+same way into $\widehat T_c$. Since $\tilde F_{rc}$ is a marginal of $\tilde
+F_c$, the joint form changes $V_c$ and leaves $\tau$ alone.
+
+\paragraph{Observation.} One cohort is one block:
+\begin{equation}
+\widehat T_{c} \;\sim\; \Ncal_{K_{c}}\big(\tau_{c}(\phi),\ V_{c}\big),
+\qquad
+\widehat T_{c} \perp \widehat T_{c'} \ \text{ for } c\neq c' .
+\label{eq:obs}
+\end{equation}
+Under the ordering of \eqref{eq:stat}, the diagonal blocks of $V_c$ are the
+per-target covariances and the off-diagonal blocks carry the dependence between
+readouts of one cohort.
+
+\paragraph{Sampling covariance.} $V_{c}$ is the covariance of the reported
+statistics of cohort $c$ under resampling of its $n_c$ patients. It has two
+ingredients. The first is a bootstrap from the predicted population at a plug-in
+$\phi_0$, held fixed thereafter:
+\begin{equation}
+V^{\text{boot}}_{c}
+\;=\;
+\Cov_{\ast}\!\Big[\,T_{c}\big(\tilde F^{\ast}_{c}\big)\,\Big]_{\phi_0},
+\qquad
+\tilde F^{\ast}_{c}
+= \text{resample of } n_c \text{ patients from } \tilde F_{c},
+\label{eq:V}
+\end{equation}
+where a resampled patient carries its whole vector $\tilde x_{ic}$ from
+\eqref{eq:stack}. Drawing patients rather than readout values is what moves the
+cohort's dependence structure into $V_c$.
+
+The second is $E_c$, from the emulator $\widehat g$ standing in for $g$. Define
+it on the statistics and not on the readouts, because the map from a readout
+error to a statistic error depends on the functional. Draw $L$ held-out clouds
+$z^{(\ell)}$ at $\phi_0$, evaluate each both ways, and take the covariance of the
+difference:
+\begin{equation}
+d^{(\ell)}_c
+\;=\;
+\tau^{\widehat g}_c\big(\phi_0;\,z^{(\ell)}\big)
+\;-\;
+\tau^{g}_c\big(\phi_0;\,z^{(\ell)}\big),
+\qquad
+E_c \;=\; \Cov_{\ell}\big[\,d^{(\ell)}_c\,\big],
+\qquad \ell=1,\dots,L .
+\label{eq:Ec}
+\end{equation}
+This is $K_c\times K_c$ by construction. Report $\bar d_c$ beside it: a constant
+part of the emulator error is a fixed offset that $\gamma_r$ absorbs, so only
+the varying part belongs in $V_c$.
+
+The fallback is $E_c=\diag(\varepsilon^2)$, with $\varepsilon_r$ the held-out
+residual of readout $r$ repeated across its $K_{rc}$ statistics. It asserts that
+the emulator errs independently across readouts, which readouts sharing a species
+do not satisfy, and that a readout error enters a scale statistic with the same
+loading as a location statistic, where the true loading is near zero.
+
+\paragraph{Assembling $V_c$.} A reported uncertainty measures $\sqrt{V_c}$ on its
+own diagonal, from the real patients, and carries no dependence on $\phi_0$.
+Split the bootstrap into correlations and scales, and replace only the scales:
+\begin{equation}
+V_c \;=\; D_c\,\rho_c\,D_c \;+\; E_c,
+\qquad
+\rho_c=\Corr\big(V^{\text{boot}}_c\big),
+\qquad
+D_c=\diag(d_c),
+\qquad
+d_{c,rck}=
+\begin{cases}
+U_{rck}, & \text{reported,}\\[2pt]
+\sqrt{\big(V^{\text{boot}}_c\big)_{rck,rck}}, & \text{otherwise,}
+\end{cases}
+\label{eq:Vsplit}
+\end{equation}
+with $U_{rck}$ the reported uncertainty of row $(r,c,k)$, on the log scale. No
+source reports a correlation between readouts, so $\rho_c$ always comes from the
+cloud. This is the split \eqref{eq:pop} already makes for the population
+covariance.
+
+The ratio
+\begin{equation}
+\varrho_{rck} \;=\; U_{rck}\Big/\sqrt{\big(V^{\text{boot}}_c\big)_{rck,rck}}
+\label{eq:ratio}
+\end{equation}
+is computable at $\phi_0$ before anything is fitted. Above one, the predicted
+cloud is too narrow at that readout.
+
+\paragraph{One number, one job.} A standard deviation is a population spread and
+belongs with the scale statistics of \eqref{eq:stat}. A standard error is a
+sampling uncertainty and belongs in $D_c$. At $n_c=10$ they differ by a factor of
+$3.2$, so the extraction has to record which one the source printed.
+
+A source reporting only an uncertainty can supply either, not both. Send it to
+whichever is scarcer on that row. Where a scale statistic already exists, $U$
+goes to $D_c$. Where none does, $U$ is the only statement about that width, so
+make it a scale statistic: the sampling standard deviation of a median at size
+$n_c$ is a functional of $\tilde F_c$, so \eqref{eq:stat} predicts it by the
+bootstrap of \eqref{eq:V} evaluated at $\phi$ rather than frozen at $\phi_0$, and
+\eqref{eq:ratio} becomes a residual. Freeze the resample indices alongside
+$z_{1:N}$ so the row stays smooth in $\phi$.
+
+Such a row carries roughly $1/\sqrt{2(n_c-1)}$ on the log scale, the precision
+\eqref{eq:omegameas} gives a measured spread, and it is approximate because it
+depends on how the source built its interval. It buys precision on $\omega$
+without breaking the alias: $\kappa_r$ scales a sampling standard deviation
+exactly as it scales an interquartile range.
+
+We may need to try to evaluate this covariance at other $\phi_0$, in order to ascertain if a plug-in estimator is ok to use.
+Section \ref{sec:flat} supplies the plug-in itself, at
+$\phi_0=(\hat\mu_{\text{flat}},\ \omega_0)$.
+
+\section{Priors}
+
+\paragraph{Location.}
+\begin{equation}
+\mu \;\sim\; \Ncal_P\big(\mu_0,\ \Sigma_1\big),
+\label{eq:mu}
+\end{equation}
+$\mu_0$ and $\Sigma_1$ the mean and covariance of the stage-1 composite prior on
+the log scale. Recall that this is the stage 1- fitting in which we are specifically trying to learn the location parameter per QSP parameter.
+
+\paragraph{Spread.} Let $\Mset$ be the parameters whose between-patient spread a
+source has measured, with sample size $n_j$. For $j\in\Mset$,
+\begin{equation}
+\log\omega_j \;\sim\; \Ncal\!\left(\log\omega_{0j},\ \frac{1}{2(n_j-1)+\tau^{-2}}\right).
+\label{eq:omegameas}
+\end{equation}
+For $j\notin\Mset$,
+\begin{equation}
+\log\omega_j \;=\; \log\omega_{0j} + s + u_j,
+\qquad
+s\sim\Ncal(0,\tau_s^2),
+\qquad
+u_j\sim\Ncal(0,\tau_\omega^2),
+\qquad
+\sum_{j\notin\Mset} u_j = 0 .
+\label{eq:omegaassumed}
+\end{equation}
+
+\paragraph{Measurement discrepancy.} Free, because it has no parameter twin.
+$Z$ has an intercept, so $a_1$ and $b_1$ are the global location and width
+corrections.
+\begin{equation}
+a \;\sim\; \Ncal\big(0,\ \sigma_a^2 I\big),
+\qquad
+b \;\sim\; \Ncal\big(0,\ \sigma_b^2 I\big),
+\qquad
+\sigma_a=\sigma_b=0.5 .
+\label{eq:abprior}
+\end{equation}
+
+\paragraph{Mechanism discrepancy.} Tightly shrunk, because it competes with
+$\mu$:
+\begin{equation}
+\beta_q \;=\; \tau_\beta\,\beta^{\text{raw}}_q,
+\qquad
+\beta^{\text{raw}}_q \sim \Ncal(0,1),
+\qquad
+\log\tau_\beta \sim \Ncal\big(\log 0.15,\ 0.5^2\big).
+\label{eq:betaprior}
+\end{equation}
+$\beta_q$ is set to zero for every species outside a declared subset
+$\mathcal{S}\subset\{1,\dots,Q\}$. The default $\mathcal{S}$ is the shared
+denominators, $\mathrm{nucleated\_total}$ and $V_T$.
+
+\section{Posterior and deliverable}
+
+\begin{equation}
+\phi \;=\;
+\big(\mu,\ s,\ u^{\text{raw}},\ \log\omega_{\Mset},\
+a,\ b,\ \beta^{\text{raw}}_{\mathcal{S}},\ \log\tau_\beta\big).
+\end{equation}
+
+\begin{equation}
+p(\phi\mid\Dset)
+\;\propto\;
+p(\phi)\;\prod_{c=1}^{C}\;
+\Ncal\big(\widehat T_{c};\ \tau_{c}(\phi),\ V_{c}\big).
+\label{eq:post}
+\end{equation}
+
+The virtual population is the posterior predictive over patients,
+\begin{equation}
+p(\theta_{\text{new}}\mid\Dset)
+\;=\;
+\int \Ncal_P\!\big(\log\theta_{\text{new}};\ \mu,\ \Omega\big)\;
+p(\phi\mid\Dset)\;d\phi ,
+\label{eq:vpop}
+\end{equation}
+and it is emitted as an ensemble: one population per posterior draw of $\phi$,
+so that between-patient variability and uncertainty about $\phi$ stay separable
+in whatever is computed downstream.
+
+\section{The flat fit}
+\label{sec:flat}
+
+The flat fit estimates the centre of the population and holds its shape fixed.
+Set $\omega=\omega_0$ and drop the three spread terms from the parameter vector:
+\begin{equation}
+\phi_{\text{flat}} \;=\;
+\big(\mu,\ a,\ b,\ \beta^{\text{raw}}_{\mathcal{S}},\ \log\tau_\beta\big).
+\label{eq:phiflat}
+\end{equation}
+Nothing else changes. Equations \eqref{eq:crn} to \eqref{eq:post} run as
+written, with $\omega$ a constant rather than a function of $\phi$.
+
+\paragraph{Why $\omega_0$ and not zero.} Setting $\omega=0$ collapses the cloud
+onto one point, and three things die with it. $\tilde F_c$ becomes a point mass,
+so \eqref{eq:V} returns zero and $V_c$ has to come from outside the model.
+$w^{(c)}$ becomes a switch on the whole cohort instead of on patients, so the
+eligibility rule stops working and turns discontinuous in $\mu$. And every
+location functional of a point mass returns the same number, so a cohort that
+reports a mean beside a median predicts one value for two rows.
+
+Each of those is a diagnostic, and diagnostics are what the flat fit is for. The
+third is the sharpest: the gap between a reported mean and a reported median is
+the skewness of the pushforward, which at $\omega=\omega_0$ the model predicts
+rather than absorbs.
+
+\paragraph{What it buys.}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+$V_c$ is computable & \eqref{eq:V} resamples a real cloud, so the bootstrap works unchanged. \\
+The scale rows are held out & Predict them at $\omega_0$ and report the ratio per readout. That is the width shortfall, before any population parameter is estimated. \\
+$\hat\mu$ needs no translation & It is already a population centre, so there is no Jensen gap to correct afterwards. \\
+It supplies the plug-in & Take $\phi_0=(\hat\mu_{\text{flat}},\ \omega_0)$ for \eqref{eq:V}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Fit the location rows and hold the scale rows out, so the ratio above is an
+honest comparison. Refitting with them included is the natural second run, and it
+is what identifies $b$.
+
+\paragraph{Cost.} A gradient step still costs $C\times N$ forward passes, but $N$
+only has to resolve the location statistics and a rough width, not the flanks at
+a precision that supports inference on $\omega$, so it sits far below the $N$ of
+the population fit.
+
+\paragraph{What it cannot test.} The shape of the population: $\omega$, $R$, and
+the direction $s$ and $b_1$ share. It does test the prior on $\mu$, the forward
+map, the discrepancy terms, the block structure of \eqref{eq:obs} and the
+sampler, and a fault in any of those is one the population fit would also have.
+
+\section{Fixed inputs}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+$R$ & Population correlation matrix. Not identified by these data. \\
+$\omega_0$ & Prior centre of the spreads, per parameter. \\
+$\mu_0,\ \Sigma_1$ & Stage-1 composite prior, log scale. \\
+$h_r$ & Readout composition, including unit conversions. Already in the target definitions. \\
+$Z$ & Readout attributes for the measurement discrepancy: assay modality, quantity type. \\
+$\mathcal{S}$ & Species allowed a mechanism discrepancy. Default: the shared denominators. \\
+$z_{1:N}$ & The latent cloud, drawn once. \\
+$w^{(c)}$ & Eligibility weights, read from each paper's criterion. \\
+$V_{c}$ & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One block per cohort. \\
+$E_c$ & Emulator error covariance on the statistics of cohort $c$, from \eqref{eq:Ec}. \\
+$U_{rck}$ & Reported uncertainty of a statistic, where a source gives one. Log scale. \\
+$\tau_s,\ \tau_\omega,\ \tau,\ \sigma_a,\ \sigma_b$ & Prior widths. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Known simplifications}
+
+\begin{itemize}
+\item \textbf{Independence across cohorts.} Equation \eqref{eq:obs} is block
+diagonal by cohort, so what remains asserted is that distinct cohorts are
+distinct patients. That holds across studies. It fails where two cohorts come
+from one publication and share people, as when a subgroup is reported beside the
+whole. Check it before splitting any pooled target: a split that manufactures two
+cohorts from one set of patients moves the problem instead of removing it.
+
+Report the effective row count $K_c/\{1+(K_c-1)\bar\rho_c\}$ at mean off-diagonal
+correlation $\bar\rho_c$. The source supplying 19 of the 49 targets, from about
+ten patients per arm, is the one to look at first.
+
+\item \textbf{No study offset.} A free $\eta_c$ would be aliased with the
+measurement discrepancy. It is omitted and $\gamma_r$ absorbs the study effect,
+so $\gamma_r$ mixes assay bias with study bias.
+
+\item \textbf{$V$ frozen at $\phi_0$.} Equation \eqref{eq:post} is an estimating
+equation, not a likelihood. Letting $V$ move with $\phi$ would reintroduce a
+$-\tfrac12\log\det V$ term that rewards a narrow population regardless of fit.
+
+\item \textbf{$s$ and $b_1$ share a direction.} To first order every scale
+statistic depends on the global width multiplier and the global width correction
+only through their sum, so the split between a narrow simulator and a narrow
+population is decided by $\tau_s$ and $\sigma_b$ unless some readout is driven
+mainly by $\Mset$. Report the joint posterior of the pair.
+
+\item \textbf{$Z$ is asserted, not tested.} The claim that assay modality and
+quantity type have no mechanistic twin, while species-level bias does, is an
+argument rather than a result. The test is to project each column of $Z$ onto
+$\mathrm{col}\big(\partial\tau/\partial(\mu,\omega)\big)$ and read the residual
+norm. That needs the emulator, and it has not been run.
+\end{itemize}
+
+\end{document}
