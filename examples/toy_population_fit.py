@@ -2806,11 +2806,15 @@ def main():
           f"x {args.chains} chains")
     t0 = time.time()
     mcmc.run(k_mcmc, z=z, V_chol=V_chol, emu=emu, c_ref=c_ref, observed=observed)
+    # JAX dispatches asynchronously, so mcmc.run returns as soon as the work is
+    # queued. Without this block the reported time is the dispatch latency: the
+    # full-size run printed "NUTS done in 17.5s" while the chains were still at
+    # 0/1000 and went on sampling for a long time afterwards.
+    samples = jax.block_until_ready(mcmc.get_samples())
     stamp("NUTS finished")
     print(f"\nNUTS done in {time.time() - t0:.1f}s")
     mcmc.print_summary(exclude_deterministic=True)
 
-    samples = mcmc.get_samples()
     print()
     print("=" * 72)
     print("recovery against phi*")
