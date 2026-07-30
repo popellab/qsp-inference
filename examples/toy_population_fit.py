@@ -51,8 +51,10 @@ Run::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import jax
 
@@ -392,6 +394,29 @@ def sobol_normal(n, seed):
     return norm.ppf(np.clip(u, 1e-6, 1.0 - 1e-6))
 
 
+def _cache_key(*parts):
+    """A content hash over the inputs that determine a cached artefact.
+
+    Arrays are hashed by their exact bytes, not by shape or a summary, so a cache
+    hit means the inputs are identical rather than merely similar. Getting this
+    wrong is worse than having no cache: a stale emulator would be silently wrong
+    everywhere downstream and nothing in the diagnostics would point at it.
+    """
+    h = hashlib.sha256()
+    for p in parts:
+        if isinstance(p, (jnp.ndarray, np.ndarray)):
+            a = np.ascontiguousarray(np.asarray(p, dtype=np.float64))
+            h.update(str(a.shape).encode())
+            h.update(a.tobytes())
+        else:
+            h.update(repr(p).encode())
+    return h.hexdigest()[:16]
+
+
+def _cache_path(cache_dir, kind, key):
+    return None if cache_dir is None else Path(cache_dir) / f"{kind}-{key}.npz"
+
+
 def species_loss_weights(key, mu_0, omega_0, n=64, eps=1e-3, floor=0.05,
                          verbose=True):
     """How much the readouts depend on each species, for weighting the emulator.
@@ -437,7 +462,7 @@ def species_loss_weights(key, mu_0, omega_0, n=64, eps=1e-3, floor=0.05,
 
 def train_emulator(key, mu_0, sigma_1, omega_pool, hidden=None,
                    n_pool=None, n_steps=None, seed=0, verbose=True,
-                   solve_chunk=2048, species_weights=None):
+                   solve_chunk=2048, species_weights=None, cache_dir=None):
     """Build the design, run the true ODE on it, and fit the surrogate.
 
     The design covers where the *fit* will read the emulator: a cloud of width
@@ -453,6 +478,28 @@ def train_emulator(key, mu_0, sigma_1, omega_pool, hidden=None,
     hidden = EMU_HIDDEN if hidden is None else hidden
     n_pool = EMU_POOL if n_pool is None else n_pool
     n_steps = EMU_STEPS if n_steps is None else n_steps
+
+    # The emulator is a pure function of its design and its seed, and at the QSP
+    # size it is ~102,000 ODE solves plus 10,000 Adam steps -- ten minutes or so
+    # before anything else can start. Nothing about it depends on the data, so
+    # re-deriving it on every run is pure waste.
+    ck = _cache_key("emu", PROB.name, P, Q, S, seed, n_pool, tuple(hidden),
+                    n_steps, EMU_BATCH, EMU_LR, EMU_POOL_INFLATE, EMU_HOLDOUT,
+                    N_STEPS, T_OBS, mu_0, sigma_1, omega_pool,
+                    jnp.ones(Q) if species_weights is None else species_weights)
+    cpath = _cache_path(cache_dir, "emulator", ck)
+    if cpath is not None and cpath.exists():
+        d = np.load(cpath)
+        n_layers = int(d["n_layers"])
+        params = [(jnp.array(d[f"W{i}"]), jnp.array(d[f"b{i}"]))
+                  for i in range(n_layers)]
+        if verbose:
+            print(f"emulator: loaded from cache {cpath.name}")
+            print(f"  held-out RMSE on log species: median "
+                  f"{np.median(d['rmse']):.4f}, max {d['rmse'].max():.4f}")
+        return Emulator(params, jnp.array(d["x_mean"]), jnp.array(d["x_sd"]),
+                        jnp.array(d["y_mean"]), jnp.array(d["y_sd"]), d["rmse"])
+
     k_init, k_batch, k_hold = random.split(key, 3)
 
     omega_mat = jnp.diag(omega_pool) @ R_CORR @ jnp.diag(omega_pool)
@@ -542,6 +589,17 @@ def train_emulator(key, mu_0, sigma_1, omega_pool, hidden=None,
             print("  worst readout-relevant species: "
                   + ", ".join(f"{SPECIES_NAMES[j]} {rmse[j]:.3f} (w {w[j]:.2f})"
                               for j in order))
+    if cpath is not None:
+        cpath.parent.mkdir(parents=True, exist_ok=True)
+        blob = {"n_layers": len(params), "x_mean": np.asarray(x_mean),
+                "x_sd": np.asarray(x_sd), "y_mean": np.asarray(y_mean),
+                "y_sd": np.asarray(y_sd), "rmse": rmse}
+        for i, (W, b) in enumerate(params):
+            blob[f"W{i}"] = np.asarray(W)
+            blob[f"b{i}"] = np.asarray(b)
+        np.savez_compressed(cpath, **blob)
+        if verbose:
+            print(f"  cached to {cpath}")
     return Emulator(params, x_mean, x_sd, y_mean, y_sd, rmse)
 
 
@@ -2418,6 +2476,11 @@ def main():
                     default=True,
                     help="seed NUTS with G^-1 from the Gauss-Newton information "
                          "at the plug-in and disable mass adaptation")
+    ap.add_argument("--cache-dir", default=".emulator-cache", metavar="DIR",
+                    help="where to cache the emulator and V_c; both are pure "
+                         "functions of the design and the seed")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="ignore the cache and rebuild from scratch")
     ap.add_argument("--no-progress", action="store_true",
                     help="silence the NUTS progress bar; tqdm's carriage returns "
                          "make a batch-scheduler log unreadable")
@@ -2473,10 +2536,12 @@ def main():
     # where the fit actually reads.
     omega_pool = OMEGA_0 * jnp.exp(TAU_S)
     stamp("measuring readout sensitivity for the emulator loss weights")
+    cache_dir = None if args.no_cache else Path(args.cache_dir)
     w_species = species_loss_weights(k_ref, MU_0, OMEGA_0)
     stamp(f"training the emulator ({EMU_POOL:,} design points x {S} scenarios)")
     emu = train_emulator(
         k_emu, MU_0, SIGMA_1, omega_pool, species_weights=w_species,
+        cache_dir=cache_dir,
         hidden=(128, 128, 128) if args.big_emulator else EMU_HIDDEN,
         n_pool=16_384 if args.big_emulator else EMU_POOL,
         n_steps=8_000 if args.big_emulator else EMU_STEPS,
@@ -2501,6 +2566,13 @@ def main():
               f"{v.min():>8.2f}{v.max():>8.2f}{v.max() - v.min():>8.2f}")
     print("  spread is the range one global pivot would have had to straddle")
 
+    # V_c depends on the emulator, so its cache key has to include one. Hash the
+    # trained weights themselves rather than the config that produced them: that
+    # way a cached V_c can never be paired with a different surrogate, however the
+    # emulator came to exist.
+    emu_key = _cache_key("emu-weights",
+                         *[np.asarray(w) for layer in emu.params for w in layer])
+
     stamp("emulator trained; generating the toy data from the true ODE")
     truth = make_ground_truth()
     observed = generate_data(truth, k_data, c_ref)
@@ -2508,11 +2580,40 @@ def main():
     print(f"data: {A_ROWS} rows drawn from a true-ODE cloud of {N_TRUTH:,}")
 
     def build_V(phi_mu, phi_omega, key, label, quiet=False):
-        """eq:V, eq:Ec and eq:Vsplit at one plug-in, with the eq:Ec report."""
+        """eq:V, eq:Ec and eq:Vsplit at one plug-in, with the eq:Ec report.
+
+        Cached on the plug-in and the emulator. eq:Ec is the dominant cost of the
+        whole script at QSP scale -- L_EMU clouds evaluated through BOTH the
+        emulator and the true ODE, which is 225,000 solves per build, done at
+        least twice per run. Like the emulator it depends on nothing that varies
+        between runs at a fixed seed.
+        """
         t0 = time.time()
         kb, kec = random.split(key)
-        v_boot = bootstrap_V(phi_mu, phi_omega, kb, emu, c_ref)
-        E_blocks, E_means = emulator_E(phi_mu, phi_omega, kec, emu, c_ref)
+        vk = _cache_key("V", PROB.name, args.seed, emu_key, B_BOOT, L_EMU,
+                        N_CLOUD, N_TRUTH, phi_mu, phi_omega, c_ref,
+                        tuple(c.name for c in COHORTS))
+        vpath = _cache_path(cache_dir, "vc", vk)
+        if vpath is not None and vpath.exists():
+            d = np.load(vpath)
+            n = int(d["n_blocks"])
+            v_boot = [d[f"boot{i}"] for i in range(n)]
+            E_blocks = [d[f"E{i}"] for i in range(n)]
+            E_means = [d[f"Em{i}"] for i in range(n)]
+            if not quiet:
+                print(f"V_c at phi_0 = ({label}, omega_0): loaded from cache "
+                      f"{vpath.name}")
+        else:
+            v_boot = bootstrap_V(phi_mu, phi_omega, kb, emu, c_ref)
+            E_blocks, E_means = emulator_E(phi_mu, phi_omega, kec, emu, c_ref)
+            if vpath is not None:
+                vpath.parent.mkdir(parents=True, exist_ok=True)
+                blob = {"n_blocks": len(v_boot)}
+                for i in range(len(v_boot)):
+                    blob[f"boot{i}"] = np.asarray(v_boot[i])
+                    blob[f"E{i}"] = np.asarray(E_blocks[i])
+                    blob[f"Em{i}"] = np.asarray(E_means[i])
+                np.savez_compressed(vpath, **blob)
         # eq:Vsplit's other half. A synthesized row's statistic was reconstructed
         # from a figure or a summary rather than reported, so its uncertainty is
         # wider than the sampling uncertainty a bootstrap at n_c would give. That

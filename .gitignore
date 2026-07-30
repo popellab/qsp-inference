@@ -22,3 +22,4 @@ venv/
 *.out
 *.synctex.gz
 *.toc
+.emulator-cache/
