@@ -71,7 +71,9 @@ import numpyro  # noqa: E402
 import numpyro.distributions as dist  # noqa: E402
 from jax import random, vmap  # noqa: E402
 from jax.tree_util import tree_map  # noqa: E402
-from numpyro.infer import MCMC, NUTS, init_to_median  # noqa: E402
+from numpyro.infer import (  # noqa: E402
+    MCMC, NUTS, init_to_median, init_to_value,
+)
 from scipy.linalg import solve_triangular  # noqa: E402
 from scipy.stats import norm, qmc  # noqa: E402
 
@@ -2910,7 +2912,7 @@ def main():
     # and a step size near 3e-3; a dense mass matrix learns the ridge and the
     # trajectories collapse. The sampler cost here is a direct readout of the
     # aliasing, which is worth knowing before the real fit is attempted.
-    pop_mass, pop_adapt = None, True
+    pop_mass, pop_adapt, at_map = None, True, None
     if args.laplace_mass and not args.diag_mass:
         stamp("locating the posterior mode, to linearise the metric there")
         at_map = population_map(k_map, z, V_chol, emu, c_ref, observed)
@@ -2922,7 +2924,20 @@ def main():
         print(f"NUTS seeded with the Laplace metric: {dim_pop} coordinates, "
               f"{args.warmup} warmup draws -> mass adaptation "
               f"{'ON (seeded)' if pop_adapt else 'OFF (metric frozen)'}")
-    kernel = NUTS(population_model, init_strategy=init_to_median,
+    # Initialise at the mode when we have it. init_to_median disperses chains
+    # across a 572-dimensional prior, and with a FROZEN metric -- tuned for the
+    # mode -- a chain that starts far out has to cross a long way in geometry that
+    # does not fit where it is. Both full-size runs produced exactly one straggler
+    # doing 24-35 s/it while its siblings did 4-8, and a different chain each time,
+    # which points at where they start rather than at the metric.
+    #
+    # The cost is that chains no longer start over-dispersed, so r_hat loses some
+    # of its power to detect a missed mode. That is a real loss and it is accepted
+    # deliberately: numpyro writes nothing until every chain finishes, so one
+    # straggler currently costs the entire run.
+    init_strategy = (init_to_value(values=at_map) if at_map is not None
+                     else init_to_median)
+    kernel = NUTS(population_model, init_strategy=init_strategy,
                   target_accept_prob=0.85, dense_mass=not args.diag_mass,
                   max_tree_depth=args.max_tree_depth,
                   inverse_mass_matrix=pop_mass,
