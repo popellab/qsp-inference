@@ -1781,7 +1781,7 @@ def laplace_covariance(phi_0_mu, phi_0_omega, z, V_chol, emu, c_ref,
 
 
 def laplace_inverse_mass(phi_0_mu, phi_0_omega, z, V_chol, emu, c_ref,
-                         flat=False, rows=None):
+                         flat=False, rows=None, at=None):
     """``G^-1`` as numpyro's ``inverse_mass_matrix``, keyed by the site tuple.
 
     ``G = diag(prior precision) + J^T V^-1 J`` is the Gauss-Newton information of
@@ -1800,7 +1800,7 @@ def laplace_inverse_mass(phi_0_mu, phi_0_omega, z, V_chol, emu, c_ref,
     G is positive definite by construction, since the prior precision is.
     """
     names, dims, prior_sd, blocks, _ = laplace_blocks(
-        phi_0_mu, phi_0_omega, z, V_chol, emu, c_ref, flat=flat, rows=rows
+        phi_0_mu, phi_0_omega, z, V_chol, emu, c_ref, flat=flat, rows=rows, at=at
     )
 
     # numpyro packs a dense mass matrix over sites in SORTED name order and keys
@@ -2194,6 +2194,129 @@ def flat_map_fit(key, z, V_chol, emu, c_ref, obs_loc, loc_masks,
     return out
 
 
+def population_map(key, z, V_chol, emu, c_ref, observed, n_steps=800, lr=0.03,
+                   verbose=True):
+    """MAP of the FULL model, purely as a linearisation point for the metric.
+
+    The mass matrix was being built from the Gauss-Newton information at the prior
+    centre, ``(mu_0, omega_0, a = 0, b = 0)``. That is not where the sampler
+    lives: ``a`` ends up pinned to about 1/849 of its prior width, so the
+    curvature at the prior centre describes a region the chains leave immediately.
+
+    The symptom at full size was a straggler. Three chains finished 1000
+    iterations in about 70 minutes at ~4 s/it while the fourth managed 100 at
+    35 s/it, because a frozen metric offers no per-chain recovery: a chain that
+    lands where the plug-in curvature fits badly stays badly conditioned for the
+    whole run, and numpyro writes nothing until every chain finishes.
+
+    This is an optimisation, not an inference. Its output is thrown away except
+    as the point ``laplace_inverse_mass`` linearises about.
+    """
+    lom0 = jnp.log(OMEGA_0[MEASURED_IDX]) if N_MEASURED else jnp.zeros(0)
+
+    def neg_log_post(p):
+        mu = MU_0 + L_SIGMA_1 @ p["mu_raw"]
+        lom = p.get("log_omega_measured", lom0)
+        omega = build_omega(p["s"], p["u_raw"], lom)
+        beta_free = TAU_BETA * (p["beta_raw"] - jnp.mean(p["beta_raw"]))
+        taus = tau_all(mu, omega, z, p["a"], p["b"], beta_free, emu.cloud, c_ref)
+        nll = 0.0
+        for i in range(len(COHORTS)):
+            r = observed[i] - taus[i]
+            w = jax.scipy.linalg.solve_triangular(V_chol[i], r, lower=True)
+            nll = nll + 0.5 * jnp.sum(w**2)
+        nll = (nll
+               + 0.5 * jnp.sum(p["mu_raw"] ** 2)
+               + 0.5 * p["s"] ** 2 / TAU_S**2
+               + 0.5 * jnp.sum(p["u_raw"] ** 2) / TAU_U**2
+               + 0.5 * jnp.sum(p["a"] ** 2) / SIGMA_A**2
+               + 0.5 * jnp.sum(p["b"] ** 2) / SIGMA_B**2
+               + 0.5 * jnp.sum(p["beta_raw"] ** 2))
+        if N_MEASURED:
+            nll = nll + 0.5 * jnp.sum(((lom - lom0) / TAU_OMEGA_MEASURED) ** 2)
+        return nll
+
+    params = {"mu_raw": jnp.zeros(P), "s": 0.0, "u_raw": jnp.zeros(N_ASSUMED),
+              "a": jnp.zeros(DIM_Z), "b": jnp.zeros(DIM_Z),
+              "beta_raw": jnp.zeros(N_BETA)}
+    if N_MEASURED:
+        params["log_omega_measured"] = lom0
+    state = (tree_map(jnp.zeros_like, params), tree_map(jnp.zeros_like, params), 0)
+
+    @jax.jit
+    def step(p, st, lr_t):
+        val, g = jax.value_and_grad(neg_log_post)(p)
+        p, st = adam_step(p, g, st, lr_t)
+        return p, st, val
+
+    t0 = time.time()
+    for i in range(n_steps):
+        params, state, val = step(params, state,
+                                  lr * 0.5 * (1 + np.cos(np.pi * i / n_steps)))
+    if verbose:
+        print(f"population MAP in {time.time() - t0:.1f}s, {n_steps} Adam steps, "
+              f"final -log post {float(val):.2f}")
+    return params
+
+
+def print_dbar_absorption(E_means, V_chol, top=5):
+    """Can gamma and kappa absorb the emulator's systematic offset? eq:Ec asks.
+
+    ``E_c`` is a covariance, so it carries none of ``dbar``, and the draft's
+    answer is that ``gamma_r`` absorbs it. But ``gamma = Z a`` is indexed by
+    READOUT while ``dbar`` is per ROW, so the measurement map can only absorb the
+    component of ``dbar`` lying in the column space it spans. This measures that
+    fraction, in the whitened metric the likelihood actually uses.
+
+    The design is not Z itself. A location row moves with gamma_r, and a scale row
+    does not -- a log IQR is shift invariant -- while a scale row moves with
+    log kappa_r. So the absorbable subspace is Z on the location rows stacked
+    beside Z on the scale rows.
+
+    A high captured fraction means the offset is a measurement-map effect the
+    model can represent, and the cost is a biased ``a`` rather than a biased
+    mechanism. A low one means it lands on ``mu`` instead, and with ``a`` carrying
+    almost all the Fisher information that is the difference between an
+    absorbable nuisance and a corrupted answer.
+    """
+    Zn = np.asarray(Z)
+    rows_g, rows_k, dbar = [], [], []
+    for i, cohort in enumerate(COHORTS):
+        d = np.asarray(E_means[i])
+        L = np.asarray(V_chol[i])
+        k = 0
+        gk, kk = [], []
+        for r, sts in zip(cohort.readouts, cohort.stats):
+            for st in sts:
+                gk.append(Zn[r] if st in LOCATION_STATS else np.zeros(DIM_Z))
+                kk.append(Zn[r] if st in SCALE_STATS else np.zeros(DIM_Z))
+                k += 1
+        G = np.array(gk)
+        K = np.array(kk)
+        rows_g.append(solve_triangular(L, G, lower=True))
+        rows_k.append(solve_triangular(L, K, lower=True))
+        dbar.append(solve_triangular(L, d, lower=True))
+
+    D = np.hstack([np.concatenate(rows_g), np.concatenate(rows_k)])
+    d = np.concatenate(dbar)
+    Qd = _orth(D)
+    proj = Qd @ (Qd.T @ d)
+    captured = float(np.linalg.norm(proj) / max(np.linalg.norm(d), 1e-30))
+
+    print("\ncan the measurement map absorb the emulator's offset? (eq:Ec dbar)")
+    print(f"  |dbar| whitened            {np.linalg.norm(d):>8.2f}")
+    print(f"  fraction in col(gamma, kappa) {captured:>8.3f}")
+    print(f"  residual, absorbed by nothing {np.sqrt(max(1 - captured**2, 0)):>8.3f}")
+    if captured < 0.5:
+        print("  Most of the offset is OUTSIDE the measurement map, so gamma cannot")
+        print("  take it and it lands on mu instead. The draft's claim that gamma_r")
+        print("  absorbs the emulator's systematic error does not hold here.")
+    else:
+        print("  The map can represent most of the offset, so the cost falls on a")
+        print("  rather than on the mechanism -- but a is what the data constrain.")
+    return captured
+
+
 def print_width_shortfall(samples, observed, z, emu, truth, c_ref, n_draws=100):
     """The held-out scale rows, predicted at omega_0. sec:flat's width shortfall.
 
@@ -2541,7 +2664,7 @@ def main():
 
     key = random.PRNGKey(args.seed)
     (k_emu, k_data, k_boot, k_cloud, k_mcmc,
-     k_flat, k_flat_cloud, k_boot2, k_ref) = random.split(key, 9)
+     k_flat, k_flat_cloud, k_boot2, k_ref, k_map) = random.split(key, 10)
 
     print("=" * 72)
     print(f"PART 1  inputs  [problem: {PROB.name}]")
@@ -2713,6 +2836,7 @@ def main():
                       f"emulator's systematic")
                 print("      offset exceeds this cohort's sampling noise and no "
                       "entry of V_c carries it.")
+        print_dbar_absorption(E_means, V_chol)
         return V, V_chol
 
     V, V_chol = build_V(MU_0, OMEGA_0, k_boot, "mu_0")
@@ -2786,10 +2910,13 @@ def main():
     # and a step size near 3e-3; a dense mass matrix learns the ridge and the
     # trajectories collapse. The sampler cost here is a direct readout of the
     # aliasing, which is worth knowing before the real fit is attempted.
-    stamp("computing the Laplace metric for the population fit")
     pop_mass, pop_adapt = None, True
     if args.laplace_mass and not args.diag_mass:
-        pop_mass = laplace_inverse_mass(MU_0, OMEGA_0, z, V_chol, emu, c_ref)
+        stamp("locating the posterior mode, to linearise the metric there")
+        at_map = population_map(k_map, z, V_chol, emu, c_ref, observed)
+        stamp("computing the Laplace metric at the mode")
+        pop_mass = laplace_inverse_mass(MU_0, OMEGA_0, z, V_chol, emu, c_ref,
+                                        at=at_map)
         dim_pop = int(next(iter(pop_mass.values())).shape[0])
         pop_adapt = not should_fix_mass(dim_pop, args.warmup)
         print(f"NUTS seeded with the Laplace metric: {dim_pop} coordinates, "
