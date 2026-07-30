@@ -2214,7 +2214,10 @@ def print_width_shortfall(samples, observed, z, emu, truth, c_ref, n_draws=100):
     for t in idx:
         mu = jnp.array(np.asarray(samples["mu"])[t])
         a = jnp.array(np.asarray(samples["a"])[t])
-        b = jnp.array(np.asarray(samples["b"])[t])
+        # b is absent when the flat fit pinned it, which is the default; the
+        # shortfall is then predicted at kappa = 1, exactly as the fit assumed.
+        b = jnp.array(np.asarray(samples["b"])[t]) if "b" in samples \
+            else jnp.zeros(DIM_Z)
         beta = jnp.array(np.asarray(samples["beta_free"])[t])
         taus = tau_all(mu, OMEGA_0, z, a, b, beta, emu.cloud, c_ref)
         for i, cohort in enumerate(COHORTS):
