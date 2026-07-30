@@ -2403,6 +2403,9 @@ def main():
                     default=True,
                     help="seed NUTS with G^-1 from the Gauss-Newton information "
                          "at the plug-in and disable mass adaptation")
+    ap.add_argument("--no-progress", action="store_true",
+                    help="silence the NUTS progress bar; tqdm's carriage returns "
+                         "make a batch-scheduler log unreadable")
     ap.add_argument("--phi0-sweep", type=int, default=0, metavar="N",
                     help="rebuild V_c at N draws from Sigma_1 and report how far "
                          "the posterior moves; 0 skips. This is the test of "
@@ -2628,7 +2631,7 @@ def main():
                   inverse_mass_matrix=pop_mass,
                   adapt_mass_matrix=pop_adapt)
     mcmc = MCMC(kernel, num_warmup=args.warmup, num_samples=args.samples,
-                num_chains=args.chains, progress_bar=True)
+                num_chains=args.chains, progress_bar=not args.no_progress)
     t0 = time.time()
     mcmc.run(k_mcmc, z=z, V_chol=V_chol, emu=emu, c_ref=c_ref, observed=observed)
     print(f"\nNUTS done in {time.time() - t0:.1f}s")
