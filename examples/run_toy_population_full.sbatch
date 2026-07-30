@@ -39,9 +39,17 @@ CPUS="${SLURM_CPUS_PER_TASK:-8}"
 # measured 4.4 cores of 24 during the emulator build, because a vmapped diffrax
 # solve is not automatically threaded by the XLA CPU backend. That build took
 # 15.5 minutes.
-export TOY_HOST_DEVICES="$CPUS"
-export OMP_NUM_THREADS=1
-export MKL_NUM_THREADS=1
+# Devices are capped well below the core count on purpose. XLA's CPU collectives
+# make every device thread join a rendezvous with a 40 second timeout, and one
+# device per core does not reliably co-schedule: at 32 devices on 32 cores three
+# threads missed the barrier and the process aborted mid-emulator with
+#   "Expected 32 threads to join the rendezvous, but only 29 arrived on time".
+# Eight leaves each device roughly four cores of scheduling headroom. This costs
+# throughput, but the emulator and V_c are cached now, so their build is a
+# one-time cost and there is little left to win by pushing it.
+export TOY_HOST_DEVICES="${TOY_HOST_DEVICES:-8}"
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
 export JAX_PLATFORMS=cpu
 
 # uv brings its own Python, so no module load and no dependence on whatever the
