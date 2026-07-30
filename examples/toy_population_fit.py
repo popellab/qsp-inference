@@ -74,6 +74,21 @@ from scipy.stats import norm, qmc  # noqa: E402
 
 numpyro.set_host_device_count(4)  # so --chains runs in parallel rather than in series
 
+_T_START = time.time()
+
+
+def stamp(msg):
+    """A timestamped, flushed phase marker.
+
+    Interactively the progress bar tells you the run is alive. Under a batch
+    scheduler stdout is a file, the bar goes to stderr, and without these the log
+    is silent for the twenty minutes of setup before NUTS starts -- which is
+    indistinguishable from a hung job. Elapsed minutes are included so each phase
+    can be costed from the log alone.
+    """
+    el = (time.time() - _T_START) / 60.0
+    print(f"[{time.strftime('%H:%M:%S')} +{el:6.1f}m] {msg}", flush=True)
+
 # =============================================================================
 # PART 1 -- THE INPUTS
 # =============================================================================
@@ -2440,6 +2455,7 @@ def main():
         print("  enter every scale row only through their sum "
               "(known simplification 4, exactly)")
 
+    stamp(f"problem {PROB.name} installed: P={P} Q={Q} M={M} S={S} A={A_ROWS}")
     support, z_cond, z_rank = z_conditioning()
     print(f"Z design: readouts per column {list(support)}, cond(Z) = {z_cond:.1f}, "
           f"rank {z_rank} of M={M}")
@@ -2456,7 +2472,9 @@ def main():
     # population, and every extra factor of e^{tau_s} costs emulator accuracy
     # where the fit actually reads.
     omega_pool = OMEGA_0 * jnp.exp(TAU_S)
+    stamp("measuring readout sensitivity for the emulator loss weights")
     w_species = species_loss_weights(k_ref, MU_0, OMEGA_0)
+    stamp(f"training the emulator ({EMU_POOL:,} design points x {S} scenarios)")
     emu = train_emulator(
         k_emu, MU_0, SIGMA_1, omega_pool, species_weights=w_species,
         hidden=(128, 128, 128) if args.big_emulator else EMU_HIDDEN,
@@ -2483,8 +2501,10 @@ def main():
               f"{v.min():>8.2f}{v.max():>8.2f}{v.max() - v.min():>8.2f}")
     print("  spread is the range one global pivot would have had to straddle")
 
+    stamp("emulator trained; generating the toy data from the true ODE")
     truth = make_ground_truth()
     observed = generate_data(truth, k_data, c_ref)
+    stamp(f"data generated ({A_ROWS} rows); building V_c at the prior centre")
     print(f"data: {A_ROWS} rows drawn from a true-ODE cloud of {N_TRUTH:,}")
 
     def build_V(phi_mu, phi_omega, key, label, quiet=False):
@@ -2555,12 +2575,15 @@ def main():
 
     z = draw_cloud_z(k_cloud, N_CLOUD)
 
+    stamp("V_c built; running the projection tests")
     t0 = time.time()
     J_rows = row_jacobians(MU_0, OMEGA_0, z, V_chol, emu, c_ref)
     print_projection_report(J_rows)
     print(f"  ({time.time() - t0:.1f}s)")
     print_pivot_offsets(MU_0, OMEGA_0, z, V, emu, c_ref)
+    stamp("conditioning report: Jacobian over every sampling coordinate")
     conditioning_report(MU_0, OMEGA_0, z, V_chol, emu, c_ref)
+    stamp("conditioning report done")
 
     if args.phi0_sweep:
         phi0_sensitivity(k_boot2, build_V, z, emu, c_ref, observed,
@@ -2586,6 +2609,7 @@ def main():
             o[jnp.array(np.flatnonzero(m))] for o, m in zip(observed, loc_masks)
         ]
 
+        stamp("flat fit: MAP by Adam, then a Gauss-Newton covariance")
         flat_samples = flat_map_fit(k_flat, z_flat, V_loc_chol, emu, c_ref,
                                     obs_loc, loc_masks)
 
@@ -2604,6 +2628,7 @@ def main():
         drift = np.abs(np.asarray(mu_hat_flat - MU_0))
         print(f"\nplug-in moves from mu_0 by up to {drift.max():.3f} in log units "
               f"(mean {drift.mean():.3f})")
+        stamp("rebuilding V_c at the flat plug-in")
         print("rebuilding V_c at the flat plug-in, which is what sec:flat asks for")
         V, V_chol = build_V(mu_hat_flat, OMEGA_0, k_boot2, "mu_hat_flat")
 
@@ -2617,6 +2642,7 @@ def main():
     # and a step size near 3e-3; a dense mass matrix learns the ridge and the
     # trajectories collapse. The sampler cost here is a direct readout of the
     # aliasing, which is worth knowing before the real fit is attempted.
+    stamp("computing the Laplace metric for the population fit")
     pop_mass, pop_adapt = None, True
     if args.laplace_mass and not args.diag_mass:
         pop_mass = laplace_inverse_mass(MU_0, OMEGA_0, z, V_chol, emu, c_ref)
@@ -2632,8 +2658,11 @@ def main():
                   adapt_mass_matrix=pop_adapt)
     mcmc = MCMC(kernel, num_warmup=args.warmup, num_samples=args.samples,
                 num_chains=args.chains, progress_bar=not args.no_progress)
+    stamp(f"starting NUTS: {args.warmup} warmup + {args.samples} samples "
+          f"x {args.chains} chains")
     t0 = time.time()
     mcmc.run(k_mcmc, z=z, V_chol=V_chol, emu=emu, c_ref=c_ref, observed=observed)
+    stamp("NUTS finished")
     print(f"\nNUTS done in {time.time() - t0:.1f}s")
     mcmc.print_summary(exclude_deterministic=True)
 

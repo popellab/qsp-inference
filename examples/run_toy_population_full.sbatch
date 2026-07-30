@@ -17,6 +17,7 @@
 
 #SBATCH --job-name=qsp-vpop-full
 #SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.err
 #SBATCH --partition=defq
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -56,7 +57,9 @@ uv pip install --quiet "jax>=0.4" "jaxlib>=0.4" "numpyro>=0.15" "diffrax>=0.6" \
 echo "host $(hostname), ${CPUS} cpus, OMP_NUM_THREADS=${OMP_NUM_THREADS}"
 echo "started $(date -Is)"
 
-# --no-progress because tqdm's carriage returns make a scheduler log unreadable.
+# The progress bar is kept, not silenced: tqdm writes to stderr, and stderr now
+# goes to its own file. So the .out file is clean prose and the .err file carries
+# a live ETA. Watch .out for phase markers, .err for the bar.
 # Setup is roughly 18 minutes before NUTS starts: emulator design and training,
 # then V_c built twice with E_c dominating. The Laplace metric then needs a
 # forward-mode Jacobian over 572 coordinates, which is the most likely place for
@@ -65,7 +68,6 @@ srun python -u examples/toy_population_fit.py \
     --size full \
     --warmup 500 \
     --samples 500 \
-    --chains 2 \
-    --no-progress
+    --chains 2
 
 echo "finished $(date -Is)"
