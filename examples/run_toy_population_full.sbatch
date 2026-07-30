@@ -29,14 +29,19 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
 CPUS="${SLURM_CPUS_PER_TASK:-8}"
-CHAIN_DEVICES=4  # matches numpyro.set_host_device_count(4) in the script
 
-# Thread budget. XLA gives every host device its own pool, so leaving
-# OMP_NUM_THREADS at the core count would put CHAIN_DEVICES x CPUS threads on
-# CPUS cores and thrash. Divide instead.
-export OMP_NUM_THREADS=$(( CPUS / CHAIN_DEVICES ))
-export MKL_NUM_THREADS="$OMP_NUM_THREADS"
-export XLA_FLAGS="--xla_force_host_platform_device_count=${CHAIN_DEVICES}"
+# One host device per core. Devices are virtual, but they are the only axis JAX
+# parallelises well on CPU: the true-ODE solves are pmapped across them and each
+# NUTS chain runs on one. Threads are therefore set to 1 per device rather than
+# many -- with a device per core, extra threads only oversubscribe.
+#
+# This replaces a much worse setting. Giving 4 devices and CPUS/4 threads each
+# measured 4.4 cores of 24 during the emulator build, because a vmapped diffrax
+# solve is not automatically threaded by the XLA CPU backend. That build took
+# 15.5 minutes.
+export TOY_HOST_DEVICES="$CPUS"
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
 export JAX_PLATFORMS=cpu
 
 # uv brings its own Python, so no module load and no dependence on whatever the
@@ -55,7 +60,7 @@ source "$VENV/bin/activate"
 uv pip install --quiet "jax>=0.4" "jaxlib>=0.4" "numpyro>=0.15" "diffrax>=0.6" \
     "numpy>=1.24" "scipy>=1.11"
 
-echo "host $(hostname), ${CPUS} cpus, OMP_NUM_THREADS=${OMP_NUM_THREADS}"
+echo "host $(hostname), ${CPUS} cpus, ${TOY_HOST_DEVICES} host devices, OMP_NUM_THREADS=${OMP_NUM_THREADS}"
 echo "started $(date -Is)"
 
 # The progress bar is kept, not silenced: tqdm writes to stderr, and stderr now
@@ -69,6 +74,6 @@ srun python -u examples/toy_population_fit.py \
     --size full \
     --warmup 500 \
     --samples 500 \
-    --chains 2
+    --chains 4
 
 echo "finished $(date -Is)"

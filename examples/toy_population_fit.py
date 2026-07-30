@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,7 +75,46 @@ from numpyro.infer import MCMC, NUTS, init_to_median  # noqa: E402
 from scipy.linalg import solve_triangular  # noqa: E402
 from scipy.stats import norm, qmc  # noqa: E402
 
-numpyro.set_host_device_count(4)  # so --chains runs in parallel rather than in series
+# XLA host devices. These are virtual -- they all share the physical CPU -- but
+# they are the ONLY axis JAX parallelises well on CPU, so they do double duty:
+# numpyro puts one chain on each, and the true-ODE solves are pmapped across them
+# (see make_true_cloud). A vmapped diffrax solve is not automatically threaded by
+# the XLA CPU backend; measured on a 24-core node, the emulator build ran at about
+# 4 cores of 24 until the solves were pmapped. Set TOY_HOST_DEVICES to the core
+# count on a batch node.
+_N_HOST_DEVICES = int(os.environ.get("TOY_HOST_DEVICES", "4"))
+numpyro.set_host_device_count(_N_HOST_DEVICES)
+
+
+def make_true_cloud(g_one):
+    """``(vartheta_cloud, scenario) -> species``, spread across host devices.
+
+    Only ever wraps the TRUE ODE. The emulator's cloud must not be pmapped: it is
+    called inside the NUTS gradient, where the batch is one cloud and the pmap
+    overhead and the nested tracing would both cost more than they save.
+
+    Falls back to a plain vmap when there is one device or the batch is too small
+    to divide usefully, so the local single-device path is unchanged.
+    """
+    vcloud = vmap(g_one, in_axes=(0, None))
+    compiled = {}
+
+    def cloud(vartheta, scenario):
+        nd = jax.local_device_count()
+        n = vartheta.shape[0]
+        if nd <= 1 or n < 2 * nd:
+            return vcloud(vartheta, scenario)
+        if scenario not in compiled:
+            compiled[scenario] = jax.pmap(lambda v: vcloud(v, scenario))
+        per = -(-n // nd)  # ceil, so the reshape is exact
+        pad = per * nd - n
+        v = vartheta if not pad else jnp.concatenate(
+            [vartheta, jnp.repeat(vartheta[:1], pad, axis=0)]
+        )
+        out = compiled[scenario](v.reshape(nd, per, v.shape[-1]))
+        return out.reshape(nd * per, -1)[:n]
+
+    return cloud
 
 _T_START = time.time()
 
@@ -181,7 +221,7 @@ def install_problem(prob):
     g["READOUT_NAMES"] = prob.readout_names
     g["M"] = len(prob.readout_names)
     g["g_true_one"] = prob.g_one
-    g["g_true_cloud"] = vmap(prob.g_one, in_axes=(0, None))
+    g["g_true_cloud"] = make_true_cloud(prob.g_one)
     g["h_all"] = prob.h_all
     g["Z"] = prob.Z
     g["Z_COL_NAMES"] = prob.z_col_names
