@@ -1,6 +1,7 @@
 #!/bin/bash
 # QSP-scale population fit (docs ch. 4) on a Slurm cluster. Written against JHU
-# Rockfish; the only cluster-specific line is the partition.
+# Rockfish, whose default partition is "parallel" (there is no defq); that is the
+# only cluster-specific line.
 #
 # Submit from the repo root, passing your allocation:
 #
@@ -18,7 +19,7 @@
 #SBATCH --job-name=qsp-vpop-full
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --partition=defq
+#SBATCH --partition=parallel
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=48
