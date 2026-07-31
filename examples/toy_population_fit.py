@@ -1981,7 +1981,74 @@ def conditioning_report(phi_0_mu, phi_0_omega, z, V_chol, emu, c_ref, top=8,
         print(f"  {nm:<10}{B.shape[1]:>5}{s_b[0]:>12.2f}{int((s_b > 1).sum()):>11}"
               f"{float((B**2).sum()) / max(total, 1e-30):>20.3f}")
         off += B.shape[1]
-    return cond, eig, labels
+    # names and the standardised blocks go back so print_z_cost can reuse this
+    # Jacobian. At QSP scale it is a forward-mode pass over 572 coordinates and
+    # the slowest step in the script, so computing it twice is not free.
+    return cond, eig, labels, names, blocks
+
+
+def print_z_cost(names, blocks):
+    """eq:zcost. What does it COST the mechanism to imitate a column of Z?
+
+    The older test asked whether the mechanism *can* reproduce a column's row
+    effect, by projecting onto col(d tau / d(mu, omega)) and reading the residual.
+    At P >> K that is vacuous: the mechanism Jacobian already spans row space, so
+    the residual is zero for every column whatever Z is, and a pass means nothing.
+
+    Ask the price instead. Among all mechanism moves that reproduce the effect
+    exactly, take the smallest in prior units:
+
+        delta* = argmin  delta^T Sigma^-1 delta   s.t.   J_mech delta = W e_j.
+
+    In coordinates already standardised by the prior this is the minimum-norm
+    solution, delta* = pinv(J_mech) t, and ||delta*|| reads directly in prior
+    standard deviations. Large means only an implausible excursion imitates that
+    column, so it is identified against the mechanism. Small means the two are
+    confounded and the priors decide the split.
+
+    The target is a one-prior-sd move on the coefficient, so both sides are in
+    the same units and the ratio is scale free.
+
+    Args:
+        names, blocks: as returned by :func:`conditioning_report`, standardised.
+    """
+    by_name = dict(zip(names, blocks))
+    mech = [n for n in ("mu_raw", "s", "u_raw", "log_omega_measured")
+            if n in by_name]
+    J_mech = np.hstack([by_name[n] for n in mech])
+
+    targets = []
+    for site, sym in (("a", "gamma"), ("b", "kappa")):
+        B = by_name[site]
+        for j in range(B.shape[1]):
+            targets.append((f"{sym}/{Z_COL_NAMES[j]}", B[:, j]))
+
+    # rcond guards the near-null directions of J_mech: without it the minimum-norm
+    # solution loads on directions the mechanism barely moves and the cost is
+    # dominated by numerical noise.
+    rcond = 1e-8
+    pinv = np.linalg.pinv(J_mech, rcond=rcond)
+    sv = np.linalg.svd(J_mech, compute_uv=False)
+    keep = int((sv > rcond * sv[0]).sum())
+
+    print(f"\nZ cost test (eq:zcost): mechanism moves needed to imitate a column")
+    print(f"  {J_mech.shape[1]} mechanism coordinates, {J_mech.shape[0]} rows, "
+          f"effective rank {keep}")
+    print(f"  (sigma {sv[0]:.3g} down to {sv[keep - 1]:.3g}). The residual test "
+          f"is vacuous once the")
+    print(f"  mechanism spans row space, so this reports the price instead.")
+    print(f"  {'column':<22}{'cost (prior sd)':>17}{'unreachable':>13}")
+    for lab, t in targets:
+        eta = pinv @ t
+        nt = float(np.linalg.norm(t))
+        cost = float(np.linalg.norm(eta))
+        unreach = float(np.linalg.norm(J_mech @ eta - t)) / max(nt, 1e-30)
+        print(f"  {lab:<22}{cost:>17.2f}{unreach:>13.3f}")
+    print("  cost >> 1: only an implausible mechanism move imitates it, so the "
+          "column is")
+    print("  identified. cost << 1: confounded, and the priors decide. "
+          "unreachable > 0 means")
+    print("  the mechanism cannot reproduce it at all, which is stronger still.")
 
 
 def _null_residual(n_rows, basis):
@@ -2008,21 +2075,10 @@ def print_projection_report(J):
           "below the null")
     print("  means more aliased than chance, at or above means a direction of its own")
 
-    null_mech, k_mech = _null_residual(A, mech)
-    ra = _residual_fraction(J["a"], mech)
-    rb = _residual_fraction(J["b"], mech)
-    print("\n  Z test: does each column of Z have a mechanistic twin in (mu, omega)?")
-    print(f"    competitor rank {k_mech} of {A} rows, so the null is {null_mech:.3f}")
-    print(f"    {'column':<14}{'gamma resid':>13}{'kappa resid':>13}")
-    for k, nm in enumerate(Z_COL_NAMES[:DIM_Z]):
-        print(f"    {nm:<14}{ra[k]:>13.3f}{rb[k]:>13.3f}")
-    if max(float(ra.max()), float(rb.max())) < null_mech:
-        print(f"    every column is below the null. The rows cannot separate the "
-              f"measurement map")
-        print(f"    from the mechanism at all here: {k_mech} mechanism directions "
-              f"in {A} rows leaves")
-        print("    too little room. This is a verdict on the row budget, not on Z.")
-
+    # The Z test used to live here, as the residual of each column of Z against
+    # col(d tau / d(mu, omega)). It is vacuous once the mechanism spans row space,
+    # which at P >> K it always does, so it moved to print_z_cost and asks the
+    # price of imitating a column rather than whether it can be imitated.
     null_meas, k_meas = _null_residual(A, meas)
     rbeta = _residual_fraction(J["beta"], meas)
     print("\n  S test: can (gamma, kappa) absorb a species bias?")
@@ -3004,7 +3060,10 @@ def main():
     print_pivot_offsets(MU_0, OMEGA_0, z, V, emu, c_ref)
     print_width_gate(observed, MU_0, OMEGA_0, z, V, emu, c_ref)
     stamp("conditioning report: Jacobian over every sampling coordinate")
-    conditioning_report(MU_0, OMEGA_0, z, V_chol, emu, c_ref)
+    *_, cond_names, cond_blocks = conditioning_report(
+        MU_0, OMEGA_0, z, V_chol, emu, c_ref
+    )
+    print_z_cost(cond_names, cond_blocks)
     stamp("conditioning report done")
 
     if args.phi0_sweep:
