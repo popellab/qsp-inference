@@ -54,7 +54,7 @@ import argparse
 import hashlib
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import jax
@@ -230,6 +230,18 @@ def install_problem(prob):
     g["DIM_Z"] = int(prob.Z.shape[1])
     g["BETA_SPECIES"] = prob.beta_species
     g["N_BETA"] = int(prob.beta_species.shape[0])
+
+    # The frozen resample design for "se" rows, drawn once like z_{1:N}. Keyed by
+    # cohort name and readout position, and only built where it will be used.
+    rng_boot = np.random.default_rng(20260731)
+    g["BOOT_IDX"] = {
+        c.name: {
+            ri: jnp.array(rng_boot.random((B_SE, c.n)))
+            for ri, sts in enumerate(c.stats)
+            if "se" in sts and c.n <= SE_BOOT_MAX
+        }
+        for c in prob.cohorts
+    }
 
     g["COHORTS"] = prob.cohorts
     g["C"] = len(prob.cohorts)
@@ -775,7 +787,18 @@ def z_conditioning():
 # predict at all. Both are location rows, so they are also the only way to give the
 # flat fit more rows without inventing more cohorts.
 LOCATION_STATS = ("med", "mean")
-SCALE_STATS = ("iqr",)
+# "se" is the sampling standard error of the median, reported as its log. It is a
+# scale statistic: a source's reported uncertainty always goes to population
+# width rather than to the error bar, because width is what the corpus is short
+# of. See the "one number, one job" section of the note.
+SCALE_STATS = ("iqr", "se")
+
+# Below this cohort size the asymptotic standard error of a median is poor and a
+# bootstrap is used instead. Cost runs with n_c, so bootstrapping only the small
+# cohorts is close to free: at QSP scale the hybrid measured 1.12x the gradient
+# against 2.7x for bootstrapping every cohort.
+SE_BOOT_MAX = 20
+B_SE = 200  # resample replicates for an "se" row, where one is used
 
 
 @dataclass(frozen=True)
@@ -790,14 +813,6 @@ class Cohort:
     stats: tuple[tuple[str, ...], ...]
     # Eligibility on a readout, as (readout index, low, high). None means w = 1.
     eligibility: tuple[int, float, float] | None = None
-    # Whether this cohort's statistics were reconstructed rather than reported.
-    # 28 of the 49 rows of vpop_marginal_targets.csv are kind = synthesized, so
-    # more than half the real row budget is of this sort. It is a property of the
-    # TARGET, not of the readout, so it cannot enter Z -- eq:disc indexes gamma and
-    # kappa by readout only. Its home is the reported uncertainty U of eq:Vsplit,
-    # which inflates the scales of those rows while the correlations stay from the
-    # bootstrap. See ``build_V``.
-    synthesized: bool = False
 
     @property
     def K(self) -> int:
@@ -838,6 +853,9 @@ class Cohort:
 
 _MI = ("med", "iqr")
 _MMI = ("med", "mean", "iqr")
+# A source that printed a centre and an uncertainty and no interquartile
+# range. The uncertainty becomes a width row, not an error bar.
+_MS = ("med", "se")
 
 _SMALL_COHORTS: tuple[Cohort, ...] = (
     # The modality cohort: the effector fraction by flow and by histology, in the
@@ -847,7 +865,7 @@ _SMALL_COHORTS: tuple[Cohort, ...] = (
     # off-diagonal block where it belongs rather than across independent blocks.
     Cohort("A", scenario=0, n=20, readouts=(0, 2, 3), stats=(_MI, _MI, _MI)),
     # A small cohort reporting a centre only.
-    Cohort("B", scenario=0, n=6, readouts=(5,), stats=(("med",),)),
+    Cohort("B", scenario=0, n=6, readouts=(5,), stats=(_MS,)),
     # Readout 0 repeats here, under the other scenario, and reports a mean beside
     # its median.
     Cohort("C", scenario=1, n=50, readouts=(0, 5), stats=(_MMI, _MI)),
@@ -869,7 +887,7 @@ _SMALL_COHORTS: tuple[Cohort, ...] = (
     # block was identified at first order and only the priors separated them. The
     # flat fit was worse still, 20 parameters against 10 location rows. Nothing
     # about Z or the discrepancy could be tested until A exceeded that.
-    Cohort("F", scenario=1, n=80, readouts=(1, 2, 6), stats=(_MI, _MI, ("med",))),
+    Cohort("F", scenario=1, n=80, readouts=(1, 2, 6), stats=(_MI, _MI, _MS)),
     Cohort("G", scenario=0, n=45, readouts=(4, 5), stats=(_MMI, _MI)),
     Cohort("H", scenario=1, n=25, readouts=(0, 3), stats=(_MI, _MI)),
     # Means on three readouts at n = 120, which is where the mean-median gap is
@@ -921,12 +939,6 @@ _SMALL_MU_OFFSET = jnp.array([0.25, -0.20, 0.30, 0.15, -0.25, 0.20, -0.15, 0.10]
 # the emulator design has to reach, and a stage-1 prior of sd 0.45 pushed the
 # pool into the regime where the tumour goes extinct and the surrogate fails.
 _SMALL_SD1 = np.array([0.30, 0.20, 0.32, 0.28, 0.30, 0.28, 0.22, 0.20])
-
-# How much wider a reconstructed statistic's uncertainty is than the bootstrap's.
-# A guess, and it should be a per-source number in the real analysis; the point of
-# having it here is that the synthesized rows stop being treated as though they
-# were reported.
-SYNTH_INFLATE = 1.6
 
 TAU_S = 0.5  # prior width on the global width multiplier s
 TAU_U = 0.5  # prior width on the width pattern u
@@ -983,6 +995,44 @@ def smooth_weighted_quantiles(x, w, ps, bandwidth=QUANTILE_BANDWIDTH):
     return out
 
 
+def _log_se_median_closed(xr, w, n_c):
+    """log SE of a median, from ``1 / (2 f(m) sqrt(n_c))``.
+
+    ``f`` is the cloud's own density at its median, by the same Gaussian kernel
+    the quantiles use. One pass, no resampling, and cheap enough that row count
+    barely registers against the emulator's forward pass.
+    """
+    med = smooth_weighted_quantiles(xr, w, [0.50])[0]
+    sw = jnp.sum(w)
+    sd = jnp.sqrt(jnp.sum(w * (xr - med) ** 2) / sw)
+    h = 0.9 * sd * xr.shape[0] ** -0.2
+    dens = jnp.sum(w * jnp.exp(-0.5 * ((xr - med) / h) ** 2)) / (
+        sw * h * jnp.sqrt(2.0 * jnp.pi)
+    )
+    return -jnp.log(2.0 * dens * jnp.sqrt(n_c) + 1e-30)
+
+
+def _log_se_median_boot(xr, w, u):
+    """log SE of a median, by resampling the cloud on a frozen design.
+
+    The eligibility weight is carried through as a weight rather than used as a
+    sampling probability. That is what keeps the design frozen: sampling
+    proportional to ``w`` would make it depend on phi, and the row would stop
+    being a smooth function of phi.
+
+    ``u`` is stored as uniforms rather than indices because the flat fit runs a
+    smaller cloud than the population fit. Indices drawn for one would be out of
+    range for the other, and a JAX gather clamps out-of-range reads instead of
+    failing, so the bug would be silent.
+    """
+    idx = jnp.minimum((u * xr.shape[0]).astype(jnp.int32), xr.shape[0] - 1)
+    reps, wr = xr[idx], w[idx]
+    med = jax.vmap(
+        lambda v, ww: smooth_weighted_quantiles(v, ww, [0.50])[0]
+    )(reps, wr)
+    return jnp.log(jnp.std(med) + 1e-30)
+
+
 def cohort_rows(x_cloud, w, cohort):
     """The rows one cohort contributes, given its patients' readouts.
 
@@ -995,7 +1045,7 @@ def cohort_rows(x_cloud, w, cohort):
         Stacked rows, shape ``(K_c,)``, ordered by readout then by statistic.
     """
     rows = []
-    for r, sts in zip(cohort.readouts, cohort.stats):
+    for ri, (r, sts) in enumerate(zip(cohort.readouts, cohort.stats)):
         xr = x_cloud[:, r]
         levels = [0.50] + ([0.25, 0.75] if "iqr" in sts else [])
         q = smooth_weighted_quantiles(xr, w, levels)
@@ -1006,6 +1056,12 @@ def cohort_rows(x_cloud, w, cohort):
                 rows.append(jnp.sum(w * xr) / jnp.sum(w))
             elif st == "iqr":
                 rows.append(jnp.log(jnp.clip(q[2] - q[1], 1e-6, None)))
+            elif st == "se":
+                rows.append(
+                    _log_se_median_boot(xr, w, BOOT_IDX[cohort.name][ri])
+                    if cohort.n <= SE_BOOT_MAX
+                    else _log_se_median_closed(xr, w, cohort.n)
+                )
             else:
                 raise ValueError(f"unknown statistic {st!r}")
     return jnp.stack(rows)
@@ -1254,7 +1310,7 @@ def small_problem():
 
 # The QSP-scale cohort table, laid out against
 # pdac-build/calibration_targets/vpop_marginal_targets.csv: 5 scenarios, cohort
-# sizes from 6 to 702, a bit over half the rows synthesized rather than reported,
+# sizes from 6 to 702,
 # and the same mix of quantity types. Readout indices follow
 # ``qsp_scale_mechanism.build_readouts``:
 #
@@ -1271,7 +1327,7 @@ def small_problem():
 _QSP_COHORTS: tuple[Cohort, ...] = (
     Cohort("li2022", 0, 16, (8, 11), (_MI, _MI)),
     Cohort("dens_pooled", 0, 113, (1, 2, 3), (_MI, _MI, _MI)),
-    Cohort("myeloid", 0, 113, (4, 5, 12), (_MI, _MI, ("med",)), synthesized=True),
+    Cohort("myeloid", 0, 113, (4, 5, 12), (_MI, _MI, _MS)),
     # icaf_fraction and mycaf_fraction are log p and log (1 - p) of the same
     # quantity, so two rows of one cohort would be a deterministic function of each
     # other, their bootstrap noise would be perfectly correlated, and that block of
@@ -1279,19 +1335,19 @@ _QSP_COHORTS: tuple[Cohort, ...] = (
     # ridge, and a stalled sampler. The real corpus reports both, measured
     # separately with independent error; this toy computes both from the same
     # species, so they have to go in different cohorts.
-    Cohort("stroma", 0, 215, (6, 7, 17), (_MI, _MI, _MI), synthesized=True),
+    Cohort("stroma", 0, 215, (6, 7, 17), (_MI, _MI, _MI)),
     Cohort("ratios", 0, 50, (20, 21, 18), (_MMI, _MI, _MI)),
-    Cohort("cytokine", 0, 10, (26, 27, 28), (_MI, _MI, ("med",)), synthesized=True),
+    Cohort("cytokine", 0, 10, (26, 27, 28), (_MI, _MI, _MS)),
     Cohort("fractions", 0, 120, (16, 19, 15), (_MMI, _MI, _MI)),
     # A burden-selected cohort, as the real trials are.
     Cohort("burden", 0, 40, (0, 22), (_MMI, _MI), eligibility=(0, -2.0, 2.5)),
-    Cohort("progression", 1, 6, (0,), (("med",),)),
+    Cohort("progression", 1, 6, (0,), (_MS,)),
     Cohort("gvax_d21", 2, 9, (8, 9, 10, 12, 13), (_MI, _MI, _MI, _MI, _MI)),
     Cohort("nivo_d21", 3, 11, (8, 11, 10, 12, 13), (_MI, _MI, _MI, _MI, _MI)),
     Cohort("nivo_fc", 3, 11, (23, 24), (_MI, _MI)),
-    Cohort("nivo_deep", 3, 113, (14, 29, 22), (_MMI, _MI, _MI), synthesized=True),
+    Cohort("nivo_deep", 3, 113, (14, 29, 22), (_MMI, _MI, _MI)),
     Cohort("urelumab", 4, 10, (8, 23), (_MI, _MI)),
-    Cohort("urelumab_big", 4, 702, (25, 10, 27), (_MMI, _MI, _MI), synthesized=True),
+    Cohort("urelumab_big", 4, 702, (25, 10, 27), (_MMI, _MI, _MI)),
 )
 
 _QSP_SIZES = {
@@ -1371,7 +1427,28 @@ def qsp_problem(size="full", seed=0):
 install_problem(small_problem())
 
 
-def _hard_rows(sample, cohort):
+def _np_log_se_median(xr, rng):
+    """log SE of a median from an actual sample of n_c patients. Numpy.
+
+    Mirrors the estimator :func:`cohort_rows` predicts with, bootstrap below
+    ``SE_BOOT_MAX`` and the asymptotic form above it. Using one definition on
+    both sides matters: if the paper's estimator and the model's differ, the row
+    carries that gap as a bias, and the toy would be testing estimator mismatch
+    rather than the mechanism.
+    """
+    n = xr.shape[0]
+    if n <= SE_BOOT_MAX:
+        reps = xr[rng.integers(0, n, size=(B_SE, n))]
+        return float(np.log(np.std(np.median(reps, axis=1)) + 1e-30))
+    med = float(np.median(xr))
+    h = 0.9 * float(np.std(xr)) * n ** -0.2
+    dens = float(np.mean(np.exp(-0.5 * ((xr - med) / h) ** 2))) / (
+        h * np.sqrt(2.0 * np.pi)
+    )
+    return float(-np.log(2.0 * dens * np.sqrt(n) + 1e-30))
+
+
+def _hard_rows(sample, cohort, rng):
     """The statistics a paper would print, from n_c patients. Numpy, not JAX."""
     rows = []
     for r, sts in zip(cohort.readouts, cohort.stats):
@@ -1384,6 +1461,8 @@ def _hard_rows(sample, cohort):
             elif st == "iqr":
                 q25, q75 = np.percentile(xr, [25.0, 75.0])
                 rows.append(np.log(max(q75 - q25, 1e-6)))
+            elif st == "se":
+                rows.append(_np_log_se_median(xr, rng))
             else:
                 raise ValueError(f"unknown statistic {st!r}")
     return rows
@@ -1400,6 +1479,7 @@ def generate_data(truth, key, c_ref):
     """
     key_cloud, key_draw = random.split(key)
     z_truth = draw_cloud_z(key_cloud, N_TRUTH)
+    rng_se = np.random.default_rng(11)  # inner bootstrap for any "se" row
 
     x_raw = raw_readouts(truth.mu, truth.omega, z_truth, truth.beta_free,
                          g_true_cloud)
@@ -1412,7 +1492,9 @@ def generate_data(truth, key, c_ref):
         idx = np.asarray(
             random.choice(k, N_TRUTH, shape=(cohort.n,), replace=True, p=prob)
         )
-        observed.append(jnp.array(_hard_rows(np.asarray(x_cloud)[idx], cohort)))
+        observed.append(
+            jnp.array(_hard_rows(np.asarray(x_cloud)[idx], cohort, rng_se))
+        )
     return observed
 
 
@@ -1432,6 +1514,7 @@ def bootstrap_V(phi_0_mu, phi_0_omega, key, emu, c_ref, n_boot=None):
     n_boot = B_BOOT if n_boot is None else n_boot
     key_cloud, key_boot = random.split(key)
     z0 = draw_cloud_z(key_cloud, N_CLOUD)
+    rng_se = np.random.default_rng(12)  # inner bootstrap for any "se" row
     a0, b0, beta0 = jnp.zeros(DIM_Z), jnp.zeros(DIM_Z), jnp.zeros(N_BETA)
 
     x_raw = raw_readouts(phi_0_mu, phi_0_omega, z0, beta0, emu.cloud)
@@ -1445,7 +1528,9 @@ def bootstrap_V(phi_0_mu, phi_0_omega, key, emu, c_ref, n_boot=None):
         idx = np.asarray(
             random.choice(k, N_CLOUD, shape=(n_boot, cohort.n), replace=True, p=prob)
         )
-        reps = np.array([_hard_rows(x_np[idx[t]], cohort) for t in range(n_boot)])
+        reps = np.array(
+            [_hard_rows(x_np[idx[t]], cohort, rng_se) for t in range(n_boot)]
+        )
         blocks.append(np.cov(reps, rowvar=False).reshape(cohort.K, cohort.K))
     return blocks
 
@@ -1477,17 +1562,21 @@ def emulator_E(phi_0_mu, phi_0_omega, key, emu, c_ref, n_clouds=None):
     return blocks, means
 
 
-def assemble_V(v_boot_blocks, reported_U=None, E_blocks=None):
-    """eq:Vsplit -- V_c = D_c rho_c D_c + E_c.
+def assemble_V(v_boot_blocks, E_blocks=None):
+    """eq:Vsplit -- V_c = V^boot_c + E_c.
 
-    Correlations always come from the bootstrap, because no source reports a
-    correlation between readouts. Scales come from a reported uncertainty where
-    one exists and from the bootstrap otherwise.
+    A reported uncertainty no longer overrides a scale here. It goes to
+    population width instead, as an "se" row, so both the scales and the
+    correlations come from the bootstrap and the split of the older eq:Vsplit
+    reconstructs V^boot exactly. What is left is sampling noise from the
+    predicted cloud, with emulator error on top.
+
+    The cost is that V_c now rests entirely on that cloud. A cloud that is too
+    narrow makes every error bar too small, and nothing in the fit catches it.
+    ``print_width_gate`` is the check, and it runs before the fit.
 
     Args:
         v_boot_blocks: list of ``(K_c, K_c)`` bootstrap covariances.
-        reported_U: optional list of ``(K_c,)`` arrays; ``nan`` where no source
-            reports an uncertainty for that row.
         E_blocks: optional list of ``(K_c, K_c)`` emulator covariances.
 
     Returns:
@@ -1495,16 +1584,7 @@ def assemble_V(v_boot_blocks, reported_U=None, E_blocks=None):
     """
     out, chols = [], []
     for i, Vb in enumerate(v_boot_blocks):
-        sd_boot = np.sqrt(np.diag(Vb))
-        rho = Vb / np.outer(sd_boot, sd_boot)
-        np.fill_diagonal(rho, 1.0)
-
-        sd = sd_boot.copy()
-        if reported_U is not None and reported_U[i] is not None:
-            U = np.asarray(reported_U[i], dtype=float)
-            sd = np.where(np.isnan(U), sd_boot, U)
-
-        V = np.outer(sd, sd) * rho
+        V = np.asarray(Vb, dtype=float).copy()
         if E_blocks is not None:
             V = V + np.asarray(E_blocks[i])
         # A small ridge keeps the Cholesky well behaved when two readouts of one
@@ -2261,6 +2341,73 @@ def population_map(key, z, V_chol, emu, c_ref, observed, n_steps=800, lr=0.03,
     return params
 
 
+def print_width_gate(observed, phi_0_mu, phi_0_omega, z, V, emu, c_ref):
+    """eq:ratio, as the gate it now has to be. Run before the fit.
+
+    V_c no longer takes a reported uncertainty anywhere, so every error bar rests
+    on the predicted cloud. If that cloud is too narrow, every V_c is too small,
+    the likelihood overrides the prior, and nothing downstream catches it.
+
+    The check is the prior predictive residual on the rows that carry width: an
+    "se" or "iqr" row predicted at phi_0 against the one that was reported. It is
+    exactly the fit's own residual, evaluated at phi_0 instead of at phi, so it
+    costs one forward pass and needs no fit.
+
+    A cloud that is too narrow shows up as a positive residual: the source
+    reports more spread than the model can produce. The response is to fix the
+    model, not to widen V_c, since widening hides the thing being tested.
+    """
+    a0, b0, beta0 = jnp.zeros(DIM_Z), jnp.zeros(DIM_Z), jnp.zeros(N_BETA)
+    pred = tau_all(phi_0_mu, phi_0_omega, z, a0, b0, beta0, emu.cloud, c_ref)
+
+    rows = []
+    for i, cohort in enumerate(COHORTS):
+        sd = np.sqrt(np.diag(np.asarray(V[i])))
+        k = 0
+        for r, sts in zip(cohort.readouts, cohort.stats):
+            for st in sts:
+                if st in SCALE_STATS:
+                    obs = float(np.asarray(observed[i])[k])
+                    prd = float(np.asarray(pred[i])[k])
+                    rows.append((f"{cohort.name}/{READOUT_NAMES[r]}/{st}",
+                                 cohort.n, obs - prd, (obs - prd) / sd[k]))
+                k += 1
+
+    print("\nwidth gate at phi_0 (eq:ratio), before any fit")
+    print("  every V_c now rests on the predicted cloud, so this is the only "
+          "check on it")
+    if not rows:
+        print("  no width rows in this problem")
+        return
+
+    # A scale row is a log spread, so obs - pred IS the log widening the model
+    # would have to supply. It can supply it two ways, s and b_1, which enter a
+    # scale row additively, so the budget is the prior sd of their sum.
+    d_all = np.array([r[2] for r in rows])
+    z_all = np.array([r[3] for r in rows])
+    budget = float(np.sqrt(TAU_S**2 + SIGMA_B**2))
+
+    print(f"  {'row':<34}{'n_c':>6}{'shortfall':>11}{'z':>8}")
+    for lab, n, d, zz in sorted(rows, key=lambda t: -abs(t[3]))[:8]:
+        print(f"  {lab:<34}{n:>6}{d:>11.3f}{zz:>8.2f}")
+    print(f"  {len(rows)} width rows, mean shortfall {d_all.mean():+.3f} log "
+          f"units, max |z| {np.abs(z_all).max():.2f}")
+    print(f"  the model supplies width through s and b_1, prior sd of their sum "
+          f"{budget:.2f},")
+    print(f"  so the mean shortfall is {abs(d_all.mean()) / budget:.2f} prior sd "
+          f"of the available widening.")
+    if abs(d_all.mean()) / budget > 2.0:
+        print("  ABOVE 2 PRIOR SD: the model cannot widen this far without "
+              "fighting its own")
+        print("  prior. That is a model problem, not something to fix by "
+              "widening V_c.")
+    elif np.abs(z_all).max() > 3.0:
+        print("  Reachable, but some rows are far out relative to their error "
+              "bar. Those rows")
+        print("  will dominate the fit for omega; check them before trusting "
+              "the width.")
+
+
 def print_dbar_absorption(E_means, V_chol, top=5):
     """Can gamma and kappa absorb the emulator's systematic offset? eq:Ec asks.
 
@@ -2656,13 +2803,26 @@ def main():
                     help="rebuild V_c at N draws from Sigma_1 and report how far "
                          "the posterior moves; 0 skips. This is the test of "
                          "whether the plug-in matters at all.")
+    ap.add_argument("--no-se-rows", action="store_true",
+                    help="drop every 'se' row, so a reported uncertainty buys "
+                         "nothing. The baseline the width rule is measured "
+                         "against.")
     ap.add_argument("--skip-flat", action="store_true",
                     help="skip the flat fit and take phi_0 = (mu_0, omega_0)")
     args = ap.parse_args()
     if args.quick:
         args.warmup, args.samples, args.chains = 100, 100, 1
-    if args.size != "small":
-        install_problem(qsp_problem(args.size, seed=args.seed))
+    prob = qsp_problem(args.size, seed=args.seed) if args.size != "small" else PROB
+    if args.no_se_rows:
+        stripped = tuple(
+            replace(c, stats=tuple(tuple(s for s in sts if s != "se")
+                                   for sts in c.stats))
+            for c in prob.cohorts
+        )
+        if any(not sts for c in stripped for sts in c.stats):
+            raise ValueError("--no-se-rows would leave a readout with no rows")
+        prob = replace(prob, cohorts=stripped)
+    install_problem(prob)
 
     key = random.PRNGKey(args.seed)
     (k_emu, k_data, k_boot, k_cloud, k_mcmc,
@@ -2676,10 +2836,10 @@ def main():
     print(f"A={A_ROWS} rows ({A_ROWS_LOC} location, {A_ROWS - A_ROWS_LOC} scale), "
           f"N={N_CLOUD} simulated patients, |M_set|={N_MEASURED} measured widths")
     print(f"cohort sizes n_c = {[c.n for c in COHORTS]}")
-    n_synth = sum(c.K for c in COHORTS if c.synthesized)
-    if n_synth:
-        print(f"{n_synth} of {A_ROWS} rows are synthesized rather than reported, "
-              f"and carry an inflated U in eq:Vsplit")
+    n_se = sum(sts.count("se") for c in COHORTS for sts in c.stats)
+    if n_se:
+        print(f"{n_se} of {A_ROWS} rows are reported uncertainties, carried as "
+              f"population width rather than as error bars")
     if N_MEASURED == 0:
         print("no parameter has a measured width, so lambda_m = 0 identically and "
               "s and b_1")
@@ -2760,7 +2920,11 @@ def main():
         kb, kec = random.split(key)
         vk = _cache_key("V", PROB.name, args.seed, emu_key, B_BOOT, L_EMU,
                         N_CLOUD, N_TRUTH, phi_mu, phi_omega, c_ref,
-                        tuple(c.name for c in COHORTS))
+                        # The stats, not just the names: adding an "se" row to a
+                        # cohort changes every block, and keying on names alone
+                        # would silently pair the new table with a stale V_c.
+                        tuple((c.name, c.n, c.readouts, c.stats)
+                              for c in COHORTS))
         vpath = _cache_path(cache_dir, "vc", vk)
         if vpath is not None and vpath.exists():
             d = np.load(vpath)
@@ -2782,21 +2946,8 @@ def main():
                     blob[f"E{i}"] = np.asarray(E_blocks[i])
                     blob[f"Em{i}"] = np.asarray(E_means[i])
                 np.savez_compressed(vpath, **blob)
-        # eq:Vsplit's other half. A synthesized row's statistic was reconstructed
-        # from a figure or a summary rather than reported, so its uncertainty is
-        # wider than the sampling uncertainty a bootstrap at n_c would give. That
-        # is exactly a reported U: it overrides the scale while the correlations
-        # stay from the bootstrap, which is the split eq:Vsplit is written for and
-        # which nothing in this script exercised until the real target table
-        # turned out to be more than half synthesized.
-        reported_U = [
-            SYNTH_INFLATE * np.sqrt(np.diag(np.asarray(vb))) if c.synthesized
-            else None
-            for c, vb in zip(COHORTS, v_boot)
-        ]
         V, V_chol = assemble_V(
-            v_boot, reported_U=reported_U,
-            E_blocks=None if args.no_emulator_error else E_blocks
+            v_boot, E_blocks=None if args.no_emulator_error else E_blocks
         )
         if quiet:
             return V, V_chol
@@ -2851,6 +3002,7 @@ def main():
     print_projection_report(J_rows)
     print(f"  ({time.time() - t0:.1f}s)")
     print_pivot_offsets(MU_0, OMEGA_0, z, V, emu, c_ref)
+    print_width_gate(observed, MU_0, OMEGA_0, z, V, emu, c_ref)
     stamp("conditioning report: Jacobian over every sampling coordinate")
     conditioning_report(MU_0, OMEGA_0, z, V_chol, emu, c_ref)
     stamp("conditioning report done")
