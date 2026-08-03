@@ -1,26 +1,40 @@
 """Reported statistics as functionals of the predicted cloud. eq:stat, eq:smoothq.
 
-A cohort's printed quantile came from ``n_c`` patients, so ``tau`` predicts the
-expectation of that statistic and not the population quantile. Sort ``n`` draws
-from any distribution and the rank of the k-th in it is ``Beta(k, n-k+1)``,
-whatever the shape, so that expectation is a Beta-weighted average of the cloud.
+A cohort's printed statistic came from ``n_c`` patients, so ``tau`` predicts the
+expectation of that statistic, not the population functional.
 
-The draft writes the kernel as a density at each member's midpoint. Here it is
-the Beta mass on each member's slice of [0, 1], which is the exact form and sums
-to one without normalising.
+Order statistics get it in closed form. Sort ``n`` draws from any distribution and
+the rank of the k-th in it is ``Beta(k, n-k+1)`` whatever the shape, so the
+expectation is a Beta-weighted average of the cloud. That covers quantile rows,
+and an interquartile range as the difference of two of them.
+
+Moments do not: ``E[s]/sigma`` runs from 0.77 to 0.96 at ``n=8`` depending on
+shape, and logging does not stabilise it. Those rows are bootstrapped at ``phi``
+on a frozen design instead.
+
+Requires ``jax_enable_x64``. The kernel differences a CDF across cloud members, so
+at ``N`` in the hundreds of thousands each mass is order ``1e-5`` and float32
+cumulative sums lose it.
 """
 
 from __future__ import annotations
 
 from typing import Callable, Dict
 
-import numpy as np
-from scipy.stats import beta as _beta
+import jax
+import jax.numpy as jnp
+from jax.scipy.special import betainc
 
 __all__ = [
     "QUANTILE_CONVENTIONS",
     "order_statistic_mass",
     "expected_quantile",
+    "mean_row",
+    "iqr_row",
+    "bootstrap_design",
+    "bootstrap_row",
+    "sd_row",
+    "se_row",
 ]
 
 # Which order statistic an estimator selects for the p-quantile of n points.
@@ -32,26 +46,30 @@ QUANTILE_CONVENTIONS: Dict[str, Callable[[float, int], float]] = {
 }
 
 
-def order_statistic_mass(w: np.ndarray, kappa: int, n: int) -> np.ndarray:
+def _require_x64() -> None:
+    """Fail loudly rather than degrade. ``submodel.inference`` turns x64 off globally."""
+    if not jax.config.jax_enable_x64:
+        raise RuntimeError(
+            "vpop.statistics needs jax_enable_x64. The Beta kernel differences a "
+            "CDF across cloud members, so each mass is order 1/N and float32 "
+            "loses it. Set jax.config.update('jax_enable_x64', True)."
+        )
+
+
+def order_statistic_mass(w, kappa: int, n: int):
     """``Beta(kappa, n-kappa+1)`` mass on each cloud member's slice of [0, 1].
 
     ``w`` is the eligibility weight per member, in sorted-value order. Member ``i``
-    spans cumulative weight ``[e[i-1], e[i]]``, so its mass is the Beta CDF's
-    increment across that span.
+    spans cumulative weight ``[e[i-1], e[i]]``, so its mass is the CDF's increment
+    across that span. Sums to one without normalising.
     """
-    w = np.asarray(w, dtype=float)
-    edges = np.concatenate([[0.0], np.cumsum(w) / w.sum()])
-    cdf = _beta.cdf(edges, kappa, n - kappa + 1)
-    return np.diff(cdf)
+    _require_x64()
+    w = jnp.asarray(w)
+    edges = jnp.concatenate([jnp.zeros(1, w.dtype), jnp.cumsum(w) / jnp.sum(w)])
+    return jnp.diff(betainc(float(kappa), float(n - kappa + 1), edges))
 
 
-def expected_quantile(
-    x_sorted: np.ndarray,
-    w: np.ndarray,
-    p: float,
-    n: int,
-    convention: str = "type7",
-) -> float:
+def expected_quantile(x_sorted, w, p: float, n: int, convention: str = "type7"):
     """``E[q_p]`` over an ``n``-sample from the weighted cloud. eq:smoothq.
 
     ``x_sorted`` is ascending. A non-integer order statistic is what the estimator
@@ -60,10 +78,80 @@ def expected_quantile(
     """
     h = QUANTILE_CONVENTIONS[convention](p, n)
     h = min(max(h, 1.0), float(n))
-    lo = int(np.floor(h))
+    lo = int(h // 1)
     frac = h - lo
 
     mass = (1.0 - frac) * order_statistic_mass(w, lo, n)
     if frac > 0:
         mass = mass + frac * order_statistic_mass(w, min(lo + 1, n), n)
-    return float(np.asarray(x_sorted, dtype=float) @ mass)
+    return jnp.asarray(x_sorted) @ mass
+
+
+def mean_row(x_sorted, w):
+    """A reported mean. ``E[sample mean] = population mean``, so no correction."""
+    w = jnp.asarray(w)
+    return jnp.sum(w * jnp.asarray(x_sorted)) / jnp.sum(w)
+
+
+def iqr_row(x_sorted, w, n: int, convention: str = "type7", log: bool = False):
+    """A reported interquartile range, exact by linearity of the expectation.
+
+    ``log=True`` is not the expectation of the reported log: that needs the joint
+    law of two order statistics. Use it only where the row was printed as a log.
+    """
+    hi = expected_quantile(x_sorted, w, 0.75, n, convention)
+    lo = expected_quantile(x_sorted, w, 0.25, n, convention)
+    width = hi - lo
+    return jnp.log(jnp.clip(width, 1e-30, None)) if log else width
+
+
+def bootstrap_design(key, n: int, n_boot: int = 400):
+    """Frozen uniforms for a moment row, shape ``(n_boot, n)``.
+
+    Uniforms rather than indices: the flat fit runs a smaller cloud than the
+    population fit, and a JAX gather clamps an out-of-range index instead of
+    failing, so indices drawn for one would be silently wrong in the other.
+    """
+    return jax.random.uniform(key, (n_boot, n))
+
+
+def bootstrap_row(x_sorted, w, u, fn):
+    """``E*[fn]`` over the frozen design. ``fn(values, weights)`` is the statistic.
+
+    Eligibility rides as a weight on the replicates rather than as the sampling
+    probability. Sampling proportional to ``w`` would make the design depend on
+    ``phi`` and the row would stop being smooth in it.
+    """
+    _require_x64()
+    x_sorted, w = jnp.asarray(x_sorted), jnp.asarray(w)
+    idx = jnp.minimum((u * x_sorted.shape[0]).astype(jnp.int32),
+                      x_sorted.shape[0] - 1)
+    return jnp.mean(jax.vmap(fn)(x_sorted[idx], w[idx]))
+
+
+def _weighted_sd(v, ww):
+    """Unbiased weighted sample SD, reducing to the ``n-1`` form at equal weights."""
+    sw = jnp.sum(ww)
+    m = jnp.sum(ww * v) / sw
+    denom = sw - jnp.sum(ww ** 2) / sw
+    return jnp.sqrt(jnp.sum(ww * (v - m) ** 2) / denom)
+
+
+def sd_row(x_sorted, w, u, log: bool = False):
+    """A reported standard deviation, as ``E*[s]`` over the frozen design.
+
+    No closed form: the correction depends on the shape of the pushforward, which
+    is what ``phi`` controls, so it is neither distribution-free nor a fixed offset.
+    """
+    s = bootstrap_row(x_sorted, w, u, _weighted_sd)
+    return jnp.log(jnp.clip(s, 1e-30, None)) if log else s
+
+
+def se_row(x_sorted, w, u, n: int, log: bool = False):
+    """A reported standard error of a mean, as ``E*[s/sqrt(n)]``.
+
+    The expectation of the estimator the source printed, not the sampling spread
+    itself. The two differ at ``O(1/n)`` and only the first is ``E[printed]``.
+    """
+    s = bootstrap_row(x_sorted, w, u, _weighted_sd) / jnp.sqrt(float(n))
+    return jnp.log(jnp.clip(s, 1e-30, None)) if log else s
