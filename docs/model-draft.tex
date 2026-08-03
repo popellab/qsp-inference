@@ -384,7 +384,7 @@ error bar on its row or say something about population width. It cannot do both,
 since that counts one number twice. It always goes to width.
 
 The reason is scarcity. Numbers that speak to width are rare, and $\Mset$ is
-empty, so the scale rows are all $\omega$ has. Sampling noise is abundant by
+empty, so the width rows are all $\omega$ has. Sampling noise is abundant by
 comparison, because \eqref{eq:V} supplies it on every row for nothing. So $U$
 leaves $V_B$ and becomes a row of $\widehat T_B$, and $D_B$ always comes from the
 bootstrap.
@@ -563,21 +563,27 @@ rather than absorbs.
 \begin{tabularx}{\textwidth}{@{}lX@{}}
 \toprule
 $V_B$ is computable & \eqref{eq:V} resamples a real cloud, so the bootstrap works unchanged. \\
-The scale rows are held out & Predict them at $\omega_0$ and report the ratio per readout. That is the width shortfall, before any population parameter is estimated. \\
+The width rows are held out & Predict them at $\omega_0$ and report the ratio per readout. That is the width shortfall, before any population parameter is estimated. \\
 $\hat\mu$ needs no translation & It is already a population centre, so there is no Jensen gap to correct afterwards. \\
 It supplies the plug-in & Take $\phi_0=(\hat\mu_{\text{flat}},\ \omega_0)$ for \eqref{eq:V}. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Fit the location rows and hold the scale rows out, so the ratio above is an
-honest comparison.
+Fit the centre rows and hold every width row out, so the ratio above is an
+honest comparison. The centre rows are the medians and the means. A width row is
+either one printed as a width, an $\sigma$ or an interquartile range, or a
+quantile away from the median: a cohort reporting quartiles states its width
+through the gap between them, so fitting $\hat q_{0.25}$ and $\hat q_{0.75}$
+would fit the width and leave the ratio measuring a residual from a fit that had
+already seen it. This is a choice of which rows to fit and not a re-expression of
+any of them.
 
-$b$ is pinned at zero here, because location rows cannot see it. The pivot sits
-at the median, so $\kappa_r$ drops out of a median row entirely, and it enters a
-mean row only through the small gap between the mean and the median. The rows
-that carry $b$ are the scale rows, which this fit holds out by design. $b$ is
-estimated in the population fit.
+$b$ is pinned at zero here, because centre rows cannot see it. The pivot sits at
+the median, so $\kappa_r$ drops out of a median row entirely, and it enters a
+mean row only through the small gap between the mean and the median. It does
+enter a quartile row, with multiplier $\hat q_p-c_{rc}$, which is the second
+reason those are held out. $b$ is estimated in the population fit.
 
 \paragraph{Cost.} A gradient step still costs $C\times N$ forward passes, but $N$
 only has to resolve the location statistics and a rough width, not the flanks at
@@ -645,7 +651,7 @@ next to the fit itself.
 
 \paragraph{Is the predicted cloud wide enough?} The ratio $\varrho_{rck}$ of
 \eqref{eq:ratio} at $\phi_0$, and the same comparison in \S\ref{sec:flat} against
-scale rows no fit has seen.
+width rows no fit has seen.
 
 \paragraph{Can the measurement map hold the emulator's offset?} To first order at
 $a=b=0$ the map moves a row by
@@ -744,7 +750,7 @@ since $b_1$ is discarded with the rest of the measurement map, so the split
 changes what gets shipped.
 
 Let $\lambda_m$ be the share of readout $m$'s across-patient variance coming from
-parameters in $\Mset$. A scale row loads on $s$ as $1-\lambda_m$ and on $b_1$ as
+parameters in $\Mset$. A width row loads on $s$ as $1-\lambda_m$ and on $b_1$ as
 $1$, so a readout helps only if its $\lambda_m$ differs from the rest. No
 parameter has a measured width as the model stands, so $\lambda_m=0$ everywhere
 and nothing separates them. $\tau_s$ and $\sigma_b$ decide the split. Report the
