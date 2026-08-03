@@ -196,6 +196,11 @@ The criterion is stated in reported units, so it reads $\tilde x$ rather than
 $x$. Eligibility therefore depends on $a$, $b$ and $\beta$, and is not fixed
 in $\phi$.
 
+Cohorts of one block that share people must share $w^{(c)}$: a common draw
+serves them all, so criteria that select differently leave it undefined. In
+practice they are arms and timepoints of one trial and the enrolment criterion
+is the same.
+
 \paragraph{Statistics.} Cohort $c$ reports statistics $T_{rc1},\dots,T_{rcK_{rc}}$
 for readout $r$, each a functional of a sample. The model computes the same
 functionals of its own predicted sample:
@@ -249,6 +254,12 @@ evaluated on its own members.
 Sharing need not be nesting: 16 evaluable baseline biopsies against day-21 arms
 of 9 and 10 admit neither a common $n$ nor a containment. The block carries the
 union and each cohort keeps its $n_c$. Merging cohorts is the total-overlap case.
+
+Sharing has to be counted to be drawn, as the counts on the Venn regions of the
+block's cohorts. Where two studies are known to share patients but neither
+prints which, the draw falls back to independent, $V_B$ understates those
+off-diagonals and the fit is overconfident there. Record the block as uncounted
+and bound the effect by refitting without the second study.
 
 \paragraph{Sampling covariance.} $V_{B}$ is the covariance of the reported
 statistics of block $B$ under resampling of its patients. It has two
@@ -321,7 +332,9 @@ bootstrap and there is nothing to assemble:
 V_B \;=\; V^{\text{boot}}_B \;+\; E_B .
 \label{eq:Vsplit}
 \end{equation}
-Sampling noise from the predicted cloud, emulator error on top.
+Sampling noise from the predicted cloud, emulator error on top. A ridge
+$\epsilon I$ is added before factoring, since two readouts of one cohort sharing
+a denominator make $V_B$ near singular.
 
 The cost is that $V_B$ now rests entirely on that cloud. A cloud that is too
 narrow makes every error bar too small, the likelihood then overrides the prior,
