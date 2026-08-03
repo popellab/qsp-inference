@@ -202,10 +202,14 @@ practice they are arms and timepoints of one trial and the enrolment criterion
 is the same.
 
 \paragraph{Statistics.} Cohort $c$ reports statistics $T_{rc1},\dots,T_{rcK_{rc}}$
-for readout $r$, each a functional of a sample. The model computes the same
-functionals of its own predicted sample:
+for readout $r$, each a functional of a sample of $n_c$ patients. The model
+computes the same functionals of samples of the same size drawn from its own
+predicted population:
 \begin{equation}
-\tau_{rck}(\phi) \;=\; T_{rck}\big(\tilde F_{rc}\big).
+\tau_{rck}(\phi) \;=\;
+\mathbb{E}\Big[\,T_{rck}\big(\tilde F^{\,\ast}_{rc}\big)\,\Big],
+\qquad
+\tilde F^{\,\ast}_{rc} = \text{an } n_c\text{-sample from } \tilde F_{rc}.
 \label{eq:stat}
 \end{equation}
 Order the rows of cohort $c$ by $r\in\Rset_c$ and then by $k$ within $r$, and
@@ -214,21 +218,47 @@ same way into $\widehat T_c$. Concatenating over $c\in B$ in a fixed cohort orde
 gives $\tau_B$ and $\widehat T_B$. Since $\tilde F_{rc}$ is a marginal of $\tilde
 F_c$, the joint form changes $V_B$ and leaves $\tau$ alone.
 
+Whatever the source printed is a row, in the form it printed it. Re-expressing a
+quartile pair as a width would discard the asymmetry between $\hat q_{0.75}-\hat
+q_{0.5}$ and $\hat q_{0.5}-\hat q_{0.25}$, which is most of what a cohort says
+about the shape of the pushforward and so about $\Omega$.
+
+The expectation in \eqref{eq:stat} is what makes $\tau$ the mean of
+\eqref{eq:obs} rather than the quantity of interest. A statistic computed from
+$n_c$ patients is not the functional of the population it came from, and the gap
+closes as $n_c$ grows, not as the predicted cloud does. For quantiles it runs
+inward on both sides, so predicting the population functional instead would meet
+the data by shrinking $\Omega$: at a log-scale spread of $1$ and $n_c=9$ the
+population lower quartile is $-0.674$ against a reported $-0.570$, which is
+recovered at a spread of $0.845$. The population functional is the deliverable
+and is read off the posterior in \eqref{eq:vpop}, never off a row.
+
 \paragraph{Smoothing.} $\tau$ has to be differentiable in $\phi$ and the reported
 functionals are not: a quantile picks out one order statistic, so its gradient
 rests on a single patient and jumps when two patients swap rank. Quantiles are
-taken with a Gaussian kernel in cumulative-weight space instead,
+taken with a Beta kernel in cumulative-weight space instead,
 \begin{equation}
 \hat q(p) \;=\; \frac{\sum_i k_i\,x_{(i)}}{\sum_i k_i},
 \qquad
-k_i = w_{(i)}\,\exp\!\Big\{-\tfrac{1}{2}\big((c_i-p)/h_q\big)^2\Big\},
+k_i = w_{(i)}\,f_{\text{B}}\big(c_i;\,\varkappa,\,n_c-\varkappa+1\big),
 \qquad
 c_i = \frac{\sum_{l\le i} w_{(l)} - \tfrac12 w_{(i)}}{\sum_l w_l},
 \label{eq:smoothq}
 \end{equation}
-at a bias of order $h_q^2$. A scale statistic is reported as
-$\log(\hat q_{0.75}-\hat q_{0.25})$, and that log is what makes $\kappa_r$ enter
-a scale row as an additive shift.
+with $\varkappa$ the order statistic the cohort's estimator selects. Sort $n_c$
+draws from any distribution and the rank of the $\varkappa$-th in it is
+$\text{Beta}(\varkappa,n_c-\varkappa+1)$ whatever its shape, so this is exactly
+the expectation \eqref{eq:stat} asks for and differentiability comes with it.
+Centre $\varkappa/(n_c+1)$ and width $\sqrt{p(1-p)/n_c}$ are set by $n_c$ rather
+than chosen.
+
+$\varkappa$ is a convention: $(n_c-1)p+1$ in R and numpy, $(n_c+1)p$ in SPSS,
+centring at $0.30$ and $0.25$ when $n_c=9$. No source records which it used, so
+declare it per cohort and report the sensitivity.
+
+A width, a standard deviation or an interquartile range, is not an order
+statistic and \eqref{eq:smoothq} does not reach it. It enters as its log, and
+that log is what makes $\kappa_r$ an additive shift on the row.
 
 \paragraph{Observation.} One block is one block:
 \begin{equation}
