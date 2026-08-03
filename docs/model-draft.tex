@@ -158,6 +158,10 @@ rule. It is fixed once and not rebuilt when $V_B$ moves to another $\phi_0$:
 $\gamma_r$ is the intercept at the reference level, so changing $c_{rc}$
 redefines the prior on $a$.
 
+The plug-in is the no-discrepancy point $\beta=0,a=0,b=0$, where
+\eqref{eq:disc} is the identity and $\tilde x = x$ whatever $c_{rc}$ is. So the
+pivot is a median of $x$ and does not need a pivot to define it.
+
 At $c_{rc}=0$ the map is $\kappa_r h_r + \gamma_r$, and $h_r$ is a log quantity
 with a level well away from zero, so $\kappa_r$ shifts the readout as well as
 stretching it. Pivoting at $c_{rc}$ leaves $\kappa_r$ acting on deviations from
@@ -196,10 +200,14 @@ The criterion is stated in reported units, so it reads $\tilde x$ rather than
 $x$. Eligibility therefore depends on $a$, $b$ and $\beta$, and is not fixed
 in $\phi$.
 
-Cohorts of one block that share people must share $w^{(c)}$: a common draw
-serves them all, so criteria that select differently leave it undefined. In
-practice they are arms and timepoints of one trial and the enrolment criterion
-is the same.
+Cohorts drawn together must share $w^{(c)}$: one draw serves them all, so
+criteria that select differently leave it undefined. The unit is the joint draw
+and not the block, since cohorts joined only by a shared row are disjoint people
+and each reads its own. Evaluating a shared criterion once per cohort would not
+do: $\tilde x_{irc}$ differs across cohorts through the scenario and through
+$c_{rc}$, so the same rule would select different patients. It is evaluated once,
+on the cohort the criterion enrolled. In practice these are arms and timepoints
+of one trial and that is the baseline.
 
 \paragraph{Statistics.} Cohort $c$ reports statistics $T_{rc1},\dots,T_{rcK_{rc}}$
 for readout $r$, each a functional of a sample of $n_c$ patients. The model
