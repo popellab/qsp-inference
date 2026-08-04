@@ -231,23 +231,33 @@ def build_h_fn(
     times = {r: float(targets[r]["observable"].get("readout_time") or 0.0)
              for r in readouts}
 
-    take = {r: jnp.asarray(s) for r, s in at.items()}
+    live = sorted({int(i) for s in at.values() for i in s})
 
     def h_fn(y, log_R=None):
-        species = {name: y[..., i] for i, name in enumerate(states)}
-        derived = observables_fn(species)
+        y = jnp.asarray(y)
         aux = {} if log_R is None else {
             name: jnp.exp(jnp.asarray(log_R)[i])
             for i, name in enumerate(aux_order)
         }
+        # Per scenario, on (N, Q). Reversing a gather into the (S, N, Q) stack
+        # pads a cotangent back to full width once per readout, so evaluating on
+        # the slice is what keeps the backward pass at the width it needs.
+        def _at(ys):
+            return observables_fn({n: ys[..., i] for i, n in enumerate(states)})
+
+        derived = ({s: _at(y[s]) for s in live} if at else {None: _at(y)})
+
         columns = []
         for r in readouts:
-            s = take.get(r)
-            # A requested symbol can be a bare model constant, which carries no
-            # scenario axis to select from.
-            values = {sym: (derived[sym] if s is None or jnp.ndim(derived[sym]) < 2
-                            else derived[sym][s])
-                      for sym in wanted[r]}
+            s = at.get(r)
+            if s is None:
+                values = {sym: derived[None][sym] for sym in wanted[r]}
+            else:
+                # A requested symbol can be a bare model constant, which carries
+                # no patient axis and so stands for every scenario at once.
+                values = {sym: (derived[s[0]][sym] if jnp.ndim(derived[s[0]][sym]) < 1
+                                else jnp.stack([derived[i][sym] for i in s]))
+                          for sym in wanted[r]}
             out = compiled[r](jnp.asarray(times[r]), values,
                               target_constants(targets[r], aux))
             columns.append(jnp.log(out if s is None else out[-1]))
