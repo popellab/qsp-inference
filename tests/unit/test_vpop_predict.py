@@ -21,6 +21,7 @@ from qsp_inference.vpop.predict import (
     tau_block,
     tau_rows,
     quantile_mass_table,
+    scenario_columns,
 )
 from qsp_inference.vpop.resampling import BlockPlan, DrawGroup
 from qsp_inference.vpop.rows import RowSpec, tau_row
@@ -377,3 +378,48 @@ class TestPresortedAndMassTable:
         table = quantile_mass_table(self.SPECS, 1000)
         assert all(len(k) == 3 for k in table)
         assert len(table) == 3          # the mean row contributes no key
+
+
+class TestScenarioColumns:
+    """Most readouts are dead at most scenarios: a target belongs to one cohort."""
+
+    SPECS = {"c_pre": [RowSpec(LEVEL, "c_pre", "quantile", 0.0, 9, p=0.5)],
+             "c_post": [RowSpec(RATIO, "c_post", "mean", 0.0, 9)]}
+
+    def test_each_scenario_keeps_only_what_it_reports(self, mech):
+        cols = scenario_columns(self.SPECS, SCENARIO_OF, mech.readouts)
+        assert cols == {0: (mech.readouts.index(LEVEL),),
+                        1: (mech.readouts.index(RATIO),)}
+
+    def test_a_readout_no_cohort_reports_is_dropped(self):
+        readouts = ("dead_a", LEVEL, "dead_b", RATIO)
+        cols = scenario_columns(self.SPECS, SCENARIO_OF, readouts)
+        assert cols == {0: (1,), 1: (3,)}
+
+    def test_restricting_columns_changes_no_number(self, plan):
+        """A mechanism carrying two readouts nobody reports must give the same tau."""
+        z = jnp.asarray(np.random.default_rng(0).standard_normal((N, 2)))
+
+        def h4(y, log_R=None):
+            level = jnp.log(y[:, :, 0])
+            ratio = level - jnp.log(y[:, :, 1])
+            dead = level * 3.0 + 11.0
+            return jnp.stack([dead, level, dead - 1.0, ratio], axis=-1)
+
+        wide = Mechanism(L_R=jnp.eye(2), z=z,
+                         Z=jnp.array([[1., 1.], [1., 0.], [1., 1.], [1., 1.]]),
+                         readouts=("dead_a", LEVEL, "dead_b", RATIO),
+                         n_species=2, n_scenarios=2, beta_species=jnp.array([0, 1]),
+                         g_fn=_g, h_fn=h4)
+        narrow = Mechanism(L_R=jnp.eye(2), z=z,
+                           Z=jnp.array([[1., 0.], [1., 1.]]),
+                           readouts=(LEVEL, RATIO), n_species=2, n_scenarios=2,
+                           beta_species=jnp.array([0, 1]), g_fn=_g, h_fn=_h)
+        a, b = jnp.array([0.2, -0.1]), jnp.array([0.3, 0.15])
+        got, want = [], []
+        for m in (wide, narrow):
+            refs = reference_levels(MU, OMEGA, m, [plan], SCENARIO_OF)
+            (got if m is wide else want).append(
+                tau_all(MU, OMEGA, a, b, ZERO2, [plan], self.SPECS, refs, m,
+                        SCENARIO_OF)[0])
+        assert np.allclose(got[0], want[0], rtol=1e-12)
