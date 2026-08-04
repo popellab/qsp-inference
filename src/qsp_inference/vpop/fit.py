@@ -58,6 +58,12 @@ class PopulationPrior:
             raise ValueError("log_R_0 and sigma_R must have the same length")
         if not self.assumed:
             raise ValueError("every width is measured, so s and u have nothing to do")
+        if self.n_beta == 1:
+            raise ValueError(
+                "eq:betaprior centres beta, so one free species gives beta = 0 "
+                "identically: a parameter with no effect and a flat direction. "
+                "Declare the whole shared-denominator set, or none of it."
+            )
 
 
 def build_omega(s, u_raw, log_omega_measured, prior: PopulationPrior):
