@@ -499,12 +499,29 @@ and shifts only the densities. The measurement map can produce exactly that, by
 moving $\gamma$. So the common level of $\beta$ is invisible to the data, and the
 prior alone would decide it. Centring takes it out.
 
+\paragraph{Declared assay conversions.} Some readouts measure a different
+quantity from the species they are matched to and say so: Herremans reports IL-10
+in tumour homogenate, which is total, while $V_T.\mathrm{IL10}$ is the free pool,
+so the readout is $R\cdot V_T.\mathrm{IL10}$ with $R\ge 1$ unknown. Write $\mathcal{A}$
+for these,
+\begin{equation}
+\log R_m \;\sim\; \Ncal\big(\log R_{0m},\ \sigma_{Rm}^2\big),
+\qquad m\in\mathcal{A} ,
+\label{eq:auxprior}
+\end{equation}
+centred where the assay literature puts the conversion. They enter inside $h_r$,
+the only term indexed by readout and species at once: $\beta$ is shared across
+readouts, and $\gamma$ sits downstream and so cannot decompose through a ratio.
+Nor could $\tau_\beta=0.15$ carry a $\log R$ of 1.6 to 3.9. Where a species has
+both a free $\beta$ and a conversion with no readout separating them, only one
+may be free.
+
 \section{Posterior and deliverable}
 
 \begin{equation}
 \phi \;=\;
 \big(\mu,\ s,\ u^{\text{raw}},\ \log\omega_{\Mset},\
-a,\ b,\ \beta^{\text{raw}}_{\mathcal{S}}\big).
+a,\ b,\ \beta^{\text{raw}}_{\mathcal{S}},\ \log R_{\mathcal{A}}\big).
 \end{equation}
 $\mu$ is sampled as $\mu = \mu_0 + L_1\mu^{\text{raw}}$ with
 $\Sigma_1 = L_1L_1\Tr$. Where $\Mset$ is empty the $\log\omega_{\Mset}$ block is

@@ -39,10 +39,15 @@ def _g(vartheta, scenario):
     return jnp.exp(vartheta) * jnp.array([1.0, 1.0 + scenario])
 
 
-def _h(y):
-    """Readouts in sorted order: a level in species 0, then a ratio of the two."""
+def _h(y, log_R=None):
+    """Readouts in sorted order: a level in species 0, then a ratio of the two.
+
+    ``log_R`` scales the level, standing in for a declared assay conversion.
+    """
     level = jnp.log(y[:, :, 0])
     ratio = jnp.log(y[:, :, 0]) - jnp.log(y[:, :, 1])
+    if log_R is not None:
+        level = level + jnp.asarray(log_R)[0]
     return jnp.stack([level, ratio], axis=-1)
 
 

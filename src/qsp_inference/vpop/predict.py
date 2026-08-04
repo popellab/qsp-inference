@@ -24,8 +24,9 @@ __all__ = ["Mechanism", "patient_cloud", "readout_cloud", "apply_map",
 #: log species, so a wrapper exponentiates: beta is multiplicative on species.
 GFn = Callable[[jnp.ndarray, int], jnp.ndarray]
 
-#: ``(S, N, Q) -> (S, N, M)`` log-scale readouts, in ``Mechanism.readouts`` order.
-HFn = Callable[[jnp.ndarray], jnp.ndarray]
+#: ``(S, N, Q), (A,) -> (S, N, M)`` log-scale readouts, in ``Mechanism.readouts``
+#: order. The second argument is ``log R``, the declared assay conversions.
+HFn = Callable[[jnp.ndarray, Optional[jnp.ndarray]], jnp.ndarray]
 
 #: ``((N, M) mapped readouts, cohort) -> (N,)`` weights. eq:elig reads x-tilde, so
 #: it moves with ``a``, ``b`` and ``beta`` and is recomputed at every ``phi``.
@@ -56,17 +57,18 @@ def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
     return mu[None, :] + mech.z @ (mech.L_R.T * omega[None, :])
 
 
-def readout_cloud(mu, omega, beta_free, mech: Mechanism) -> jnp.ndarray:
+def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndarray:
     """``(S, N, M)`` readouts before the measurement map. eq:crn, eq:mech, eq:readout.
 
     Every scenario, since a fold change contrasts two timepoints of the same
     patient and ``h_r`` is given the whole set. ``beta`` multiplies species, so it
     enters upstream of ``h_r`` and propagates through the composition on its own.
+    ``log R`` enters inside ``h_r``, being indexed by readout and species at once.
     """
     vartheta = patient_cloud(mu, omega, mech)
     y = jnp.stack([mech.g_fn(vartheta, s) for s in range(mech.n_scenarios)])
     beta = jnp.zeros(mech.n_species).at[mech.beta_species].set(beta_free)
-    return mech.h_fn(y * jnp.exp(beta)[None, None, :])
+    return mech.h_fn(y * jnp.exp(beta)[None, None, :], log_R)
 
 
 def apply_map(x, a, b, c_row, Z) -> jnp.ndarray:
@@ -131,6 +133,7 @@ def block_weights(x_of: Mapping[str, jnp.ndarray], plan,
 
 
 def reference_levels(mu_0, omega_0, mech: Mechanism, plans, scenario_of, *,
+                     log_R_0=None,
                      elig_fn: Optional[EligFn] = None,
                      elig_at: Optional[Mapping[str, str]] = None,
                      ) -> Dict[str, jnp.ndarray]:
@@ -139,9 +142,12 @@ def reference_levels(mu_0, omega_0, mech: Mechanism, plans, scenario_of, *,
     Fixed once and held there. eq:disc pivots on it, so letting it move with ``phi``
     would make ``kappa`` rescale about a moving point instead of about the study's
     own level. The plug-in is the no-discrepancy point, where the map is the
-    identity and ``x-tilde = x``, so no reference is needed to build one.
+    identity and ``x-tilde = x``, so no reference is needed to build one. ``log R``
+    is a declared conversion rather than discrepancy, so it sits at its prior
+    centre here, not at zero.
     """
-    x_all = readout_cloud(mu_0, omega_0, jnp.zeros(mech.beta_species.shape[0]), mech)
+    x_all = readout_cloud(mu_0, omega_0, jnp.zeros(mech.beta_species.shape[0]),
+                          mech, log_R_0)
     out: Dict[str, jnp.ndarray] = {}
     for plan in plans:
         x_of = {c: x_all[scenario_of[c]] for c in plan.cohort_ids}
@@ -186,11 +192,11 @@ def tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech: Mechanism, scenari
 
 
 def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
-            mech: Mechanism, scenario_of, *, designs=None,
+            mech: Mechanism, scenario_of, *, log_R=None, designs=None,
             elig_fn: Optional[EligFn] = None,
             elig_at: Optional[Mapping[str, str]] = None) -> Sequence[jnp.ndarray]:
     """Every block's prediction from one ``phi``, on one pass through the emulator."""
-    x_all = readout_cloud(mu, omega, beta_free, mech)
+    x_all = readout_cloud(mu, omega, beta_free, mech, log_R)
     return [tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech, scenario_of,
                       designs=designs, elig_fn=elig_fn, elig_at=elig_at)
             for plan in plans]
