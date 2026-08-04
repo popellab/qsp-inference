@@ -25,6 +25,10 @@ from torch.distributions import Distribution
 
 _LOG_TWO_PI = float(np.log(2.0 * np.pi))
 
+# Clamp on latent uniforms, both directions of the Phi round trip. Truncates at
+# ~5.61 sigma, which is past where any marginal here carries mass.
+_U_FLOOR = 1e-8
+
 
 def _build_scipy_marginal(marginal: dict):
     """Build a scipy frozen distribution from a marginal spec dict.
@@ -182,28 +186,59 @@ class GaussianCopulaPrior(Distribution):
             torch.Size(sample_shape) if not isinstance(sample_shape, torch.Size) else sample_shape
         )
         n_samples = int(shape.numel())
-
-        # z ~ N(0, R) via Cholesky
         z_indep = torch.randn(n_samples, n, dtype=torch.float64)
-        z = z_indep @ self._L.T  # (n_samples, n)
+        return self._from_z_indep(z_indep).reshape(*shape, n).float()
+
+    def sample_sobol(self, n_samples: int, seed: int) -> torch.Tensor:
+        """``(n_samples, d)`` draws whose latent uniforms are a scrambled Sobol set.
+
+        The sequence goes in the *independent* latent space, before the Cholesky:
+        the correlation has to be applied in Gaussian space, so there is nowhere
+        else to put it that leaves the marginals exact. Everything downstream is
+        the ``sample`` path unchanged.
+
+        Balance holds for ``n_samples`` a power of two; anything else is a
+        truncated sequence and warns. Scrambling is not optional at this
+        dimension -- the unscrambled sequence starts at the origin, which is
+        ``-inf`` under ``Phi^{-1}``.
+        """
+        import warnings
+
+        from scipy.stats import qmc
+
+        n = len(self._marginals)
+        if n_samples & (n_samples - 1):
+            warnings.warn(
+                f"sobol n_samples={n_samples} is not a power of two; the balance "
+                "properties hold only for 2**m, and a truncated sequence gives up "
+                "most of what the sampler is for.",
+                stacklevel=2,
+            )
+        u = qmc.Sobol(d=n, scramble=True, seed=int(seed)).random(n_samples)
+        z_indep = torch.tensor(
+            stats.norm.ppf(np.clip(u, _U_FLOOR, 1.0 - _U_FLOOR)), dtype=torch.float64
+        )
+        return self._from_z_indep(z_indep).float()
+
+    def _from_z_indep(self, z_indep: torch.Tensor) -> torch.Tensor:
+        """``(n, d)`` independent standard normals -> parameter space. eq: copula."""
+        z = z_indep @ self._L.T  # z ~ N(0, R) via Cholesky
 
         if self._all_normal:
             # x = loc + scale*z, exact. The general path below would round-trip
             # z through Phi and Phi^{-1} and clamp u, which silently truncates
             # draws at ~5.61 sigma.
-            x = self._locs + self._scales * z
-            return x.reshape(*shape, n).float()
+            return self._locs + self._scales * z
 
         # z -> uniform via Phi
         u = torch.tensor(stats.norm.cdf(z.numpy()), dtype=torch.float64)
-        u = torch.clamp(u, 1e-8, 1 - 1e-8)
+        u = torch.clamp(u, _U_FLOOR, 1 - _U_FLOOR)
 
         # uniform -> parameter space via marginal inverse CDF
         x = torch.empty_like(u)
         for j, marg in enumerate(self._marginals):
             x[:, j] = torch.tensor(marg.ppf(u[:, j].numpy()), dtype=torch.float64)
-
-        return x.reshape(*shape, n).float()
+        return x
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         value = value.double()

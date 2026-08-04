@@ -71,6 +71,10 @@ class ThetaPoolSpec:
             threshold nothing can satisfy.
         classifier_feature_fills: Values for features the classifier expects but
             the live prior no longer carries, used when the two have drifted.
+        sampler: ``"iid"`` or ``"sobol"``. Sobol puts a scrambled low-discrepancy
+            sequence in the copula's independent latent space, which stratifies
+            every marginal's quantile range instead of leaving it to fluctuate at
+            ``O(1/sqrt(n))``. Balance wants ``n_total`` a power of two.
     """
 
     prior: PriorSpec
@@ -81,10 +85,26 @@ class ThetaPoolSpec:
     restriction_oversample_factor: float = 2.5
     restriction_max_oversample: int = 8
     classifier_feature_fills: Optional[Mapping[str, float]] = field(default=None)
+    sampler: str = "iid"
 
     def __post_init__(self) -> None:
         if self.n_total <= 0:
             raise ValueError(f"n_total must be positive, got {self.n_total}")
+        if self.sampler not in ("iid", "sobol"):
+            raise ValueError(f"sampler must be 'iid' or 'sobol', got {self.sampler!r}")
+        if self.sampler == "sobol" and self.is_restricted:
+            # Low discrepancy is a property of the whole point set. Rejection keeps
+            # an arbitrary subset of it, and the retry loop concatenates batches
+            # from different scrambles before truncating, so what survives is
+            # stratified but carries none of the guarantee the sampler is named for.
+            import warnings
+
+            warnings.warn(
+                "sobol with a restriction classifier: the accepted subset is not a "
+                "Sobol set, and multi-attempt draws concatenate distinct scrambles. "
+                "Expect stratification, not low discrepancy.",
+                stacklevel=3,
+            )
 
     @property
     def is_restricted(self) -> bool:
@@ -127,6 +147,12 @@ class ThetaPoolSpec:
         h.update(f"|seed={int(self.seed)}".encode("utf-8"))
         h.update(f"|n={int(self.n_total)}".encode("utf-8"))
         h.update(self._classifier_bytes())
+        # The sampler decides which rows come out, so it belongs here. Only the
+        # non-default contributes: "iid" is what every pool cached before this
+        # field existed was drawn by, and a marker for it would invalidate them
+        # all to describe a draw that has not changed.
+        if self.sampler != "iid":
+            h.update(f"|sampler={self.sampler}".encode("utf-8"))
         return h.hexdigest()[:length]
 
     def cache_path(self, cache_dir: PathLike = "cache/theta_pools") -> Path:
@@ -137,7 +163,7 @@ class ThetaPoolSpec:
 
 def _draw(spec: ThetaPoolSpec, n: int, seed: int) -> tuple[np.ndarray, list]:
     pair = build_prior_pair(spec.prior)
-    return pair.sample_original(n, seed), list(pair.param_names)
+    return pair.sample_original(n, seed, sampler=spec.sampler), list(pair.param_names)
 
 
 def get_theta_pool(
