@@ -4,17 +4,25 @@ Each target carries an executable ``compute_observable(time, species_dict,
 constants)``. Those bodies are shimmed onto ``jax.numpy`` at exec time rather
 than rewritten here, so the corpus stays the one definition of what a readout is
 and the trajectory evaluator keeps running the same code.
+
+A body receives its species as ``(T, N)``: axis 0 is the readout's declared
+reference followed by its own readout time, axis 1 is the patient. So ``x[0]``
+is the reference in every caller, which is what the trajectory evaluator already
+means by it, and ``T = 1`` where nothing is declared. Everything else must act
+patient by patient, and ``build_h_fn`` checks that rather than assuming it.
 """
 
 from __future__ import annotations
 
 import types
-from typing import Any, Callable, Dict, Mapping, Sequence, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import jax.numpy as jnp
+import numpy as np
 
 __all__ = ["SHIM_NAMES", "NEEDS_TRAJECTORY", "shim_module", "compile_observable",
-           "target_constants", "build_h_fn", "UntraceableReadout"]
+           "target_constants", "declared_reference", "build_h_fn",
+           "UntraceableReadout", "NotPerPatient"]
 
 #: Readouts that are functionals of the whole trajectory, not of the species at a
 #: readout time. They need a time vector and branch on the data, so they cannot
@@ -28,6 +36,10 @@ SHIM_NAMES = ("any", "asarray", "divide", "full_like", "log", "nan", "where",
 
 class UntraceableReadout(ValueError):
     """Observable code that cannot run under tracing."""
+
+
+class NotPerPatient(ValueError):
+    """Observable code whose value for one patient reads another's."""
 
 
 def _divide(a, b, out=None, where=None, **_):
@@ -101,14 +113,85 @@ def target_constants(target: Mapping[str, Any],
     return out
 
 
+def declared_reference(target: Mapping[str, Any]) -> Optional[float]:
+    """The timepoint a readout is taken against, or ``None`` if it stands alone.
+
+    ``observable.readout.reference`` is the corpus's own declaration. Only
+    ``kind: timepoint`` resolves to a scenario, so any other kind is refused
+    rather than dropped.
+    """
+    readout = (target.get("observable") or {}).get("readout") or {}
+    ref = readout.get("reference")
+    if not ref:
+        return None
+    if ref.get("kind") != "timepoint":
+        raise UntraceableReadout(
+            f"reference kind {ref.get('kind')!r} does not resolve to a scenario"
+        )
+    return float(ref["timepoint"])
+
+
+def _check_per_patient(h_fn, readouts, n_scenarios, n_species, n_aux,
+                       n_patients: int = 8) -> None:
+    """Refuse readouts whose value for one patient reads another's.
+
+    eq:readout is a per-patient map, so perturbing patient ``j`` may move column
+    ``j`` and nothing else. Indexing the patient axis and reducing over it both
+    break that, and both otherwise return an array of the right shape holding the
+    wrong numbers. Checked once at build, on a probe, not in the gradient.
+    """
+    rng = np.random.default_rng(0)
+    shape = (n_scenarios, n_patients, n_species)
+    y = jnp.asarray(rng.uniform(0.5, 2.0, shape))
+    # Per species and per scenario, so a ratio and a fold change both move.
+    bump = jnp.asarray(rng.uniform(1.2, 1.8, (n_scenarios, n_species)))
+    log_R = jnp.zeros(n_aux) if n_aux else None
+
+    base = np.asarray(h_fn(y, log_R))
+    leaks, deaf = set(), set(range(len(readouts)))
+    for j in range(n_patients):
+        # Bitwise, not within a tolerance. A per-patient map recomputes the other
+        # columns from unchanged inputs, so they come back identical; a tolerance
+        # would instead hide any readout whose scale the probe does not match.
+        got = np.asarray(h_fn(y.at[:, j, :].multiply(bump), log_R))
+        moved = (got != base) & ~(np.isnan(got) & np.isnan(base))
+        own = tuple(range(moved.ndim - 2))       # patient axis already indexed out
+        rest = tuple(range(moved.ndim - 1))
+        deaf -= set(np.flatnonzero(moved[..., j, :].any(axis=own)).tolist())
+        leaks |= set(np.flatnonzero(
+            np.delete(moved, j, axis=-2).any(axis=rest)).tolist())
+
+    if leaks:
+        raise NotPerPatient(
+            f"{', '.join(sorted(readouts[k] for k in leaks))} read patients other "
+            f"than the one they report on. A body indexes its species as [i] to "
+            f"reach the declared reference, never to reach a patient."
+        )
+    if deaf:
+        raise NotPerPatient(
+            f"{', '.join(sorted(readouts[k] for k in deaf))} do not vary with the "
+            f"patient they report on. A fold change that declares no reference "
+            f"looks like this: it divides by itself and comes back constant."
+        )
+
+
 def build_h_fn(
     targets: Mapping[str, Mapping[str, Any]],
     readouts: Sequence[str],
     states: Sequence[str],
     observables_fn: Callable,
     aux_order: Sequence[str] = (),
+    scenario_of: Optional[Mapping[str, Sequence[int]]] = None,
 ) -> Callable:
-    """``h_r`` for every readout at once: ``(S,N,Q), (A,) -> (S,N,M)`` on the log scale.
+    """``h_r`` for every readout at once: ``(S,N,Q), (A,) -> (N,M)`` on the log scale.
+
+    eq:readout gives one value per patient per readout, not one per scenario: a
+    target belongs to one cohort, and a cohort to one scenario. ``scenario_of``
+    gives each readout the scenarios it needs, its declared reference first and
+    its own readout time last, so each body runs once on ``(T,N)`` instead of
+    once per scenario with the rest discarded. Without it every scenario is
+    returned and readouts declaring a reference are refused, since there is then
+    no way to say which slice that reference is.
 
     ``observables_fn`` is qsp-codegen's generated module, which turns raw species
     into the derived symbols the bodies name. ``aux_order`` fixes which entry of
@@ -121,11 +204,34 @@ def build_h_fn(
             f"given; exclude them or supply a separate evaluator"
         )
 
+    given = {r: tuple(v) for r, v in (scenario_of or {}).items()}
+    at = {r: given[r] for r in readouts if r in given}
+    if at and len(at) != len(readouts):
+        raise UntraceableReadout(
+            f"scenario_of must cover every readout or none; it omits "
+            f"{', '.join(sorted(set(readouts) - set(at)))}"
+        )
+    for r in readouts:
+        want = 1 + (declared_reference(targets[r]) is not None)
+        if not at:
+            if want == 2:
+                raise UntraceableReadout(
+                    f"{r} is taken against a declared reference, so it needs the "
+                    f"(reference, readout) scenario indices in scenario_of"
+                )
+        elif len(at[r]) != want:
+            raise UntraceableReadout(
+                f"{r}: scenario_of gives {len(at[r])} scenarios, expected {want} "
+                f"(reference first, readout time last)"
+            )
+
     compiled = {r: compile_observable(targets[r]["observable"]["code"], label=r)
                 for r in readouts}
     wanted = {r: tuple(targets[r]["observable"]["species"]) for r in readouts}
     times = {r: float(targets[r]["observable"].get("readout_time") or 0.0)
              for r in readouts}
+
+    take = {r: jnp.asarray(s) for r, s in at.items()}
 
     def h_fn(y, log_R=None):
         species = {name: y[..., i] for i, name in enumerate(states)}
@@ -136,12 +242,18 @@ def build_h_fn(
         }
         columns = []
         for r in readouts:
-            value = compiled[r](
-                jnp.asarray(times[r]),
-                {s: derived[s] for s in wanted[r]},
-                target_constants(targets[r], aux),
-            )
-            columns.append(jnp.log(value))
+            s = take.get(r)
+            # A requested symbol can be a bare model constant, which carries no
+            # scenario axis to select from.
+            values = {sym: (derived[sym] if s is None or jnp.ndim(derived[sym]) < 2
+                            else derived[sym][s])
+                      for sym in wanted[r]}
+            out = compiled[r](jnp.asarray(times[r]), values,
+                              target_constants(targets[r], aux))
+            columns.append(jnp.log(out if s is None else out[-1]))
         return jnp.stack(columns, axis=-1)
 
+    n_scenarios = 1 + max((int(i) for s in at.values() for i in s), default=1)
+    _check_per_patient(h_fn, tuple(readouts), n_scenarios,
+                       len(states), len(aux_order))
     return h_fn

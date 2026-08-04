@@ -80,11 +80,11 @@ class Problem:
     mech: object                              # vpop.predict.Mechanism
     plans: Sequence[object]                   # vpop.resampling.BlockPlan
     specs_by_cohort: Mapping[str, Sequence[object]]
-    refs: Mapping[str, jnp.ndarray]
-    scenario_of: Mapping[str, int]
+    refs: jnp.ndarray                         # c_r, one level per readout
     designs: Optional[Mapping[str, jnp.ndarray]] = None
     elig_fn: Optional[object] = None
     elig_at: Optional[Mapping[str, str]] = None
+    mass_table: Optional[Mapping] = None
 
     def block_name(self, plan) -> str:
         return "+".join(plan.cohort_ids)
@@ -152,7 +152,8 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
 
     taus = tau_all(mu, omega, a, b, beta_free, problem.plans,
                    problem.specs_by_cohort, problem.refs, problem.mech,
-                   problem.scenario_of, log_R=log_R, designs=problem.designs,
+                   log_R=log_R, designs=problem.designs,
+                   mass_table=problem.mass_table,
                    elig_fn=problem.elig_fn, elig_at=problem.elig_at)
 
     for i, (plan, tau_B) in enumerate(zip(problem.plans, taus)):

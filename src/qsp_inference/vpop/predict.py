@@ -19,7 +19,7 @@ from qsp_inference.vpop.rows import tau_row
 
 __all__ = ["Mechanism", "patient_cloud", "readout_cloud", "apply_map",
            "reference_levels", "cohort_cloud", "block_weights",
-           "quantile_mass_table", "scenario_columns", "tau_rows",
+           "quantile_mass_table", "cohort_columns", "tau_rows",
            "tau_block", "tau_all"]
 
 #: ``(vartheta, scenario) -> (N, Q)`` raw positive species. The emulator predicts
@@ -60,12 +60,13 @@ def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
 
 
 def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndarray:
-    """``(S, N, M)`` readouts before the measurement map. eq:crn, eq:mech, eq:readout.
+    """``(N, M)`` readouts before the measurement map. eq:crn, eq:mech, eq:readout.
 
-    Every scenario, since a fold change contrasts two timepoints of the same
-    patient and ``h_r`` is given the whole set. ``beta`` multiplies species, so it
-    enters upstream of ``h_r`` and propagates through the composition on its own.
-    ``log R`` enters inside ``h_r``, being indexed by readout and species at once.
+    ``h_r`` is handed every scenario, since a fold change contrasts two timepoints
+    of the same patient, but returns one column: a readout belongs to one cohort
+    and so to one scenario. ``beta`` multiplies species, so it enters upstream of
+    ``h_r`` and propagates through the composition on its own. ``log R`` enters
+    inside ``h_r``, being indexed by readout and species at once.
     """
     vartheta = patient_cloud(mu, omega, mech)
     y = jnp.stack([mech.g_fn(vartheta, s) for s in range(mech.n_scenarios)])
@@ -134,37 +135,34 @@ def block_weights(x_of: Mapping[str, jnp.ndarray], plan,
     return out
 
 
-def reference_levels(mu_0, omega_0, mech: Mechanism, plans, scenario_of, *,
-                     log_R_0=None,
-                     elig_fn: Optional[EligFn] = None,
-                     elig_at: Optional[Mapping[str, str]] = None,
-                     ) -> Dict[str, jnp.ndarray]:
-    """``c_rc``: each cohort's own median readout at the plug-in. ``(M,)`` per cohort.
+def reference_levels(mu_0, omega_0, mech: Mechanism, *, log_R_0=None,
+                     elig_fn: Optional[EligFn] = None) -> jnp.ndarray:
+    """``c_r``: the level each readout sits at, ``(M,)``, at the plug-in.
 
-    Fixed once and held there. eq:disc pivots on it, so letting it move with ``phi``
-    would make ``kappa`` rescale about a moving point instead of about the study's
-    own level. The plug-in is the no-discrepancy point, where the map is the
-    identity and ``x-tilde = x``, so no reference is needed to build one. ``log R``
-    is a declared conversion rather than discrepancy, so it sits at its prior
-    centre here, not at zero.
+    One entry per readout, not per cohort: a readout belongs to one cohort, so the
+    cohort index adds nothing. Fixed once and held there. eq:disc pivots on it, so
+    letting it move with ``phi`` would make ``kappa`` rescale about a moving point
+    instead of about the study's own level. The plug-in is the no-discrepancy
+    point, where the map is the identity and ``x-tilde = x``. ``log R`` is a
+    declared conversion rather than discrepancy, so it sits at its prior centre.
     """
-    x_all = readout_cloud(mu_0, omega_0, jnp.zeros(mech.beta_species.shape[0]),
-                          mech, log_R_0)
-    out: Dict[str, jnp.ndarray] = {}
-    for plan in plans:
-        x_of = {c: x_all[scenario_of[c]] for c in plan.cohort_ids}
-        w_of = block_weights(x_of, plan, elig_fn, elig_at)
-        for cohort_id in plan.cohort_ids:
-            out[cohort_id] = jnp.stack([
-                _median(*_sorted(x_of[cohort_id][:, m], w_of[cohort_id]))
-                for m in range(mech.n_readouts)
-            ])
-    return out
+    x = readout_cloud(mu_0, omega_0, jnp.zeros(mech.beta_species.shape[0]),
+                      mech, log_R_0)
+    w = jnp.ones(x.shape[0]) if elig_fn is None else elig_fn(x, None)
+    return jnp.stack([_median(*_sorted(x[:, m], w)) for m in range(x.shape[1])])
 
 
-def cohort_cloud(x_all, cohort_id: str, a, b, refs, mech: Mechanism, scenario_of):
-    """One cohort's mapped readouts, ``(N, M)``: eq:disc at that cohort's scenario."""
-    return apply_map(x_all[scenario_of[cohort_id]], a, b, refs[cohort_id], mech.Z)
+def cohort_columns(specs_by_cohort, readouts) -> Dict[str, Tuple[int, ...]]:
+    """The readout columns each cohort reports. Most of ``M`` is dead for any one."""
+    index_of = {r: i for i, r in enumerate(readouts)}
+    return {c: tuple(sorted({index_of[spec.target_id] for spec in specs}))
+            for c, specs in specs_by_cohort.items()}
+
+
+def cohort_cloud(x, cols, a, b, refs, mech: Mechanism):
+    """One cohort's mapped readouts, ``(N, |cols|)``: eq:disc on its own columns."""
+    idx = np.asarray(cols)
+    return apply_map(x[:, idx], a, b, jnp.asarray(refs)[idx], mech.Z[idx])
 
 
 def quantile_mass_table(specs_by_cohort, n_cloud: int) -> Dict[Tuple, jnp.ndarray]:
@@ -179,23 +177,6 @@ def quantile_mass_table(specs_by_cohort, n_cloud: int) -> Dict[Tuple, jnp.ndarra
     keys = {(s.p, s.n, s.convention) for specs in specs_by_cohort.values()
             for s in specs if s.stat == "quantile"}
     return {k: quantile_mass(w, *k) for k in sorted(keys)}
-
-
-def scenario_columns(specs_by_cohort, scenario_of, readouts) -> Dict[int, Tuple[int, ...]]:
-    """Readout columns some cohort at each scenario reports.
-
-    A target belongs to one cohort, so most readouts are dead at most scenarios.
-    Sorting and mapping the whole ``(N, M)`` array does five times the work the
-    corpus asks for.
-    """
-    index_of = {r: i for i, r in enumerate(readouts)}
-    out: Dict[int, set] = {}
-    for cohort_id, specs in specs_by_cohort.items():
-        if cohort_id not in scenario_of:
-            continue
-        out.setdefault(scenario_of[cohort_id], set()).update(
-            index_of[spec.target_id] for spec in specs)
-    return {s: tuple(sorted(cols)) for s, cols in out.items()}
 
 
 def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None,
@@ -244,58 +225,44 @@ def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None,
     return jnp.stack(out)
 
 
-def tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech: Mechanism, scenario_of,
+def tau_block(x, plan, specs_by_cohort, a, b, refs, mech: Mechanism, cols_of,
               *, designs=None, elig_fn: Optional[EligFn] = None,
               elig_at: Optional[Mapping[str, str]] = None,
-              presorted: bool = False, mass_table=None,
-              columns=None) -> jnp.ndarray:
-    """``tau_B``. Cohorts concatenate in ``plan.cohort_ids`` order, matching ``V_B``.
-
-    ``columns`` restricts each scenario to the readouts some cohort there reports,
-    as :func:`scenario_columns` builds it. ``x_all`` must already be cut to it.
-    """
-    column_of = None
-    if columns is None:
-        x_of = {c: cohort_cloud(x_all, c, a, b, refs, mech, scenario_of)
-                for c in plan.cohort_ids}
-    else:
-        x_of, column_of = {}, {}
-        for c in plan.cohort_ids:
-            cols = np.asarray(columns[scenario_of[c]])
-            x_of[c] = apply_map(x_all[scenario_of[c]], a, b,
-                                jnp.asarray(refs[c])[cols], mech.Z[cols])
-            column_of[c] = {mech.readouts[col]: k for k, col in enumerate(cols)}
+              presorted: bool = False, mass_table=None) -> jnp.ndarray:
+    """``tau_B``. Cohorts concatenate in ``plan.cohort_ids`` order, matching ``V_B``."""
+    x_of, column_of = {}, {}
+    for c in plan.cohort_ids:
+        cols = cols_of[c]
+        x_of[c] = cohort_cloud(x, cols, a, b, refs, mech)
+        column_of[c] = {mech.readouts[col]: k for k, col in enumerate(cols)}
 
     w_of = block_weights(x_of, plan, elig_fn, elig_at)
     return jnp.concatenate([
         tau_rows(specs_by_cohort[c], x_of[c], w_of[c], mech, designs,
                  uniform=elig_fn is None, presorted=presorted,
-                 mass_table=mass_table,
-                 column_of=None if column_of is None else column_of[c])
+                 mass_table=mass_table, column_of=column_of[c])
         for c in plan.cohort_ids
     ])
 
 
 def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
-            mech: Mechanism, scenario_of, *, log_R=None, designs=None,
+            mech: Mechanism, *, log_R=None, designs=None,
             elig_fn: Optional[EligFn] = None,
             elig_at: Optional[Mapping[str, str]] = None,
             mass_table=None) -> Sequence[jnp.ndarray]:
     """Every block's prediction from one ``phi``, on one pass through the emulator.
 
-    With no eligibility rule the patient axis is sorted once per scenario rather
-    than once per cohort: eq:disc is monotone in ``x``, so ``sort(map(x))`` and
-    ``map(sort(x))`` are the same array and cohorts of a scenario share the sort.
+    With no eligibility rule the patient axis is sorted once, before eq:disc rather
+    than after it per cohort: the map is monotone in ``x``, so ``sort(map(x))`` and
+    ``map(sort(x))`` are the same array.
     """
-    x_all = readout_cloud(mu, omega, beta_free, mech, log_R)
+    x = readout_cloud(mu, omega, beta_free, mech, log_R)
     presorted = elig_fn is None
-
-    columns = scenario_columns(specs_by_cohort, scenario_of, mech.readouts)
-    cut = {s: x_all[s][:, np.asarray(cols)] for s, cols in columns.items()}
     if presorted:
-        cut = {s: jnp.sort(x, axis=0) for s, x in cut.items()}
+        x = jnp.sort(x, axis=0)
 
-    return [tau_block(cut, plan, specs_by_cohort, a, b, refs, mech, scenario_of,
+    cols_of = cohort_columns(specs_by_cohort, mech.readouts)
+    return [tau_block(x, plan, specs_by_cohort, a, b, refs, mech, cols_of,
                       designs=designs, elig_fn=elig_fn, elig_at=elig_at,
-                      presorted=presorted, mass_table=mass_table, columns=columns)
+                      presorted=presorted, mass_table=mass_table)
             for plan in plans]
