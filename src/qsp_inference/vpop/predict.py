@@ -165,16 +165,41 @@ def cohort_cloud(x_all, cohort_id: str, a, b, refs, mech: Mechanism, scenario_of
     return apply_map(x_all[scenario_of[cohort_id]], a, b, refs[cohort_id], mech.Z)
 
 
-def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None) -> jnp.ndarray:
-    """One cohort's rows, ``(K_c,)``, in the order the source printed them."""
+def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None,
+             uniform: bool = False) -> jnp.ndarray:
+    """One cohort's rows, ``(K_c,)``, in the order the source printed them.
+
+    ``uniform`` says every patient carries weight one, which is the case wherever
+    no eligibility criterion is declared. Sorting permutes ``w`` differently per
+    readout, so only then is the Beta mass the same vector for every row sharing
+    ``(p, n, convention)``, and only then can it be computed once.
+    """
+    from qsp_inference.vpop.statistics import quantile_mass
+
     index_of = {r: i for i, r in enumerate(mech.readouts)}
+    columns = sorted({index_of[spec.target_id] for spec in specs})
+    order = jnp.argsort(x_cohort[:, jnp.asarray(columns)], axis=0)
+    at = {c: k for k, c in enumerate(columns)}
+
     marginal: Dict[str, Tuple[jnp.ndarray, jnp.ndarray]] = {}
-    out = []
     for spec in specs:
         if spec.target_id not in marginal:
-            marginal[spec.target_id] = _sorted(x_cohort[:, index_of[spec.target_id]], w)
+            col = index_of[spec.target_id]
+            idx = order[:, at[col]]
+            marginal[spec.target_id] = (x_cohort[idx, col], w[idx])
+
+    masses: Dict[Tuple[float, int, str], jnp.ndarray] = {}
+    out = []
+    for spec in specs:
         x_sorted, w_sorted = marginal[spec.target_id]
-        out.append(tau_row(spec, x_sorted, w_sorted, (designs or {}).get(spec.label)))
+        mass = None
+        if uniform and spec.stat == "quantile":
+            key = (spec.p, spec.n, spec.convention)
+            if key not in masses:
+                masses[key] = quantile_mass(w_sorted, spec.p, spec.n, spec.convention)
+            mass = masses[key]
+        out.append(tau_row(spec, x_sorted, w_sorted,
+                           (designs or {}).get(spec.label), mass))
     return jnp.stack(out)
 
 
@@ -186,7 +211,8 @@ def tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech: Mechanism, scenari
             for c in plan.cohort_ids}
     w_of = block_weights(x_of, plan, elig_fn, elig_at)
     return jnp.concatenate([
-        tau_rows(specs_by_cohort[c], x_of[c], w_of[c], mech, designs)
+        tau_rows(specs_by_cohort[c], x_of[c], w_of[c], mech, designs,
+                 uniform=elig_fn is None)
         for c in plan.cohort_ids
     ])
 

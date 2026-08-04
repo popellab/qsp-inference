@@ -28,6 +28,7 @@ from jax.scipy.special import betainc
 __all__ = [
     "QUANTILE_CONVENTIONS",
     "order_statistic_mass",
+    "quantile_mass",
     "expected_quantile",
     "mean_row",
     "iqr_row",
@@ -69,12 +70,13 @@ def order_statistic_mass(w, kappa: int, n: int):
     return jnp.diff(betainc(float(kappa), float(n - kappa + 1), edges))
 
 
-def expected_quantile(x_sorted, w, p: float, n: int, convention: str = "type7"):
-    """``E[q_p]`` over an ``n``-sample from the weighted cloud. eq:smoothq.
+def quantile_mass(w, p: float, n: int, convention: str = "type7"):
+    """The Beta weights ``E[q_p]`` applies to the sorted cloud.
 
-    ``x_sorted`` is ascending. A non-integer order statistic is what the estimator
-    interpolates between, and the estimator is linear in the two, so the two Beta
-    masses mix with the same weights.
+    A non-integer order statistic is what the estimator interpolates between, and
+    the estimator is linear in the two, so the two Beta masses mix with the same
+    weights. Split out from :func:`expected_quantile` because it depends only on
+    ``(w, p, n, convention)``, so rows sharing those share the vector.
     """
     h = QUANTILE_CONVENTIONS[convention](p, n)
     h = min(max(h, 1.0), float(n))
@@ -84,6 +86,17 @@ def expected_quantile(x_sorted, w, p: float, n: int, convention: str = "type7"):
     mass = (1.0 - frac) * order_statistic_mass(w, lo, n)
     if frac > 0:
         mass = mass + frac * order_statistic_mass(w, min(lo + 1, n), n)
+    return mass
+
+
+def expected_quantile(x_sorted, w, p: float, n: int, convention: str = "type7",
+                      mass=None):
+    """``E[q_p]`` over an ``n``-sample from the weighted cloud. eq:smoothq.
+
+    ``x_sorted`` is ascending. ``mass`` reuses a vector from :func:`quantile_mass`.
+    """
+    if mass is None:
+        mass = quantile_mass(w, p, n, convention)
     return jnp.asarray(x_sorted) @ mass
 
 

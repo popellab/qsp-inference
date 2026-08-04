@@ -22,7 +22,7 @@ from qsp_inference.vpop.predict import (
     tau_rows,
 )
 from qsp_inference.vpop.resampling import BlockPlan, DrawGroup
-from qsp_inference.vpop.rows import RowSpec
+from qsp_inference.vpop.rows import RowSpec, tau_row
 from qsp_inference.vpop.statistics import bootstrap_design
 
 N = 40_000
@@ -293,3 +293,33 @@ class TestTauAll:
         assert all(np.all(np.isfinite(g)) for g in grads)
         # omega and b move the sd row; mu, a and beta move the location rows.
         assert all(np.any(np.abs(np.asarray(g)) > 1e-6) for g in grads)
+
+
+class TestSharedQuantileMass:
+    """Rows sharing (p, n, convention) share one Beta mass when w is uniform."""
+
+    SPECS = [RowSpec(LEVEL, "c_pre", "quantile", 0.0, 9, p=p) for p in (0.25, 0.5, 0.75)]
+    SPECS += [RowSpec(RATIO, "c_pre", "quantile", 0.0, 9, p=p) for p in (0.25, 0.75)]
+    SPECS += [RowSpec(LEVEL, "c_pre", "mean", 0.0, 9)]
+
+    def test_sharing_the_mass_changes_no_number(self, mech):
+        x = readout_cloud(MU, OMEGA, ZERO2, mech)[0]
+        w = jnp.ones(N)
+        shared = tau_rows(self.SPECS, x, w, mech, uniform=True)
+        alone = tau_rows(self.SPECS, x, w, mech, uniform=False)
+        assert np.allclose(shared, alone, rtol=0, atol=0)
+
+    def test_a_non_uniform_weight_is_not_shared(self, mech):
+        """Sorting permutes w per readout, so the mass genuinely differs."""
+        x = readout_cloud(MU, OMEGA, ZERO2, mech)[0]
+        w = jax.nn.sigmoid(x[:, 0] - float(MU[0]))
+        assert not np.allclose(tau_rows(self.SPECS, x, w, mech, uniform=True),
+                               tau_rows(self.SPECS, x, w, mech, uniform=False))
+
+    def test_the_batched_sort_matches_a_per_readout_sort(self, mech):
+        x = readout_cloud(MU, OMEGA, ZERO2, mech)[0]
+        got = tau_rows(self.SPECS, x, jnp.ones(N), mech, uniform=False)
+        for k, spec in enumerate(self.SPECS):
+            col = jnp.sort(x[:, mech.readouts.index(spec.target_id)])
+            want = tau_row(spec, col, jnp.ones(N))
+            assert float(got[k]) == pytest.approx(float(want), rel=1e-12)

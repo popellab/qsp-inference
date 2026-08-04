@@ -172,15 +172,18 @@ def hard_rows_fn(
     return rows_fn
 
 
-def tau_row(spec: RowSpec, cloud_sorted, w, design=None):
+def tau_row(spec: RowSpec, cloud_sorted, w, design=None, mass=None):
     """The model's prediction of the printed number: its expectation over ``n_c``.
 
     ``design`` is the frozen bootstrap design, needed only by the moment rows.
+    ``mass`` is a Beta weight vector from :func:`statistics.quantile_mass`, reused
+    across rows that share ``(w, p, n, convention)``.
     """
     from qsp_inference.vpop import statistics as st
 
     if spec.stat == "quantile":
-        out = st.expected_quantile(cloud_sorted, w, spec.p, spec.n, spec.convention)
+        out = st.expected_quantile(cloud_sorted, w, spec.p, spec.n, spec.convention,
+                                   mass=mass)
     elif spec.stat == "mean":
         out = st.mean_row(cloud_sorted, w)
     elif spec.stat == "iqr":
