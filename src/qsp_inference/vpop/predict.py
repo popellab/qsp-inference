@@ -53,10 +53,17 @@ class Mechanism:
     def n_readouts(self) -> int:
         return len(self.readouts)
 
+    def __post_init__(self):
+        # Scaling column j of L_R' by omega_j commutes with the row sum, so
+        # z (L_R' * omega) is (z L_R') * omega and the matmul is phi-free.
+        # Held here because eq:crn is otherwise an (N,P)x(P,P) product per gradient.
+        object.__setattr__(self, "zL",
+                           jnp.asarray(self.z) @ jnp.asarray(self.L_R).T)
+
 
 def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
     """eq:crn. ``(N, P)`` log-parameters, smooth in ``(mu, omega)`` at frozen ``z``."""
-    return mu[None, :] + mech.z @ (mech.L_R.T * omega[None, :])
+    return mu[None, :] + mech.zL * omega[None, :]
 
 
 def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndarray:
