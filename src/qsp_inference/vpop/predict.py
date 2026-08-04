@@ -17,7 +17,8 @@ import jax.numpy as jnp
 from qsp_inference.vpop.rows import tau_row
 
 __all__ = ["Mechanism", "patient_cloud", "readout_cloud", "apply_map",
-           "reference_levels", "cohort_cloud", "block_weights", "tau_rows",
+           "reference_levels", "cohort_cloud", "block_weights",
+           "quantile_mass_table", "tau_rows",
            "tau_block", "tau_all"]
 
 #: ``(vartheta, scenario) -> (N, Q)`` raw positive species. The emulator predicts
@@ -165,30 +166,51 @@ def cohort_cloud(x_all, cohort_id: str, a, b, refs, mech: Mechanism, scenario_of
     return apply_map(x_all[scenario_of[cohort_id]], a, b, refs[cohort_id], mech.Z)
 
 
+def quantile_mass_table(specs_by_cohort, n_cloud: int) -> Dict[Tuple, jnp.ndarray]:
+    """Beta masses for every ``(p, n, convention)`` a corpus uses, at uniform ``w``.
+
+    At ``w`` uniform the edges are ``linspace(0, 1, N+1)``, so the mass reads none
+    of ``phi``. Build it once outside the gradient rather than in every evaluation.
+    """
+    from qsp_inference.vpop.statistics import quantile_mass
+
+    w = jnp.ones(n_cloud)
+    keys = {(s.p, s.n, s.convention) for specs in specs_by_cohort.values()
+            for s in specs if s.stat == "quantile"}
+    return {k: quantile_mass(w, *k) for k in sorted(keys)}
+
+
 def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None,
-             uniform: bool = False) -> jnp.ndarray:
+             uniform: bool = False, presorted: bool = False,
+             mass_table=None) -> jnp.ndarray:
     """One cohort's rows, ``(K_c,)``, in the order the source printed them.
 
-    ``uniform`` says every patient carries weight one, which is the case wherever
-    no eligibility criterion is declared. Sorting permutes ``w`` differently per
-    readout, so only then is the Beta mass the same vector for every row sharing
-    ``(p, n, convention)``, and only then can it be computed once.
+    ``uniform`` says every patient carries weight one, which holds wherever no
+    eligibility criterion is declared. Sorting permutes ``w`` differently per
+    readout, so only then does one Beta mass serve every row sharing
+    ``(p, n, convention)``. ``presorted`` says the caller already sorted the
+    patient axis, which eq:disc allows because it is monotone.
     """
     from qsp_inference.vpop.statistics import quantile_mass
 
     index_of = {r: i for i, r in enumerate(mech.readouts)}
-    columns = sorted({index_of[spec.target_id] for spec in specs})
-    order = jnp.argsort(x_cohort[:, jnp.asarray(columns)], axis=0)
-    at = {c: k for k, c in enumerate(columns)}
-
     marginal: Dict[str, Tuple[jnp.ndarray, jnp.ndarray]] = {}
-    for spec in specs:
-        if spec.target_id not in marginal:
-            col = index_of[spec.target_id]
-            idx = order[:, at[col]]
-            marginal[spec.target_id] = (x_cohort[idx, col], w[idx])
 
-    masses: Dict[Tuple[float, int, str], jnp.ndarray] = {}
+    if presorted:
+        for spec in specs:
+            marginal.setdefault(
+                spec.target_id, (x_cohort[:, index_of[spec.target_id]], w))
+    else:
+        columns = sorted({index_of[spec.target_id] for spec in specs})
+        order = jnp.argsort(x_cohort[:, jnp.asarray(columns)], axis=0)
+        at = {c: k for k, c in enumerate(columns)}
+        for spec in specs:
+            if spec.target_id not in marginal:
+                col = index_of[spec.target_id]
+                idx = order[:, at[col]]
+                marginal[spec.target_id] = (x_cohort[idx, col], w[idx])
+
+    masses: Dict[Tuple[float, int, str], jnp.ndarray] = dict(mass_table or {})
     out = []
     for spec in specs:
         x_sorted, w_sorted = marginal[spec.target_id]
@@ -205,14 +227,16 @@ def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None,
 
 def tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech: Mechanism, scenario_of,
               *, designs=None, elig_fn: Optional[EligFn] = None,
-              elig_at: Optional[Mapping[str, str]] = None) -> jnp.ndarray:
+              elig_at: Optional[Mapping[str, str]] = None,
+              presorted: bool = False, mass_table=None) -> jnp.ndarray:
     """``tau_B``. Cohorts concatenate in ``plan.cohort_ids`` order, matching ``V_B``."""
     x_of = {c: cohort_cloud(x_all, c, a, b, refs, mech, scenario_of)
             for c in plan.cohort_ids}
     w_of = block_weights(x_of, plan, elig_fn, elig_at)
     return jnp.concatenate([
         tau_rows(specs_by_cohort[c], x_of[c], w_of[c], mech, designs,
-                 uniform=elig_fn is None)
+                 uniform=elig_fn is None, presorted=presorted,
+                 mass_table=mass_table)
         for c in plan.cohort_ids
     ])
 
@@ -220,9 +244,19 @@ def tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech: Mechanism, scenari
 def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
             mech: Mechanism, scenario_of, *, log_R=None, designs=None,
             elig_fn: Optional[EligFn] = None,
-            elig_at: Optional[Mapping[str, str]] = None) -> Sequence[jnp.ndarray]:
-    """Every block's prediction from one ``phi``, on one pass through the emulator."""
+            elig_at: Optional[Mapping[str, str]] = None,
+            mass_table=None) -> Sequence[jnp.ndarray]:
+    """Every block's prediction from one ``phi``, on one pass through the emulator.
+
+    With no eligibility rule the patient axis is sorted once per scenario rather
+    than once per cohort: eq:disc is monotone in ``x``, so ``sort(map(x))`` and
+    ``map(sort(x))`` are the same array and cohorts of a scenario share the sort.
+    """
     x_all = readout_cloud(mu, omega, beta_free, mech, log_R)
+    presorted = elig_fn is None
+    if presorted:
+        x_all = jnp.sort(x_all, axis=1)
     return [tau_block(x_all, plan, specs_by_cohort, a, b, refs, mech, scenario_of,
-                      designs=designs, elig_fn=elig_fn, elig_at=elig_at)
+                      designs=designs, elig_fn=elig_fn, elig_at=elig_at,
+                      presorted=presorted, mass_table=mass_table)
             for plan in plans]

@@ -20,6 +20,7 @@ from qsp_inference.vpop.predict import (
     tau_all,
     tau_block,
     tau_rows,
+    quantile_mass_table,
 )
 from qsp_inference.vpop.resampling import BlockPlan, DrawGroup
 from qsp_inference.vpop.rows import RowSpec, tau_row
@@ -323,3 +324,56 @@ class TestSharedQuantileMass:
             col = jnp.sort(x[:, mech.readouts.index(spec.target_id)])
             want = tau_row(spec, col, jnp.ones(N))
             assert float(got[k]) == pytest.approx(float(want), rel=1e-12)
+
+
+class TestPresortedAndMassTable:
+    """Two exact speedups: sorting once per scenario, and a phi-free Beta mass."""
+
+    SPECS = {"c_pre": [RowSpec(LEVEL, "c_pre", "quantile", 0.0, 9, p=p)
+                       for p in (0.25, 0.5, 0.75)],
+             "c_post": [RowSpec(RATIO, "c_post", "quantile", 0.0, 9, p=0.5),
+                        RowSpec(LEVEL, "c_post", "mean", 0.0, 9)]}
+
+    def test_the_measurement_map_preserves_order(self, mech):
+        """Why sorting may be hoisted above eq:disc: kappa > 0."""
+        x = readout_cloud(MU, OMEGA, ZERO2, mech)[0]
+        a, b = jnp.array([0.3, -0.2]), jnp.array([0.4, 0.1])
+        c = jnp.array([1.0, -0.5])
+        lhs = jnp.sort(apply_map(x, a, b, c, mech.Z), axis=0)
+        rhs = apply_map(jnp.sort(x, axis=0), a, b, c, mech.Z)
+        assert jnp.array_equal(lhs, rhs)
+
+    def test_presorting_gives_the_same_tau(self, mech, plan):
+        refs = reference_levels(MU, OMEGA, mech, [plan], SCENARIO_OF)
+        a, b = jnp.array([0.2, -0.1]), jnp.array([0.3, 0.15])
+        x = readout_cloud(MU, OMEGA, ZERO2, mech)
+        loose = tau_block(x, plan, self.SPECS, a, b, refs, mech, SCENARIO_OF)
+        tight = tau_block(jnp.sort(x, axis=1), plan, self.SPECS, a, b, refs, mech,
+                          SCENARIO_OF, presorted=True)
+        assert np.allclose(loose, tight, rtol=1e-12, atol=0)
+
+    def test_tau_all_presorts_only_without_eligibility(self, mech, plan):
+        refs = reference_levels(MU, OMEGA, mech, [plan], SCENARIO_OF)
+        a, b = jnp.array([0.2, -0.1]), jnp.array([0.3, 0.15])
+        args = ([plan], self.SPECS, refs, mech, SCENARIO_OF)
+        plain = tau_all(MU, OMEGA, a, b, ZERO2, *args)
+        elig = tau_all(MU, OMEGA, a, b, ZERO2, *args,
+                       elig_fn=lambda x, c: jnp.ones(x.shape[0]),
+                       elig_at={"trial": "c_pre"})
+        assert np.allclose(plain[0], elig[0], rtol=1e-10)
+
+    def test_a_precomputed_mass_table_changes_no_number(self, mech, plan):
+        refs = reference_levels(MU, OMEGA, mech, [plan], SCENARIO_OF)
+        a, b = jnp.array([0.2, -0.1]), jnp.array([0.3, 0.15])
+        args = ([plan], self.SPECS, refs, mech, SCENARIO_OF)
+        table = quantile_mass_table(self.SPECS, N)
+        assert set(table) == {(0.25, 9, "type7"), (0.5, 9, "type7"),
+                              (0.75, 9, "type7")}
+        assert np.allclose(tau_all(MU, OMEGA, a, b, ZERO2, *args)[0],
+                           tau_all(MU, OMEGA, a, b, ZERO2, *args,
+                                   mass_table=table)[0], rtol=0, atol=0)
+
+    def test_the_table_covers_only_quantile_rows(self):
+        table = quantile_mass_table(self.SPECS, 1000)
+        assert all(len(k) == 3 for k in table)
+        assert len(table) == 3          # the mean row contributes no key
