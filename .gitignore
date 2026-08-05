@@ -23,3 +23,10 @@ venv/
 *.synctex.gz
 *.toc
 .emulator-cache/
+
+# Rendered output: the source is tracked, the render is not.
+docs/*.html
+docs/*_files/
+
+# Run logs.
+sbi-logs/
