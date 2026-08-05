@@ -76,6 +76,36 @@ This runs component-wise Bayesian inference on all SubmodelTarget YAMLs, generat
 
 For the iterative debugging loop (re-MCMC only the components touched by an edited parameter or YAML, skip the slow PPC + report steps), use [`examples/regen_submodel_priors.py`](examples/regen_submodel_priors.py).
 
+### Audit whether a submodel target is right
+
+When a component's posterior predictive misses its own observables, the cause is
+usually a unit error, a forward model with its asymptotes on the wrong ends of
+the curve, or a badly mis-centred CSV prior. `ppc_audit` lays out the evidence
+and `refit_check` decides whether a proposed fix actually helps.
+
+```python
+from qsp_inference.submodel.ppc_audit import load_components, rank_by_miss, format_component
+from qsp_inference.submodel.refit_check import compare_edit
+
+comps = load_components(cache_dir, priors_csv)
+print(format_component(rank_by_miss([c for c in comps if c.coverage < 1.0])[0]))
+
+result = compare_edit(
+    target_dir=submodel_dir,
+    filenames=["IL1_50_IL6_PDAC_deriv001.yaml"],
+    edits={"IL1_50_IL6_PDAC_deriv001.yaml": candidate_path},
+    priors_csv=priors_csv,
+    config_path=submodel_config,
+    params={"IL1_50", "n_IL1"},
+)
+result.improved  # coverage rose, or held while the worst miss shrank
+```
+
+`compare_edit` fits with and without the edit over an identical isolated target
+set, so the edit is the only difference. `ppc_audit` reports evidence and
+attaches no verdict, on purpose: thresholds for "badly fitting" did not hold up
+under testing, so the refit is what decides.
+
 ### Load the posterior as a prior for SBI
 
 ```python
