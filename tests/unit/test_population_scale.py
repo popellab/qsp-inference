@@ -15,10 +15,12 @@ import yaml
 
 from maple.core.calibration.enums import HeterogeneityTransfer
 from maple.core.calibration.shared_models import (
+    DistributionShape,
     ExperimentalUnitType,
-    MomentSpread,
     ObservedDistribution,
+    ReportedStatistic,
     SpreadSource,
+    StatKind,
 )
 from qsp_inference.submodel.inference import (
     HETEROGENEITY_SIGMA,
@@ -43,7 +45,11 @@ def _target(het):
 def _il12_like_od():
     # k_IL12_sec: mean 20 ng/mL, CV 0.5 lognormal, across 15 donors.
     return ObservedDistribution(
-        moments=MomentSpread(center=20.0, scale=0.5, scale_type="cv", shape="lognormal"),
+        statistics=[
+            ReportedStatistic(stat=StatKind.MEAN, value=20.0),
+            ReportedStatistic(stat=StatKind.CV, value=0.5),
+        ],
+        shape=DistributionShape.LOGNORMAL,
         spread_source=SpreadSource.BIOLOGICAL_EXPERIMENTAL,
         n_biological=15,
         experimental_unit_type=ExperimentalUnitType.BIOLOGICAL,
@@ -52,7 +58,11 @@ def _il12_like_od():
 
 def test_population_obs_none_without_population_spread():
     od = ObservedDistribution(
-        moments=MomentSpread(center=1.0, scale=0.2, scale_type="sd", shape="normal"),
+        statistics=[
+            ReportedStatistic(stat=StatKind.MEAN, value=1.0),
+            ReportedStatistic(stat=StatKind.SD, value=0.2),
+        ],
+        shape=DistributionShape.NORMAL,
         spread_source=SpreadSource.CENTER_ONLY,
     )
     assert _population_obs_from_distribution(_entry(od), _target(None)) is None
@@ -196,7 +206,11 @@ def test_component_feeds_population_spread():
 
     pop_od = _il12_like_od()
     center_od = ObservedDistribution(
-        moments=MomentSpread(center=1.0, scale=0.2, scale_type="sd", shape="normal"),
+        statistics=[
+            ReportedStatistic(stat=StatKind.MEAN, value=1.0),
+            ReportedStatistic(stat=StatKind.SD, value=0.2),
+        ],
+        shape=DistributionShape.NORMAL,
         spread_source=SpreadSource.CENTER_ONLY,
     )
 
