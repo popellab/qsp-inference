@@ -293,15 +293,21 @@ class TestLoadCopulaPriorLog:
             assert lp.shape == (100,)
             assert torch.isfinite(lp).all()
 
-    def test_rejects_unknown_distribution(self):
-        """Marginals with a distribution name we don't recognize are rejected.
+    def test_rejects_a_marginal_that_is_not_a_log_space_shape(self):
+        """Only ``empirical_log`` and ``lognormal`` describe a log-space marginal.
 
-        Note: gamma/invgamma/normal/uniform/beta are all *supported* (gamma
-        and invgamma via empirical log-fit, normal/uniform/beta as their
-        scipy distributions); use a genuinely unknown name to test the
-        rejection path.
+        Anything else used to be sampled and refitted to a normal, which made
+        every marginal in the prior Gaussian whatever stage 1 found. The refit
+        is gone, so the rest are refused rather than silently flattened.
+
+        Raised as ``StalePriorFormat``, not ``ValueError``: the composite
+        loader's fallback catches ValueError and substitutes the CSV prior, so
+        a stale file would quietly become rubric defaults.
         """
-        from qsp_inference.priors.copula_prior import load_copula_prior_log
+        from qsp_inference.priors.copula_prior import (
+            StalePriorFormat,
+            load_copula_prior_log,
+        )
 
         data = {
             "metadata": {"n_parameters": 1, "n_samples": 1000},
@@ -311,7 +317,7 @@ class TestLoadCopulaPriorLog:
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             path = self._write_yaml(tmpdir, data)
-            with pytest.raises(ValueError, match="Unknown marginal distribution"):
+            with pytest.raises(StalePriorFormat, match="not a log-space shape"):
                 load_copula_prior_log(path)
 
 
@@ -441,9 +447,11 @@ class TestNormalMarginalFastPath:
         D = np.diag(scale)
         return prior, _st.multivariate_normal(mean=loc, cov=D @ R @ D)
 
-    def test_fast_path_is_active(self):
+    def test_every_normal_marginal_reaches_z_exactly(self):
+        """Exactness is per marginal now, not a property of the whole set."""
         prior, _ = self._prior_and_truth()
-        assert prior._all_normal
+        assert prior._all_exact
+        assert all(f is not None for f in prior._exact)
 
     def test_log_prob_matches_mvn_in_the_bulk(self):
         prior, mvn = self._prior_and_truth()
@@ -469,7 +477,7 @@ class TestNormalMarginalFastPath:
 
         torch.manual_seed(123)
         z = (torch.randn(2000, 3, dtype=torch.float64) @ prior._L.T).numpy()
-        want = prior._locs.numpy() + prior._scales.numpy() * z
+        want = np.column_stack([prior._exact[j][1](z[:, j]) for j in range(3)])
 
         assert np.max(np.abs(got - want)) < 1e-5
 
@@ -480,7 +488,9 @@ class TestNormalMarginalFastPath:
             correlation=np.array([[1.0, 0.4], [0.4, 1.0]]),
             param_names=["a", "b"],
         )
-        assert not prior._all_normal
+        # Neither shape reaches z exactly, so both take the round trip.
+        assert not prior._all_exact
+        assert all(f is None for f in prior._exact)
         s = prior.sample((200,))
         assert s.shape == (200, 2)
         assert torch.isfinite(prior.log_prob(s)).all()

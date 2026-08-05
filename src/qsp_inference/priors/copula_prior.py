@@ -29,6 +29,10 @@ _LOG_TWO_PI = float(np.log(2.0 * np.pi))
 # ~5.61 sigma, which is past where any marginal here carries mass.
 _U_FLOOR = 1e-8
 
+#: Grid sidecars, by path. One file backs every grid marginal in a priors file,
+#: so it is read once rather than per parameter.
+_GRID_CACHE: dict = {}
+
 
 def _build_scipy_marginal(marginal: dict):
     """Build a scipy frozen distribution from a marginal spec dict.
@@ -53,6 +57,129 @@ def _build_scipy_marginal(marginal: dict):
         return stats.beta(marginal["alpha"], marginal["beta"])
     else:
         raise ValueError(f"Unknown marginal distribution: {dist_name}")
+
+
+def _exact_scorer(marginal):
+    """``(to_z, from_z, logpdf)`` when the normal score is exact, else ``None``.
+
+    Exact means no ``cdf`` -> ``Phi^{-1}`` round trip, so nothing is clamped and
+    the tail stays right arbitrarily far out.
+    """
+    if isinstance(marginal, EmpiricalLogMarginal):
+        return (marginal.normal_score, marginal.from_normal_score, marginal.logpdf)
+    if getattr(getattr(marginal, "dist", None), "name", None) == "norm":
+        loc, scale = float(marginal.mean()), float(marginal.std())
+        if not (np.isfinite(scale) and scale > 0):
+            return None  # pinned; dividing by it would not be exact, it would be inf
+        return (
+            lambda x: (np.asarray(x, dtype=float) - loc) / scale,
+            lambda z: loc + scale * np.asarray(z, dtype=float),
+            lambda x: stats.norm.logpdf(np.asarray(x, dtype=float), loc=loc, scale=scale),
+        )
+    return None
+
+
+class StalePriorFormat(RuntimeError):
+    """A priors file predates the marginal format the loader needs."""
+
+
+class _EmpiricalLogDist:
+    """Name shim so guards can identify this the way they identify scipy frozens."""
+
+    name = "empirical_log"
+
+
+class EmpiricalLogMarginal:
+    """A log-space marginal held as a quantile grid against normal scores.
+
+    ``q = Q(z)`` is a monotone cubic through the grid, so ``x = Q(z)`` with
+    ``z ~ N(0,1)``. That makes ``ppf``, ``cdf`` and ``logpdf`` exact inverses of
+    one another and the density continuous, which a piecewise-linear grid would
+    not give: its density is a step function and its gradient is undefined at
+    every knot.
+
+    Outside the grid ``Q`` continues linearly in ``z``, which is a Gaussian tail.
+    """
+
+    dist = _EmpiricalLogDist()
+
+    def __init__(self, z, q):
+        from scipy.interpolate import PchipInterpolator
+
+        self._z = np.asarray(z, dtype=float)
+        self._q = np.asarray(q, dtype=float)
+        if self._z.shape != self._q.shape or self._z.ndim != 1:
+            raise ValueError("z and q must be 1-D and the same length")
+        if not np.all(np.diff(self._q) > 0):
+            raise ValueError("q must be strictly increasing")
+
+        self._Q = PchipInterpolator(self._z, self._q, extrapolate=True)
+        self._dQ = self._Q.derivative()
+        # Linear past the ends, so the tails stay Gaussian rather than following
+        # a cubic that can turn over and stop being monotone.
+        #
+        # The slope is regressed over the outer band, not read off the endpoint
+        # derivative. The endpoint is the noisiest knot in the grid and the whole
+        # tail rides on it: on a known lognormal it came out 0.54 against a true
+        # 0.80, which is 3.4 nats of error in the upper tail density.
+        k = max(5, len(self._z) // 10)
+        self._slope_lo = float(np.polyfit(self._z[:k], self._q[:k], 1)[0])
+        self._slope_hi = float(np.polyfit(self._z[-k:], self._q[-k:], 1)[0])
+
+    def _q_of_z(self, z):
+        z = np.asarray(z, dtype=float)
+        out = self._Q(np.clip(z, self._z[0], self._z[-1]))
+        lo, hi = z < self._z[0], z > self._z[-1]
+        out = np.where(lo, self._q[0] + self._slope_lo * (z - self._z[0]), out)
+        out = np.where(hi, self._q[-1] + self._slope_hi * (z - self._z[-1]), out)
+        return out
+
+    def _z_of_q(self, x):
+        """Invert ``Q``. Monotone, so a dense probe plus interpolation suffices."""
+        x = np.asarray(x, dtype=float)
+        probe_z = np.linspace(self._z[0], self._z[-1], 4096)
+        probe_q = self._Q(probe_z)
+        z = np.interp(x, probe_q, probe_z)
+        lo, hi = x < probe_q[0], x > probe_q[-1]
+        z = np.where(lo, self._z[0] + (x - probe_q[0]) / self._slope_lo, z)
+        z = np.where(hi, self._z[-1] + (x - probe_q[-1]) / self._slope_hi, z)
+        return z
+
+    def normal_score(self, x):
+        """``Phi^{-1}(F(x))``, without the round trip. Exact at any distance."""
+        return self._z_of_q(x)
+
+    def from_normal_score(self, z):
+        """Inverse of :meth:`normal_score`."""
+        return self._q_of_z(z)
+
+    def ppf(self, u):
+        u = np.clip(np.asarray(u, dtype=float), 1e-12, 1.0 - 1e-12)
+        return self._q_of_z(stats.norm.ppf(u))
+
+    def cdf(self, x):
+        return stats.norm.cdf(self._z_of_q(x))
+
+    def logpdf(self, x):
+        """``f(x) = phi(z) / Q'(z)`` at ``z = Q^{-1}(x)``, by change of variables."""
+        z = self._z_of_q(x)
+        dq = self._dQ(np.clip(z, self._z[0], self._z[-1]))
+        dq = np.where(z < self._z[0], self._slope_lo, dq)
+        dq = np.where(z > self._z[-1], self._slope_hi, dq)
+        return stats.norm.logpdf(z) - np.log(np.maximum(dq, 1e-300))
+
+    def mean(self):
+        z = np.linspace(-8.0, 8.0, 4096)
+        w = stats.norm.pdf(z)
+        return float(np.trapezoid(self._q_of_z(z) * w, z) / np.trapezoid(w, z))
+
+    def std(self):
+        z = np.linspace(-8.0, 8.0, 4096)
+        w = stats.norm.pdf(z)
+        x = self._q_of_z(z)
+        m = np.trapezoid(x * w, z) / np.trapezoid(w, z)
+        var = np.trapezoid((x - m) ** 2 * w, z) / np.trapezoid(w, z)
+        return float(np.sqrt(max(var, 0.0)))
 
 
 class GaussianCopulaPrior(Distribution):
@@ -114,28 +241,20 @@ class GaussianCopulaPrior(Distribution):
         self._log_det_R = float(np.linalg.slogdet(R)[1])
         self._has_copula = not np.allclose(R, np.eye(n))
 
-        # Exact path for all-normal marginals (every marginal the *_log loaders
-        # produce). For a normal, Phi^{-1}(Phi((x-loc)/scale)) == (x-loc)/scale,
-        # so the cdf->ppf round trip in sample/log_prob is mathematically the
-        # identity — but numerically it underflows in the tails, which is why
-        # those paths clamp u to [1e-8, 1-1e-8]. That clamp caps |z| at ~5.61,
-        # truncating samples and distorting the copula term beyond ~5.6 sigma.
-        # Standardizing directly avoids the round trip, so it is exact at any
-        # distance, and skips two scipy calls per parameter per evaluation.
-        locs, scales, all_normal = [], [], True
-        for m in marginals:
-            if getattr(getattr(m, "dist", None), "name", None) != "norm":
-                all_normal = False
-                break
-            locs.append(float(m.mean()))
-            scales.append(float(m.std()))
-        if all_normal and not all(np.isfinite(s) and s > 0 for s in scales):
-            all_normal = False  # a degenerate/pinned scale would divide by zero
-        self._all_normal = all_normal
-        if all_normal:
-            self._locs = torch.tensor(locs, dtype=torch.float64)
-            self._scales = torch.tensor(scales, dtype=torch.float64)
-            self._log_scales_sum = float(np.sum(np.log(scales)))
+        # Whether the normal score can be reached exactly is a property of each
+        # marginal, not of the set. It used to be all-or-nothing: if every
+        # marginal was normal, z came from a direct standardization, otherwise
+        # every marginal went through cdf -> Phi^{-1} with u clamped to
+        # [1e-8, 1-1e-8], which caps |z| at ~5.61 and truncates the tail. So a
+        # single non-normal marginal silently degraded the other 270, and which
+        # log_prob ran was decided by the data rather than chosen.
+        #
+        # Both the log loaders' shapes reach z directly: a normal by
+        # standardizing, a grid by inverting its own monotone Q. Anything else
+        # (lognormal / gamma / beta / uniform, from the non-log loader) still
+        # round-trips, and only that marginal pays for it.
+        self._exact = [_exact_scorer(m) for m in marginals]
+        self._all_exact = all(f is not None for f in self._exact)
 
         super().__init__(
             batch_shape=torch.Size(),
@@ -224,20 +343,19 @@ class GaussianCopulaPrior(Distribution):
         """``(n, d)`` independent standard normals -> parameter space. eq: copula."""
         z = z_indep @ self._L.T  # z ~ N(0, R) via Cholesky
 
-        if self._all_normal:
-            # x = loc + scale*z, exact. The general path below would round-trip
-            # z through Phi and Phi^{-1} and clamp u, which silently truncates
-            # draws at ~5.61 sigma.
-            return self._locs + self._scales * z
-
-        # z -> uniform via Phi
-        u = torch.tensor(stats.norm.cdf(z.numpy()), dtype=torch.float64)
-        u = torch.clamp(u, _U_FLOOR, 1 - _U_FLOOR)
-
-        # uniform -> parameter space via marginal inverse CDF
-        x = torch.empty_like(u)
+        # Per marginal: exact where the shape allows it, clamped round trip only
+        # where it does not.
+        zc = z.numpy()
+        u_clamped = None
+        x = torch.empty_like(z)
         for j, marg in enumerate(self._marginals):
-            x[:, j] = torch.tensor(marg.ppf(u[:, j].numpy()), dtype=torch.float64)
+            ex = self._exact[j]
+            if ex is not None:
+                x[:, j] = torch.tensor(ex[1](zc[:, j]), dtype=torch.float64)
+                continue
+            if u_clamped is None:
+                u_clamped = np.clip(stats.norm.cdf(zc), _U_FLOOR, 1 - _U_FLOOR)
+            x[:, j] = torch.tensor(marg.ppf(u_clamped[:, j]), dtype=torch.float64)
         return x
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
@@ -250,23 +368,20 @@ class GaussianCopulaPrior(Distribution):
 
         n_samples, n = value.shape
 
-        if self._all_normal:
-            # Normal scores directly: z = (x - loc)/scale is exactly
-            # Phi^{-1}(F(x)) here, with no cdf/ppf round trip to underflow and
-            # no u clamp, so this stays exact arbitrarily far into the tails.
-            z = (value - self._locs) / self._scales
-            marginal_lp = -0.5 * (z * z).sum(dim=1) - self._log_scales_sum - 0.5 * n * _LOG_TWO_PI
-        else:
-            # Marginal log-probs: sum_i log f_i(x_i)
-            marginal_lp = torch.zeros(n_samples, dtype=torch.float64)
-            u = torch.empty(n_samples, n, dtype=torch.float64)
-            for j, marg in enumerate(self._marginals):
-                xj = value[:, j].numpy()
+        # One path. Per marginal, z comes from a direct normal score where the
+        # shape allows it and from the clamped round trip only where it does not.
+        marginal_lp = torch.zeros(n_samples, dtype=torch.float64)
+        z = torch.empty(n_samples, n, dtype=torch.float64)
+        for j, marg in enumerate(self._marginals):
+            xj = value[:, j].numpy()
+            ex = self._exact[j]
+            if ex is not None:
+                marginal_lp += torch.tensor(ex[2](xj), dtype=torch.float64)
+                z[:, j] = torch.tensor(ex[0](xj), dtype=torch.float64)
+            else:
                 marginal_lp += torch.tensor(marg.logpdf(xj), dtype=torch.float64)
-                u[:, j] = torch.tensor(marg.cdf(xj), dtype=torch.float64)
-
-            u = torch.clamp(u, 1e-8, 1 - 1e-8)
-            z = torch.tensor(stats.norm.ppf(u.numpy()), dtype=torch.float64)
+                uj = np.clip(marg.cdf(xj), _U_FLOOR, 1 - _U_FLOOR)
+                z[:, j] = torch.tensor(stats.norm.ppf(uj), dtype=torch.float64)
 
         if self._has_copula:
             # copula log-density: -0.5 * (z^T (R^{-1} - I) z) - 0.5 * log|R|
@@ -317,32 +432,95 @@ def _csv_log_marginal(csv_row: dict):
     return stats.norm(loc=mu, scale=sigma)
 
 
-def _log_transform_marginal(marginal_spec: dict):
-    """Convert a marginal spec to its log-space equivalent.
+def _sidecar_digest(path: Path) -> str:
+    import hashlib
 
-    Lognormal(mu, sigma) -> Normal(mu, sigma) exactly.
-    Gamma/InvGamma -> fit Normal to log-samples (empirical approximation).
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _check_sidecar(yaml_dir: Path, metadata: Mapping) -> None:
+    """Fail if the grids on disk are not the ones the priors file was written against.
+
+    The YAML and its sidecar are one artifact in two files, and nothing stops
+    them being copied, regenerated or restored separately. A mismatch would
+    otherwise surface as marginals silently belonging to a different run.
+    """
+    entry = (metadata or {}).get("grid_sidecar")
+    if not entry:
+        return
+    path = Path(yaml_dir) / entry["file"]
+    if not path.exists():
+        raise StalePriorFormat(
+            f"priors reference grid sidecar '{entry['file']}' but it is not at "
+            f"{path}. The YAML alone does not carry the marginals."
+        )
+    got = _sidecar_digest(path)
+    if got != entry["sha256"]:
+        raise StalePriorFormat(
+            f"grid sidecar '{entry['file']}' does not match the priors file that "
+            f"references it (sha256 {got[:12]} vs {entry['sha256'][:12]}). "
+            "Regenerate both together."
+        )
+
+
+def _load_grid_sidecar(npz_path: Path):
+    """``(z, q)`` from a grids ``.npz``. Cached: one file serves every marginal."""
+    npz_path = Path(npz_path)
+    cached = _GRID_CACHE.get(npz_path)
+    if cached is not None:
+        return cached
+    if not npz_path.exists():
+        raise StalePriorFormat(
+            f"the priors file references grid sidecar '{npz_path.name}' but it is "
+            f"not next to it at {npz_path}. The YAML alone does not carry the "
+            "marginals; both files move together."
+        )
+    with np.load(npz_path, allow_pickle=True) as f:
+        out = (np.asarray(f["z"], dtype=float), np.asarray(f["q"], dtype=float))
+    _GRID_CACHE[npz_path] = out
+    return out
+
+
+def _log_transform_marginal(marginal_spec: dict, yaml_dir: Path | None = None):
+    """Build the log-space marginal a ``submodel_priors.yaml`` entry describes.
+
+    ``empirical_log`` is the posterior's own shape, held as a quantile grid.
+    ``lognormal`` maps to ``Normal(mu, sigma)`` exactly and stays supported for
+    entries written before the grid.
+
+    Nothing else is accepted. Gamma and inverse-gamma entries used to be sampled
+    and refitted to a normal here, which discarded the shape the family had been
+    selected for and made every marginal in the composite prior Gaussian: the
+    prior was a multivariate lognormal whatever stage 1 found. A copula exists to
+    keep the marginals and the dependence separate, so the marginals are no
+    longer collapsed.
     """
     dist_name = marginal_spec["distribution"]
+    if dist_name == "empirical_log":
+        if "grid" in marginal_spec:
+            if yaml_dir is None:
+                raise StalePriorFormat(
+                    "this marginal lives in a grid sidecar, so the loader needs "
+                    "the priors file's directory to find it."
+                )
+            z, q = _load_grid_sidecar(Path(yaml_dir) / marginal_spec["grid"])
+            return EmpiricalLogMarginal(z, q[int(marginal_spec["index"])])
+        return EmpiricalLogMarginal(marginal_spec["z"], marginal_spec["q"])
     if dist_name == "lognormal":
         return stats.norm(loc=marginal_spec["mu"], scale=marginal_spec["sigma"])
-    else:
-        # Empirical: sample, log-transform, fit normal. The MCMC posterior
-        # parameterizer can fit Normal/Gamma/InvGamma marginals whose support
-        # crosses or touches zero; rejection-truncate to log's domain before
-        # fitting. Oversample so the truncation doesn't starve the fit.
-        orig = _build_scipy_marginal(marginal_spec)
-        samples = orig.rvs(size=200_000, random_state=42)
-        samples = samples[np.isfinite(samples) & (samples > 0)]
-        if samples.size < 100:
-            raise ValueError(
-                f"_log_transform_marginal: marginal '{dist_name}' yielded "
-                f"only {samples.size} positive samples out of 200k; cannot "
-                "fit log-space normal."
-            )
-        log_samples = np.log(samples)
-        mu, sigma = float(np.mean(log_samples)), float(np.std(log_samples))
-        return stats.norm(loc=mu, scale=sigma)
+    # Deliberately not a ValueError: the caller's degenerate-marginal fallback
+    # catches those and substitutes the CSV prior. A stale file is not a
+    # degenerate parameter, and silently answering it with rubric defaults is
+    # the failure this whole path exists to avoid.
+    raise StalePriorFormat(
+        f"_log_transform_marginal: marginal '{dist_name}' is not a log-space "
+        "shape. Regenerate submodel_priors.yaml so the entry carries an "
+        "'empirical_log' grid."
+    )
 
 
 def load_composite_prior_log(
@@ -376,6 +554,7 @@ def load_composite_prior_log(
     with open(yaml_path) as f:
         yaml_data = yaml.load(f)
 
+    _check_sidecar(Path(yaml_path).parent, yaml_data.get("metadata") or {})
     yaml_entries = {p["name"]: p for p in yaml_data["parameters"]}
 
     # Load CSV params (preserves ordering). Capture the distribution field
@@ -411,7 +590,8 @@ def load_composite_prior_log(
     for p in csv_params:
         if p["name"] in yaml_entries:
             try:
-                marginals.append(_log_transform_marginal(yaml_entries[p["name"]]["marginal"]))
+                marginals.append(_log_transform_marginal(
+                    yaml_entries[p["name"]]["marginal"], Path(yaml_path).parent))
                 continue
             except (ValueError, ZeroDivisionError, FloatingPointError):
                 fallback_params.append(p["name"])
@@ -534,11 +714,15 @@ def _log_marginal_loc_scale(marginal) -> tuple[float, float]:
     are exactly the normal's ``loc``/``scale``. Guarded so a non-log prior
     (lognormal marginals) can't silently be misread as if it were log-space.
     """
-    if getattr(marginal, "dist", None) is None or marginal.dist.name != "norm":
+    name = getattr(getattr(marginal, "dist", None), "name", None)
+    # A grid is log-space by construction, and its mean/std are the log-domain
+    # moments the overlay wants. It is not a normal, so the overlay reduces it to
+    # a location and a scale and the posterior's shape is dropped for that use.
+    if name not in ("norm", "empirical_log"):
         raise ValueError(
-            "sigma-overlay requires a log-space prior (normal marginals); got "
-            f"marginal '{getattr(getattr(marginal, 'dist', None), 'name', '?')}'. "
-            "Pass the output of load_composite_prior_log / load_copula_prior_log."
+            "sigma-overlay requires a log-space prior (normal or empirical_log "
+            f"marginals); got marginal '{name or '?'}'. Pass the output of "
+            "load_composite_prior_log / load_copula_prior_log."
         )
     return float(marginal.mean()), float(marginal.std())
 
@@ -940,9 +1124,11 @@ def load_copula_prior_log(
         data = yaml.load(f)
     data = _select_prior_block(data, block)
 
+    _check_sidecar(Path(yaml_path).parent, data.get("metadata") or {})
     param_entries = data["parameters"]
     param_names = [p["name"] for p in param_entries]
-    marginals = [_log_transform_marginal(p["marginal"]) for p in param_entries]
+    marginals = [_log_transform_marginal(p["marginal"], Path(yaml_path).parent)
+                 for p in param_entries]
 
     n = len(param_names)
     R = np.eye(n)
