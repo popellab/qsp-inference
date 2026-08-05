@@ -57,6 +57,28 @@ def test_data_shrinks_toward_prior_by_n():
     assert prov[0].data_omega == 1.2 and prov[0].n_biological == 500
 
 
+def test_a_sigma_with_no_resolvable_n_does_not_claim_to_be_data_shrunk():
+    """The level must report what actually happened, not what was offered.
+
+    A population block routinely covers far more parameters than have a
+    resolvable ``n_biological`` (in pdac: 178 offered, 9 resolvable). Those
+    parameters keep their prior untouched, so labelling them ``data_shrunk``
+    reports a whole prior as data-informed when the data never moved it.
+    """
+    omega, prov = _build(
+        ["no_n", "with_n"],
+        population_sigma={"no_n": 1.2, "with_n": 1.2},
+        population_n={"with_n": 500},  # "no_n" has none
+    )
+    assert omega[0] == pytest.approx(GLOBAL)
+    assert prov[0].level == "global_default"
+    assert prov[0].data_omega == 1.2  # the sigma is still recorded, for audit
+    assert prov[0].n_biological is None
+
+    assert omega[1] > 1.0
+    assert prov[1].level == "data_shrunk"
+
+
 def test_shrink_toward_prior_edges():
     assert shrink_toward_prior(1.2, None, 0.35, tau=0.5) == 0.35   # no n
     assert shrink_toward_prior(1.2, 1, 0.35, tau=0.5) == 0.35      # n<=1
