@@ -19,6 +19,7 @@ cumulative sums lose it.
 
 from __future__ import annotations
 
+import math
 from typing import Callable, Dict
 
 import jax
@@ -45,6 +46,12 @@ QUANTILE_CONVENTIONS: Dict[str, Callable[[float, int], float]] = {
     "type7": lambda p, n: (n - 1) * p + 1,  # R, numpy, pandas (default)
     "type6": lambda p, n: (n + 1) * p,      # SPSS, Minitab
     "type4": lambda p, n: n * p,            # linear interpolation of the ecdf
+    "type8": lambda p, n: (n + 1 / 3) * p + 1 / 3,  # median-unbiased
+    # Inverted ecdf, averaged at a discontinuity. Discontinuous in p, but the
+    # caller mixes the two order statistics around h with weight frac, so the
+    # averaging case is just h = np + 1/2.
+    "type2": lambda p, n: (n * p + 0.5 if float(n * p).is_integer()
+                           else math.ceil(n * p)),
 }
 
 

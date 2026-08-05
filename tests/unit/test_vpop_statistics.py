@@ -112,6 +112,32 @@ class TestQuantileRows:
                 for c in QUANTILE_CONVENTIONS]
         assert max(vals) - min(vals) < 0.01
 
+    def test_every_declarable_convention_is_implemented(self):
+        """A target may declare any name ``rows`` accepts, and the kernel runs it.
+
+        These drifted apart once: ``rows`` took five names and the kernel had
+        three, so a target declaring ``type2`` loaded clean and raised inside the
+        sampler.
+        """
+        from qsp_inference.vpop.rows import NUMPY_QUANTILE_METHOD
+
+        assert set(NUMPY_QUANTILE_METHOD) == set(QUANTILE_CONVENTIONS)
+
+    @pytest.mark.parametrize("conv, p, n, want", [
+        # Hyndman-Fan h, hand-checked. type2 averages at a discontinuity, which
+        # the caller expresses as a half-weight between the two order statistics.
+        ("type7", 0.25, 9, 3.0),
+        ("type6", 0.25, 9, 2.5),
+        ("type4", 0.25, 9, 2.25),
+        ("type8", 0.25, 9, 2.6666666666666665),
+        ("type2", 0.25, 9, 3.0),      # np = 2.25, not integer -> ceil
+        ("type2", 0.25, 8, 2.5),      # np = 2, integer -> average x_(2), x_(3)
+        ("type2", 0.5, 6, 3.5),       # np = 3, integer -> average x_(3), x_(4)
+        ("type2", 0.75, 6, 5.0),      # np = 4.5, not integer -> ceil
+    ])
+    def test_h_matches_hyndman_fan(self, conv, p, n, want):
+        assert QUANTILE_CONVENTIONS[conv](p, n) == pytest.approx(want)
+
 
 class TestMeanAndIqr:
     @pytest.mark.parametrize("shape", SHAPES)
