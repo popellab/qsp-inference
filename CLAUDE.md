@@ -61,6 +61,13 @@ src/qsp_inference/
 │   ├── prior.py                 # Translation sigma rubric, distribution fitting
 │   ├── parameter_groups.py      # Hierarchical parameter groups + cascade cuts
 │   ├── freshness.py             # Content fingerprints / stale-posterior detection
+│   ├── ppc_audit.py             # Per-observable fit evidence out of the compare
+│   │                            #   cache: the datum, the CSV prior pushed through
+│   │                            #   the forward model, and the posterior. Reports,
+│   │                            #   deliberately does not judge.
+│   ├── refit_check.py           # Does an edit to a target improve its own fit?
+│   │                            #   Fits with and without it over an identical
+│   │                            #   isolated target set. See below.
 │   └── utils.py                 # ODE/algebraic forward model evaluation
 ├── inference/                   # SBI diagnostics and data processing
 │   ├── sbc.py                   # Weighted SBC — the end-to-end calibration gate.
@@ -136,6 +143,70 @@ Declares groups of related parameters that share a latent base rate:
 Partial pooling: members with data get pulled by observations; members without data shrink toward the group mean.
 
 Also manages cascade cuts for staged inference DAGs (upstream components' posteriors become downstream priors).
+
+### `submodel.ppc_audit` + `submodel.refit_check` — Auditing a target's fit
+
+Two halves of "is this submodel target actually right?". Used to find targets
+whose posterior predictive misses its own observables, which usually means a
+unit error, a forward model whose asymptotes are assigned to the wrong ends of
+the curve, or a badly mis-centred CSV prior.
+
+`ppc_audit` reads the `.compare_cache` and reports, per observable, the datum
+with its own interval, the CSV prior pushed through the forward model, and the
+posterior. Two derived columns carry most of the signal: `sens` (prior
+predictive width over CSV prior width, both in decades) near zero means the
+fitted parameters do not move that observable at all, so whatever it sits at is
+asserted by the forward model rather than fitted; `z` places the datum against
+the prior predictive spread. It attaches no verdict on purpose. Thresholds for
+"badly fitting" did not survive testing, so the evidence is what gets reported
+and the refit is what decides.
+
+```python
+from qsp_inference.submodel.ppc_audit import load_components, rank_by_miss, format_component
+
+comps = load_components(cache_dir, priors_csv)
+worst = rank_by_miss([c for c in comps if c.coverage < 1.0])
+print(format_component(worst[0]))
+```
+
+`refit_check` decides whether a proposed edit helps, by fitting the target set
+with and without it and comparing. Both arms run identical code over an
+identical target set, so the edit is the only difference.
+
+```python
+from qsp_inference.submodel.refit_check import compare_edit
+
+result = compare_edit(
+    target_dir=submodel_dir,
+    filenames=["IL1_50_IL6_PDAC_deriv001.yaml"],
+    edits={"IL1_50_IL6_PDAC_deriv001.yaml": candidate_path},
+    priors_csv=priors_csv,
+    config_path=submodel_config,
+    params={"IL1_50", "n_IL1"},
+)
+result.improved, result.before.coverage, result.after.coverage
+```
+
+**Gotcha this encodes, do not re-derive it:** `_build_stage_dag` walks the
+*entire* cascade cut list and raises on any upstream target it cannot place,
+whether or not that cut's parameter is in the run. So an isolated target
+directory must carry every cut's upstream, not just the ones its own parameters
+trigger. `resolve_target_set` does that closure, transitively.
+
+Caveats when reading a comparison: the per-component RNG seed is derived from a
+hash of component content, so editing a target changes the trajectory and small
+before/after movements are partly seed noise. `improved` also accepts a coverage
+tie with a smaller worst miss, so improved is not the same as fixed.
+
+Two callers in pdac-build, both project-side; the prompt and paths live there
+and the measurement lives here:
+
+- `scripts/staged_extraction.py` stage 3d calls `check_targets` on every newly
+  promoted submodel target. Schema and snippet validation say a target is well
+  formed and faithful to its paper, neither says the forward model reproduces
+  the numbers it carries. Advisory, nothing is un-promoted on a miss.
+- `scripts/repair_submodel_targets.py` runs an LLM review over badly fitting
+  components and gates each proposed edit on `compare_edit`.
 
 ### `audit.report` — Parameter Audit
 
