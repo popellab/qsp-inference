@@ -20,7 +20,7 @@ from qsp_inference.vpop.rows import tau_row
 __all__ = ["Mechanism", "patient_cloud", "readout_cloud", "apply_map",
            "reference_levels", "cohort_cloud", "block_weights",
            "quantile_mass_table", "cohort_columns", "tau_rows",
-           "tau_block", "tau_all"]
+           "tau_block", "tau_from_readouts", "tau_all"]
 
 #: ``(vartheta, scenario) -> (N, Q)`` raw positive species. The emulator predicts
 #: log species, so a wrapper exponentiates: beta is multiplicative on species.
@@ -271,18 +271,20 @@ def tau_block(x, plan, specs_by_cohort, a, b, refs, mech: Mechanism, cols_of,
     ])
 
 
-def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
-            mech: Mechanism, *, log_R=None, designs=None,
-            elig_fn: Optional[EligFn] = None,
-            elig_at: Optional[Mapping[str, str]] = None,
-            mass_table=None) -> Sequence[jnp.ndarray]:
-    """Every block's prediction from one ``phi``, on one pass through the emulator.
+def tau_from_readouts(x, a, b, plans, specs_by_cohort, refs, mech: Mechanism, *,
+                      designs=None, elig_fn: Optional[EligFn] = None,
+                      elig_at: Optional[Mapping[str, str]] = None,
+                      mass_table=None) -> Sequence[jnp.ndarray]:
+    """Every block's rows from an already-computed readout cloud, ``(N, M)``.
+
+    Split out from :func:`tau_all` because ``E_B`` needs the same rows computed
+    from a cloud the simulator produced, where there is no ``phi`` to push through
+    the emulator at all.
 
     With no eligibility rule the patient axis is sorted once, before eq:disc rather
     than after it per cohort: the map is monotone in ``x``, so ``sort(map(x))`` and
     ``map(sort(x))`` are the same array.
     """
-    x = readout_cloud(mu, omega, beta_free, mech, log_R)
     presorted = elig_fn is None
     if presorted:
         x = jnp.sort(x, axis=0)
@@ -292,3 +294,15 @@ def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
                       designs=designs, elig_fn=elig_fn, elig_at=elig_at,
                       presorted=presorted, mass_table=mass_table)
             for plan in plans]
+
+
+def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
+            mech: Mechanism, *, log_R=None, designs=None,
+            elig_fn: Optional[EligFn] = None,
+            elig_at: Optional[Mapping[str, str]] = None,
+            mass_table=None) -> Sequence[jnp.ndarray]:
+    """Every block's prediction from one ``phi``, on one pass through the emulator."""
+    return tau_from_readouts(
+        readout_cloud(mu, omega, beta_free, mech, log_R), a, b, plans,
+        specs_by_cohort, refs, mech, designs=designs, elig_fn=elig_fn,
+        elig_at=elig_at, mass_table=mass_table)

@@ -18,6 +18,7 @@ __all__ = [
     "BlockCovariance",
     "row_offsets",
     "bootstrap_V",
+    "statistic_diffs",
     "emulator_E",
     "assemble_V",
     "subset_V",
@@ -60,6 +61,56 @@ def bootstrap_V(
     ])
     k = reps.shape[1]
     return np.cov(reps, rowvar=False).reshape(k, k)
+
+
+def statistic_diffs(
+    x_emu,
+    x_sim,
+    plans: Sequence[BlockPlan],
+    specs_by_cohort,
+    refs,
+    mech,
+    *,
+    n_cloud: int,
+    n_draw: int,
+    rng: np.random.Generator,
+    designs=None,
+    mass_table=None,
+) -> np.ndarray:
+    """``(n_draw, sum K_B)`` surrogate-minus-simulator differences, the input to eq:Ec.
+
+    ``x_emu`` and ``x_sim`` are the readouts of the SAME pool of patients, one
+    from the surrogate and one from the simulator. Each draw resamples a cloud
+    and both sides read the same members, so the cloud's Monte Carlo fluctuation
+    is common to the two and differences out. What survives is the surrogate's own
+    error carried to the reported statistics, rather than measured on the readouts
+    and expanded, which is the point: a per-readout error does not map to a
+    per-statistic one, and a quantile row and a spread row do not feel it alike.
+
+    eq:disc sits at its no-discrepancy point, matching where ``V`` is frozen.
+    """
+    import jax.numpy as jnp
+
+    from qsp_inference.vpop.predict import tau_from_readouts
+
+    x_emu, x_sim = jnp.asarray(x_emu), jnp.asarray(x_sim)
+    if x_emu.shape != x_sim.shape:
+        raise ValueError(
+            f"the two evaluations must cover the same patients and readouts; "
+            f"got {x_emu.shape} and {x_sim.shape}"
+        )
+    zero = jnp.zeros(mech.Z.shape[1])
+    args = (plans, specs_by_cohort, refs, mech)
+    kw = dict(designs=designs, mass_table=mass_table)
+
+    out = []
+    for _ in range(n_draw):
+        idx = jnp.asarray(rng.integers(0, x_emu.shape[0], n_cloud))
+        te = tau_from_readouts(x_emu[idx], zero, zero, *args, **kw)
+        ts = tau_from_readouts(x_sim[idx], zero, zero, *args, **kw)
+        out.append(np.concatenate([np.asarray(e) - np.asarray(s)
+                                   for e, s in zip(te, ts)]))
+    return np.array(out)
 
 
 def emulator_E(
