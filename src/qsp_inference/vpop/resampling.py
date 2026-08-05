@@ -21,7 +21,8 @@ import numpy as np
 from maple.core.calibration.cohort import CohortRegistry, PatientBlock
 from maple.core.calibration.registry_audit import covariance_blocks
 
-__all__ = ["DrawGroup", "BlockPlan", "block_draw_plan", "draw_block_indices"]
+__all__ = ["DrawGroup", "BlockPlan", "block_draw_plan", "restrict_plans",
+           "draw_block_indices"]
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,25 @@ def block_draw_plan(
             )
         )
     return plans
+
+
+def restrict_plans(plans: List[BlockPlan], keep) -> List[BlockPlan]:
+    """Drop cohorts reporting no row from each block's row order; drop empty blocks.
+
+    ``covariance_blocks`` partitions every cohort the registry declares, and a
+    corpus fits fewer than it declares. Only ``cohort_ids`` is filtered, never
+    ``groups``: a dropped member of a counted block still occupies its strata, and
+    removing it there would change the overlap its co-members draw against.
+    """
+    keep = set(keep)
+    out = []
+    for plan in plans:
+        cohort_ids = tuple(c for c in plan.cohort_ids if c in keep)
+        if not cohort_ids:
+            continue
+        out.append(plan if cohort_ids == plan.cohort_ids
+                   else BlockPlan(cohort_ids, plan.groups, plan.unhonoured))
+    return out
 
 
 def _group_probs(

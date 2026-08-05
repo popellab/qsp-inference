@@ -27,7 +27,10 @@ __all__ = ["SCALE_STATS", "SUPPORTED_STATS", "NUMPY_QUANTILE_METHOD", "RowSpec",
 SCALE_STATS = frozenset(s.value for s in (WIDTH_STATS | SAMPLING_WIDTH_STATS))
 
 #: Statistics with an evaluator. Anything else is corpus work, not a silent drop.
-SUPPORTED_STATS = frozenset({"quantile", "mean", "sd", "se", "iqr"})
+#: ``min``/``max`` are order statistics 1 and ``n``; the schema reads the pair as a
+#: printed range. They stay out of ``SCALE_STATS`` because one endpoint alone is
+#: not a width, so the flat fit keeps them.
+SUPPORTED_STATS = frozenset({"quantile", "mean", "sd", "se", "iqr", "min", "max"})
 
 #: Estimator convention -> numpy's name for it.
 NUMPY_QUANTILE_METHOD = {
@@ -70,6 +73,7 @@ def row_specs(
     *,
     default_convention: str = "type7",
     log_scale_rows: bool = True,
+    exclude: Sequence[tuple] = (),
 ) -> List[RowSpec]:
     """Every printed statistic as a row, by target then by the source's own order.
 
@@ -79,10 +83,14 @@ def row_specs(
     reportable rather than invisible.
 
     Raises on a statistic with no evaluator: a silently missing row is a silently
-    reweighted corpus.
+    reweighted corpus. ``exclude`` is the escape, as ``(target_id, stat)`` pairs,
+    for a number the source did not print: a value the corpus derived under an
+    assumption is not evidence, and fitting it feeds the assumption back in.
     """
     out: List[RowSpec] = []
     unsupported: List[str] = []
+    skip = {tuple(e) for e in exclude}
+    unused = set(skip)
 
     for tid in sorted(targets):
         ed = targets[tid].get("empirical_data") or {}
@@ -95,6 +103,9 @@ def row_specs(
         recorded = od.get("quantile_convention")
         for entry in od.get("statistics") or []:
             stat = entry.get("stat")
+            if (tid, stat) in skip:
+                unused.discard((tid, stat))
+                continue
             if stat not in SUPPORTED_STATS:
                 unsupported.append(f"{tid}/{stat}")
                 continue
@@ -114,6 +125,14 @@ def row_specs(
         raise ValueError(
             f"{len(unsupported)} printed statistics have no evaluator: "
             + ", ".join(sorted(unsupported))
+        )
+    if unused:
+        # An exclusion that matches nothing is a corpus edit the caller has not
+        # noticed: the row it names is gone, or was renamed, and the reason the
+        # caller recorded no longer applies to anything.
+        raise ValueError(
+            "these exclusions match no printed statistic: "
+            + ", ".join(f"{t}/{s}" for t, s in sorted(unused))
         )
     return out
 
@@ -138,6 +157,10 @@ def hard_row(spec: RowSpec, values: np.ndarray) -> float:
 
     if spec.stat == "quantile":
         out = np.quantile(v, spec.p, method=method)
+    elif spec.stat == "min":
+        out = v.min()
+    elif spec.stat == "max":
+        out = v.max()
     elif spec.stat == "mean":
         out = v.mean()
     elif spec.stat == "iqr":
@@ -184,6 +207,8 @@ def tau_row(spec: RowSpec, cloud_sorted, w, design=None, mass=None):
     if spec.stat == "quantile":
         out = st.expected_quantile(cloud_sorted, w, spec.p, spec.n, spec.convention,
                                    mass=mass)
+    elif spec.stat in ("min", "max"):
+        out = st.extreme_row(cloud_sorted, w, spec.n, spec.stat == "max")
     elif spec.stat == "mean":
         out = st.mean_row(cloud_sorted, w)
     elif spec.stat == "iqr":

@@ -9,7 +9,8 @@ import pytest
 
 from maple.core.calibration.cohort import Cohort, CohortRegistry, PatientBlock, Stratum
 
-from qsp_inference.vpop.resampling import block_draw_plan, draw_block_indices
+from qsp_inference.vpop.resampling import (block_draw_plan, draw_block_indices,
+                                           restrict_plans)
 
 
 def _cohort(cid, n, scenarios=("s",)):
@@ -45,6 +46,27 @@ def _li_registry(**block_kw):
             )
         ],
     )
+
+
+class TestRestrict:
+    def test_a_block_with_no_reporting_cohort_goes(self):
+        reg = CohortRegistry(cohorts=[_cohort("a", 5), _cohort("b", 7)])
+        plans = block_draw_plan(reg, {"t1": _target("a"), "t2": _target("b")})
+        assert [p.cohort_ids for p in restrict_plans(plans, {"a"})] == [("a",)]
+
+    def test_a_dropped_member_keeps_its_place_in_the_joint_draw(self):
+        """Row order loses the cohort; the strata do not, or the overlap changes."""
+        (plan,) = block_draw_plan(_li_registry(), {"t": _target("base")})
+        (kept,) = restrict_plans([plan], {"base", "arm_a"})
+        assert kept.cohort_ids == ("arm_a", "base")
+        assert kept.groups == plan.groups
+        idx = draw_block_indices(kept, np.random.default_rng(0), 4, 50)
+        assert set(idx) == {"base", "arm_a", "arm_b"}
+
+    def test_an_untouched_plan_is_returned_unchanged(self):
+        reg = CohortRegistry(cohorts=[_cohort("a", 5)])
+        plans = block_draw_plan(reg, {"t": _target("a")})
+        assert restrict_plans(plans, {"a", "absent"})[0] is plans[0]
 
 
 class TestPlanShape:

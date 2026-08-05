@@ -11,6 +11,7 @@ from qsp_inference.vpop.statistics import (
     QUANTILE_CONVENTIONS,
     bootstrap_design,
     expected_quantile,
+    extreme_row,
     iqr_row,
     mean_row,
     order_statistic_mass,
@@ -131,6 +132,29 @@ class TestMeanAndIqr:
         cloud = clouds["normal"]
         pop = float(np.diff(np.quantile(cloud, [0.25, 0.75]))[0])
         assert float(iqr_row(cloud, ones, 12)) / pop == pytest.approx(0.88, abs=0.03)
+
+
+class TestExtremes:
+    @pytest.mark.parametrize("shape", SHAPES)
+    @pytest.mark.parametrize("upper", [False, True])
+    def test_matches_the_simulated_sample_extreme(self, clouds, draws, ones,
+                                                  shape, upper):
+        want = (draws[shape].max(axis=1) if upper
+                else draws[shape].min(axis=1)).mean()
+        got = float(extreme_row(clouds[shape], ones, 16, upper))
+        assert got == pytest.approx(want, abs=0.15 * np.std(draws[shape]))
+
+    def test_n_of_one_is_the_mean(self, clouds, ones):
+        # Beta(1,1) is uniform, so both endpoints put equal mass on every member.
+        for upper in (False, True):
+            assert float(extreme_row(clouds["normal"], ones, 1, upper)) == \
+                pytest.approx(float(mean_row(clouds["normal"], ones)), rel=1e-9)
+
+    def test_the_extremes_spread_with_n(self, clouds, ones):
+        cloud = clouds["normal"]
+        lo = [float(extreme_row(cloud, ones, n, False)) for n in (8, 200)]
+        hi = [float(extreme_row(cloud, ones, n, True)) for n in (8, 200)]
+        assert lo[1] < lo[0] < hi[0] < hi[1]
 
 
 class TestMomentRows:

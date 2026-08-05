@@ -30,6 +30,7 @@ __all__ = [
     "order_statistic_mass",
     "quantile_mass",
     "expected_quantile",
+    "extreme_row",
     "mean_row",
     "iqr_row",
     "bootstrap_design",
@@ -98,6 +99,17 @@ def expected_quantile(x_sorted, w, p: float, n: int, convention: str = "type7",
     if mass is None:
         mass = quantile_mass(w, p, n, convention)
     return jnp.asarray(x_sorted) @ mass
+
+
+def extreme_row(x_sorted, w, n: int, upper: bool):
+    """A reported minimum or maximum: order statistic 1 or ``n``, exactly.
+
+    A printed range is the pair, and each endpoint is an order statistic like any
+    other, so no convention applies and nothing is interpolated. The expectation
+    still reads the whole cloud, but the Beta mass concentrates on one tail, which
+    is where the surrogate is least accurate.
+    """
+    return jnp.asarray(x_sorted) @ order_statistic_mass(w, n if upper else 1, n)
 
 
 def mean_row(x_sorted, w):

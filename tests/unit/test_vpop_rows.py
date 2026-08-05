@@ -56,10 +56,35 @@ class TestRowSpecs:
 
     def test_unsupported_statistics_raise_and_are_named(self):
         t = _target("c", [{"stat": "quantile", "p": 0.5, "value": 1.0},
+                          {"stat": "ci95_lo", "value": 0.1},
+                          {"stat": "ci95_hi", "value": 9.0}])
+        with pytest.raises(ValueError, match=r"t/ci95_hi, t/ci95_lo"):
+            row_specs({"t": t}, {"c": 10})
+
+    def test_min_and_max_are_order_statistic_rows(self):
+        t = _target("c", [{"stat": "quantile", "p": 0.5, "value": 1.0},
                           {"stat": "min", "value": 0.1},
                           {"stat": "max", "value": 9.0}])
-        with pytest.raises(ValueError, match=r"t/max, t/min"):
-            row_specs({"t": t}, {"c": 10})
+        specs = row_specs({"t": t}, {"c": 10})
+        by_stat = {s.stat: s for s in specs}
+        assert set(by_stat) == {"quantile", "min", "max"}
+        # One endpoint is not a width, so neither is held out by the flat fit.
+        assert not any(s.is_scale or s.log for s in specs)
+
+    def test_exclude_drops_a_row_by_name(self):
+        t = _target("c", [{"stat": "quantile", "p": 0.5, "value": 1.0},
+                          {"stat": "ci95_lo", "value": 0.1},
+                          {"stat": "ci95_hi", "value": 9.0}])
+        specs = row_specs({"t": t}, {"c": 10},
+                          exclude=[("t", "ci95_lo"), ("t", "ci95_hi")])
+        assert [s.stat for s in specs] == ["quantile"]
+
+    def test_exclude_matching_nothing_raises(self):
+        # A corpus edit that removes the row must not leave the exclusion silently
+        # covering nothing, or the reason recorded for it stops applying.
+        with pytest.raises(ValueError, match=r"t/iqr"):
+            row_specs({"t": _target("c", MEAN_SD)}, {"c": 20},
+                      exclude=[("t", "sd"), ("t", "iqr")])
 
     def test_scale_rows_are_logged_and_location_rows_are_not(self):
         specs = row_specs({"t": _target("c", MEAN_SD)}, {"c": 20})
