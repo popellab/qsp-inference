@@ -322,8 +322,8 @@ predicted at $\phi_0$, not measured.
 The second is $E_B$, from the emulator $\widehat g$ standing in for $g$. Define
 it on the statistics and not on the readouts, because the map from a readout
 error to a statistic error depends on the functional. Draw $L$ held-out clouds
-$z^{(\ell)}$ at $\phi_0$, evaluate each both ways, and take the covariance of the
-difference:
+$z^{(\ell)}$ at $\phi_0$, evaluate each both ways, and split the difference into
+its mean and what fluctuates around it:
 \begin{equation}
 d^{(\ell)}_B
 \;=\;
@@ -331,15 +331,56 @@ d^{(\ell)}_B
 \;-\;
 \tau^{g}_B\big(\phi_0;\,z^{(\ell)}\big),
 \qquad
-E_B \;=\; \Cov_{\ell}\big[\,d^{(\ell)}_B\,\big],
-\qquad \ell=1,\dots,L .
+\bar d_B \;=\; \mathbb{E}_{\ell}\big[\,d^{(\ell)}_B\,\big],
+\qquad
+E_B \;=\; \Cov_{\ell}\big[\,d^{(\ell)}_B\,\big] .
 \label{eq:Ec}
 \end{equation}
-This is $K_B\times K_B$ by construction. A covariance is centred, so $E_B$
-carries none of the emulator's constant error. Report $\bar d_B$ beside it: that
-constant is a misfit no entry of $V_B$ explains, and \eqref{eq:disc} is what has
-to take it up, into $a$ where it can and into $\mu$ where it cannot. Section
-\ref{sec:checks} says how much of it \eqref{eq:disc} can reach.
+$E_B$ is $K_B\times K_B$ by construction, and the two pieces are not comparable
+in size. $\widehat g$ errs by a fixed amount at a fixed $\vartheta$, so within one
+cloud that error is common to its patients and passes through a statistic
+undiminished, while resampling $z^{(\ell)}$ moves only how the error varies across
+the cloud. Narrowing the cloud shrinks $V^{\text{boot}}_B$ and the fluctuation
+together and leaves $\bar d_B$ where it was, so the emulator's share of $V_B$
+grows as $\omega$ falls: on this corpus the whole difference runs from $0.6$
+sampling standard deviations at a cloud as wide as the stage-1 prior to $10$ at a
+tenth of that width, with $\bar d_B$ taking an increasing share of it. Reporting
+$E_B$ alone therefore understates $V_B$ by whatever $\bar d_B$ is, and nothing in
+the fit registers the difference.
+
+So $\bar d_B$ is removed rather than carried, by the correction of
+\eqref{eq:gcorr}. What survives the correction is what \eqref{eq:absorbfrac} then
+asks \eqref{eq:disc} to hold.
+
+\paragraph{Correcting the emulator.} $\bar d_B$ is a property of where the cloud
+sits, so it is estimated there and removed there. Draw $n_g$ patients from the
+cloud at $\phi_0$, solve them, and fit an affine correction to the emulator's
+residual in the transform $\psi$ it was trained in:
+\begin{equation}
+\psi\big(\widehat g_{\mathrm{c}}(\vartheta)\big)
+\;=\;
+\psi\big(\widehat g(\vartheta)\big)
+\;-\; \alpha \;-\; \Gamma\,(\vartheta-\mu_0),
+\label{eq:gcorr}
+\end{equation}
+with $\alpha\in\mathbb{R}^{Q}$ and $\Gamma\in\mathbb{R}^{Q\times P}$ a ridge fit
+over the $n_g$ solved patients. $\alpha$ shifts every patient alike and so reaches
+a spread only through the curvature of $\psi^{-1}$; the statistics that report
+width need $\Gamma$, which is what varies across the cloud. $\widehat
+g_{\mathrm{c}}$ replaces $\widehat g$ throughout, including in \eqref{eq:Ec}, and
+the same $n_g$ solves supply both the fit and the $E_B$ that follows it. On this
+corpus $n_g=50$ recovers most of the location error and $n_g=200$ most of the
+scale error.
+
+The correction is affine, so it is free in the sampler: fitted once at $\phi_0$,
+frozen alongside $V_B$, and costing nothing per evaluation. Freezing $\alpha$ is
+not the same risk as freezing $V_B$, though. A stale $V_B$ gives a row the wrong
+width, which \eqref{eq:ratio} tests; a stale $\alpha$ moves $\tau$ itself and is
+paid for in $\mu$, which is the failure the correction exists to prevent. So the
+outer loop is governed by $\|\mu-\mu_0\|$ against the width the correction was
+fitted over, and $V_B$ is refreshed with it. $\Gamma$ meanwhile enters
+$\partial\tau/\partial\mu$, so it corrects the emulator's Jacobian and not only
+its level.
 
 The fallback is $E_B=\diag(\varepsilon^2)$, with $\varepsilon_r$ the held-out
 residual of readout $r$ repeated across its $K_{rc}$ statistics. It asserts that
@@ -735,6 +776,7 @@ $h_q,\ h_w$ & Smoothing bandwidths: the quantile kernel \eqref{eq:smoothq} and t
 $\widehat g$ & The emulator, and with it the design it was trained on. Fixes $E_B$ and $\bar d_B$. \\
 $V_{B}$ & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One per block of \eqref{eq:obs}. \\
 $E_B$ & Emulator error covariance on the statistics of block $B$, from \eqref{eq:Ec}. \\
+$\alpha,\ \Gamma$ & Emulator correction of \eqref{eq:gcorr}, fitted at $\phi_0$ from $n_g$ solves and frozen with $V_B$. \\
 $\tau_s,\ \tau_\omega,\ \tau,\ \sigma_a,\ \sigma_b$ & Prior widths. \\
 $\tau_\beta$ & Mechanism discrepancy scale, fixed rather than estimated. \\
 \bottomrule
