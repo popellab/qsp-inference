@@ -308,21 +308,40 @@ class TestTauAll:
         out = tau_all(MU, OMEGA, ZERO2, ZERO2, ZERO2, [plan], SPECS, refs, mech)[0]
         assert plan.cohort_ids == ("c_post", "c_pre")
         assert out.shape == (5,)      # c_post's 2 rows, then c_pre's 3
+        # exp, because a row functional runs in the units the source printed and
+        # h_r returns logs. A mean does not commute with it, so this row is the
+        # mean of the exponentiated cloud and not the exponentiated mean.
         x = jnp.sort(readout_cloud(MU, OMEGA, ZERO2, mech), axis=0)
-        assert float(out[1]) == pytest.approx(float(x[:, 1].mean()), abs=1e-6)
+        assert float(out[1]) == pytest.approx(float(jnp.exp(x[:, 1]).mean()),
+                                              rel=1e-9)
 
-    def test_gamma_shifts_a_location_row_by_Z_a(self, mech, plan):
+    def test_gamma_scales_a_location_row_by_exp_Z_a(self, mech, plan):
         args = ([plan], SPECS, reference_levels(MU, OMEGA, mech), mech)
         base = tau_all(MU, OMEGA, ZERO2, ZERO2, ZERO2, *args)[0]
         moved = tau_all(MU, OMEGA, jnp.array([0.3, 0.2]), ZERO2, ZERO2, *args)[0]
-        # Z rows are [1,0] for the level and [1,1] for the ratio.
-        assert np.allclose(moved - base, [0.5, 0.5, 0.3, 0.3, 0.3], atol=1e-6)
+        # Z rows are [1,0] for the level and [1,1] for the ratio. gamma is
+        # additive on the log readout, so it is a constant factor on the row,
+        # which is what makes it a multiplicative assay bias.
+        assert np.allclose(moved / base, np.exp([0.5, 0.5, 0.3, 0.3, 0.3]),
+                           rtol=1e-9)
 
-    def test_kappa_leaves_a_median_row_at_the_pivot(self, mech, plan):
-        args = ([plan], SPECS, reference_levels(MU, OMEGA, mech), mech)
+    @pytest.mark.parametrize("n, tol", [(9, 0.05), (201, 3e-3), (4001, 5e-4)])
+    def test_kappa_leaves_a_median_row_at_the_pivot(self, mech, plan, n, tol):
+        """Exact in the population, and approached as ``n`` grows.
+
+        eq:disc is affine on the log readout, so it moves the population median
+        by ``kappa (med - c) + c``, which is ``c`` exactly. A reported median is
+        the expectation over ``n`` draws, and the row is computed in the source's
+        units, where the map is a power rather than affine -- so the expectation
+        and the map stop commuting and Jensen moves the row up. The gap is the
+        median's own sampling spread, and it closes at ``sqrt(n)``.
+        """
+        specs = {"c_pre": [RowSpec(LEVEL, "c_pre", "quantile", 0.0, n, p=0.5)],
+                 "c_post": [RowSpec(RATIO, "c_post", "quantile", 0.0, n, p=0.5)]}
+        args = ([plan], specs, reference_levels(MU, OMEGA, mech), mech)
         base = tau_all(MU, OMEGA, ZERO2, ZERO2, ZERO2, *args)[0]
         moved = tau_all(MU, OMEGA, ZERO2, jnp.array([0.5, 0.0]), ZERO2, *args)[0]
-        assert float(moved[3]) == pytest.approx(float(base[3]), abs=2e-3)
+        assert float(moved[1]) == pytest.approx(float(base[1]), rel=tol)
 
     def test_a_precomputed_mass_table_changes_no_number(self, mech, plan):
         args = (MU, OMEGA, ZERO2, ZERO2, ZERO2, [plan], SPECS,

@@ -253,7 +253,13 @@ def tau_block(x, plan, specs_by_cohort, a, b, refs, mech: Mechanism, cols_of,
     x_of, column_of = {}, {}
     for c in plan.cohort_ids:
         cols = cols_of[c]
-        x_of[c] = cohort_cloud(x, cols, a, b, refs, mech)
+        # exp, because a row functional has to run in the units the source
+        # printed. h_r returns logs and eq:disc acts there, which is what makes
+        # gamma a multiplicative assay bias, but the reported number is a mean or
+        # an IQR of cells/mm^2 and neither commutes with exp. Quantile rows do
+        # commute, so only the moment and width rows depend on this being here
+        # rather than applied to tau afterwards.
+        x_of[c] = jnp.exp(cohort_cloud(x, cols, a, b, refs, mech))
         column_of[c] = {mech.readouts[col]: k for k, col in enumerate(cols)}
 
     w_of = block_weights(x_of, plan, elig_fn, elig_at)
