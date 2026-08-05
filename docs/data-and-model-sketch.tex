@@ -1,0 +1,450 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1.05in]{geometry}
+\usepackage{mathpazo}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{tcolorbox}
+\usepackage[colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent]{hyperref}
+
+\tcbuselibrary{skins,breakable}
+
+\definecolor{accent}{HTML}{1F5C6B}
+\definecolor{accentbg}{HTML}{DCE9EC}
+\definecolor{softgray}{HTML}{6B6B6B}
+\definecolor{warnrule}{HTML}{B8860B}
+\definecolor{warnbg}{HTML}{FBF0D9}
+
+\titleformat{\section}{\large\bfseries\color{accent}}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.6em}{}
+\setlist[itemize]{leftmargin=1.3em,itemsep=2pt,topsep=3pt}
+\setlist[enumerate]{leftmargin=1.6em,itemsep=2pt,topsep=3pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.3pt}
+\lhead{\small\color{softgray}What the data is, and what model fits it}
+\rhead{\small\color{softgray}\thepage}
+
+\newtcolorbox{notebox}{
+  enhanced, breakable, colback=accentbg!55, colframe=accent,
+  boxrule=0pt, leftrule=2.5pt, arc=1pt, left=10pt, right=10pt, top=8pt, bottom=8pt}
+
+\newtcolorbox{assumpbox}{
+  enhanced, breakable, colback=warnbg!60, colframe=warnrule,
+  boxrule=0pt, leftrule=2.5pt, arc=1pt, left=10pt, right=10pt, top=8pt, bottom=8pt}
+
+\newcommand{\Ncal}{\mathcal{N}}
+
+\title{\bfseries What the data is, and what model fits it}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\begin{center}\small\color{softgray}
+A sketch, not a specification. It fixes the shape of the data first, then writes
+down the smallest model that consumes it.
+\end{center}
+
+\section{What a source gives you}
+
+For one observable, in one cohort, a published paper gives one of two things:
+
+\begin{itemize}
+\item \textbf{the raw values}, where a figure plots per-patient points; or
+\item \textbf{a few statistics of those values}: a median, a mean, an IQR, an SD,
+      a range, a pair of quartiles.
+\end{itemize}
+
+Plus $n$ in both cases. Sometimes it also states an \emph{uncertainty} about one
+of those statistics, such as a confidence interval on the median. Section
+\ref{sec:distinction} explains why that is a different kind of object and not a
+third statistic.
+
+That is the entire inventory. Raw values if we are lucky, otherwise a handful of
+summaries, and a sample size.
+
+\begin{notebox}
+\textbf{A statistic is a function, and that is the whole design.} Write $T$ for a
+map from a sample to a number. The paper reports $T$ applied to its patients. The
+model computes $T$ applied to its simulated cloud. The likelihood compares the
+two.
+
+Everything downstream follows from taking that literally. The record stores a
+value and \emph{which} $T$. Nothing is converted, because nothing needs to be:
+whatever the paper chose to report, the model can compute the same thing.
+\end{notebox}
+
+\subsection*{What we actually hold}
+
+Measured over the 49 marginal targets currently in the set:
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}Xl@{}}
+\toprule
+Quantity & Coverage \\
+\midrule
+$n$, a location, and exactly one further statistic & 49 / 49 \\
+Per-patient values, so the shape is real & 21 / 49 \\
+A scale that was extracted rather than generated from a summary & 21 / 49 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+One scale statistic per target, never two. The \texttt{empirical\_data} block of
+a target YAML holds a \texttt{median}, a single \texttt{ci95}, a
+\texttt{sample\_size}, and, for 21 of the 49, the per-patient values behind them.
+
+The other 28 targets are marked \texttt{synthesized}, which means their quantiles
+were read off a distribution the pipeline built rather than off digitized
+patients. Their \emph{shape} is our assumption. Their location and scale still
+carry information, and sometimes real derivation work: \texttt{tam\_density} is
+the sum of two separately reported cell populations, combined under a
+marginalised correlation. What is not a measurement is the four quantile columns
+that come out the far end.
+
+The 21 targets with real per-patient values come from four cohorts:
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}Xll@{}}
+\toprule
+Source & Observables & Patients \\
+\midrule
+Zheng 2022, GVAX + nivolumab arm & 8 & 10 \\
+Zheng 2022, GVAX arm & 6 & 9 \\
+Li 2022, baseline & 2 & 16 \\
+Heumann 2023, urelumab arm & 1 & 8 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The same patients appear across the panels of a figure, but which point is which
+patient is not recoverable from the figure. So these give real marginals and
+give nothing about the joint.
+
+\section{The one distinction that matters}
+\label{sec:distinction}
+
+Papers print two kinds of number and do not distinguish them:
+
+\begin{itemize}
+\item a \textbf{statistic}: something computed from the patients. A median, an
+      SD, an IQR, a range, a pair of quartiles.
+\item an \textbf{uncertainty about a statistic}: how well the study pinned one of
+      the above. An SEM, a confidence interval on the median.
+\end{itemize}
+
+The second is not a third statistic. It is a statement about an estimator, and it
+belongs in a different slot. A statistic goes on the left-hand side of a
+likelihood row. An uncertainty does not go anywhere, because the model computes
+its own from the cloud and $n_c$.
+
+The two are related by $\sqrt n$, so they are easy to confuse and easy to
+convert:
+\begin{equation}
+\mathrm{SE}(\text{median}) \;\approx\; 1.2533\,\frac{\sigma}{\sqrt n},
+\qquad
+\mathrm{SE}(\text{mean}) \;\approx\; \frac{\sigma}{\sqrt n}.
+\label{eq:convert}
+\end{equation}
+
+\begin{notebox}
+\textbf{What a reported uncertainty is good for.} One thing: checking. Compare it
+against the bootstrap prediction from the statistic and $n$. Agreement validates
+the extraction. Disagreement means the $n$ is wrong, the shape is unusual, or an
+SEM was recorded as an SD.
+
+It must not enter the likelihood. It carries no information the statistic and $n$
+do not already carry, and feeding both counts one measurement twice.
+\end{notebox}
+
+\begin{assumpbox}
+\textbf{One field, \texttt{ci95}, currently holds both kinds.} The distinction
+above is not hypothetical here. The same field holds a statistic in some targets
+and an uncertainty in others.
+
+\emph{An uncertainty.} \texttt{cd8\_pct\_nonLA\_gvax\_d21} stores nine per-patient
+values, which sort to $[0.0107,\,0.0207,\,0.0232,\,0.0795,\,0.0804,\,0.0838,\,
+0.1022,\,0.1123,\,0.1493]$, and \texttt{ci95: [0.0207, 0.1123]}. Those are ranks
+$2$ and $8$: the distribution-free order-statistic interval for a median, with
+$96.1\%$ coverage at $n=9$. The same rank pattern appears at $n=7$. So
+\texttt{ci95} there is a confidence interval on the location, computed from the
+values stored beside it.
+
+\emph{A statistic.} \texttt{tam\_density} stores \texttt{median: 110.44} and
+\texttt{ci95: [18.64, 698.94]} at $n=113$. That is a ratio of $37.5$, an implied
+log-scale sigma near $0.93$. A confidence interval on the median at $n=113$ would
+have a ratio near $1.5$. So \texttt{ci95} there is a pair of patient-level
+quantiles, which is two statistics.
+
+The two readings differ by $\sqrt n$. The trial-arm targets, where the confusion
+bites, run $n=6$ to $10$, so the factor is about $2.5$.
+
+Under section \ref{sec:record} this cannot happen, because the two go in
+different slots and each records which $T$ it is.
+\end{assumpbox}
+
+\section{The model that fits this}
+\label{sec:model}
+
+One row per reported statistic. Four steps.
+
+\begin{enumerate}
+\item \textbf{Simulate.} Draw $\vartheta_i\sim\Ncal(\mu,\Omega)$ with
+      $\Omega=D_\omega R D_\omega$, push through the mechanism,
+      $x_i=g(\vartheta_i)$. That is the predicted population of observables.
+\item \textbf{Correct the predicted distribution.} The model can be wrong about
+      where an observable sits and about how spread out it is, so give it one
+      term for each:
+      \begin{equation}
+      \tilde x_{im} \;=\; \bar x_m \;+\; \kappa_m\,(x_{im}-\bar x_m) \;+\;
+      \delta_m ,
+      \qquad \bar x_m = \mathrm{med}_i\, x_{im}.
+      \label{eq:correct}
+      \end{equation}
+\item \textbf{Apply the same $T$ the paper applied.} For each statistic $k$ that
+      the source reports, compute $T_k$ on the corrected cloud.
+\item \textbf{Compare.}
+      \begin{equation}
+      \widehat T_{mck} \;\sim\; \Ncal\!\Big(T_k\big(\tilde x_{\cdot m};\,\phi\big),
+      \;\; V_{mck}\Big).
+      \label{eq:row}
+      \end{equation}
+\end{enumerate}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+Term & Source & Meaning \\
+\midrule
+$\widehat T_{mck}$ & data & The value the paper reports for statistic $k$. \\
+$T_k$ & data & \emph{Which} statistic that is. A function of a sample. \\
+$n_c$ & data & The cohort size. \\
+$\delta_m$ & inferred & Discrepancy of the model in the location of observable $m$. \\
+$\log\kappa_m$ & inferred & Discrepancy of the model in the scale of observable $m$. \\
+$V_{mck}$ & derived & Sampling variance of $T_k$ at $n_c$. Section \ref{sec:noise}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Note where \eqref{eq:correct} sits. The discrepancy acts on the predicted
+\emph{distribution}, before any statistic is taken, so it means something precise:
+the model's predicted spread of observable $m$ is wrong by a factor $\kappa_m$
+and its centre is wrong by $\delta_m$. Every statistic then inherits the
+correction automatically, including one nobody has written yet. Two discrepancy
+terms per observable, however many statistics that observable reports.
+
+\section{Noise, and why to bootstrap it}
+\label{sec:noise}
+
+$V_{mck}$ is the sampling variance of $T_k$ computed from $n_c$ patients. Two
+ways to get it.
+
+\textbf{Analytic}, where a formula exists. The sampling variance of a log
+standard deviation is about $1/\{2(n-1)\}$, whatever the population spread is. So
+that row's noise is a known function of $n$ alone, free of $\phi$, which is worth
+a lot: it removes the $-\tfrac12\log\det V$ term that would otherwise reward a
+narrow population regardless of fit quality. Formulas of this kind exist for the
+mean, the median and the SD, and for almost nothing else.
+
+\textbf{Bootstrap}, always. Resample $n_c$ patients from the corrected cloud,
+recompute $T_k$, repeat. That is exact at any $n$, assumes no shape, needs no
+derivation, and works for any $T_k$ whatever.
+
+\begin{notebox}
+\textbf{The bootstrap is what makes custom statistics affordable.} Without it,
+every new kind of reported statistic needs its own variance formula, and most do
+not have one. With it, a statistic is defined once as a function and its noise
+follows for free.
+
+The cost is that a bootstrapped $V$ depends on $\phi$ through the cloud, which
+brings back the $\log\det$ pathology. The usual remedy applies: evaluate it once
+at a plug-in value and freeze it.
+
+Suggested default: bootstrap uniformly and freeze, because uniformity is worth
+more than the $\phi$-free property, and check it against the analytic forms where
+those exist. The targets with $n=6$ to $10$ are where the two will disagree if
+anywhere, because that is where the asymptotic formulas are least defensible.
+\end{notebox}
+
+\textbf{Rows are close to independent.} For a normal sample the mean and the
+standard deviation are exactly independent, and on the log scale for a roughly
+lognormal observable that holds well enough. Where two statistics of the same
+sample are correlated, the bootstrap gives the covariance at no extra cost,
+because it resamples the sample once and computes both.
+
+\begin{notebox}
+\textbf{Which statistic to ask for, when we get to choose.} More statistics from
+one sample do carry more information, up to the limit of knowing all $n$ values,
+and a correct $V$ makes sure each row contributes what it earned rather than
+being counted as an independent measurement. But the \emph{choice} of statistic
+matters far more than the number.
+
+For a normal sample the SD is fully efficient for $\sigma$, with asymptotic
+variance $\sigma^2/2n$. The interquartile estimator
+$\widehat\sigma=\mathrm{IQR}/1.349$ has asymptotic variance $1.36\,\sigma^2/n$,
+an efficiency near $37\%$. Reporting an IQR instead of an SD discards about two
+thirds of what the sample says about the spread. At $n=10$ that is like working
+with fewer than four patients.
+
+So for the 21 targets that carry raw values, compute the log-scale standard
+deviation, not the interquartile range. It costs nothing and it is worth more
+than any amount of additional quantile extraction. Fall back to the IQR only
+where the log-scale shape is skewed or heavy-tailed enough that robustness beats
+efficiency, which is a thing the raw values let us check.
+
+For the summary-only targets there is no choice. We match whatever was printed.
+\end{notebox}
+
+\begin{notebox}
+\textbf{What this removes.} An earlier form fixed three quantile rows per
+observable, at $0.25$, $0.50$ and $0.75$, whatever the paper had reported. Three
+quantiles from one sample are strongly correlated, so it needed an asymptotic
+quantile covariance, a density estimate at each quantile, a bandwidth, and a
+Gaussian copula across observables. It also needed every source that did not
+report quartiles to have quartiles manufactured for it.
+
+None of that was solving a problem in the data. It was solving a problem created
+by demanding a fixed statistic. Match whatever the paper reported and the
+is diagonal.
+\end{notebox}
+
+\section{What is left}
+
+$\mu$, $\omega$, and two discrepancy terms per observable with their scales
+$\tau_\delta$ and $\tau_\kappa$. That is the model.
+
+The name, so the literature is findable: this is \textbf{aggregate-data, or
+summary-level, meta-analysis on a nonlinear forward model}. Equivalently it is a
+nonlinear mixed-effects model fitted to published summaries instead of to
+individual patient data. Pharmacometrics calls the same object model-based
+meta-analysis.
+
+\section{Deliberately left out of the first draft}
+
+\textbf{Correlation between observables measured in the same patients.} It is
+real: Zheng 2022 reports eight observables in ten patients. Ignoring it makes the
+fit overconfident, because those rows are not independent evidence. It is a
+refinement, not a foundation, and the linkage needed to estimate it is not in
+hand.
+
+\textbf{A study offset $\eta_c$.} Every observable in the set belongs to one
+cohort, so a free per-study offset is exactly aliased with $\delta_m$. The simple
+version omits it and lets $\delta_m$ absorb the study effect. Nothing is lost
+that was identified.
+
+\textbf{Fitting the shape itself.} Twenty-one targets have per-patient values,
+so one could compare whole distributions rather than a few statistics. Resist for
+now: the rows stop being independent, and the other 28 targets cannot be treated
+the same way. Use the per-patient values to compute whichever statistics you
+want, and to check whether the predicted shape is right.
+
+\section{What the record has to hold}
+\label{sec:record}
+
+Follow the design of section \ref{sec:model} and the schema falls out. Per
+observable, per cohort:
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+Slot & Contents \\
+\midrule
+\texttt{n} & The number of patients. \\
+\texttt{values} & The raw per-patient values, when a figure gives them. Best case:
+                  every statistic below is then computable and checkable. \\
+\texttt{statistics} & A list of (which $T$, value). \texttt{median},
+                      \texttt{mean}, \texttt{sd}, \texttt{iqr}, \texttt{q25},
+                      \texttt{q75}, \texttt{min}, \texttt{max} cover most of it. \\
+\texttt{custom} & A statistic that the enum cannot name, written as a function of
+                  a sample. \\
+\texttt{uncertainty} & A reported SE or CI, tagged with which statistic it refers
+                       to. Not a likelihood input. Used to check the bootstrap. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{notebox}
+\textbf{Why the custom slot is not optional.} An enum cannot express a compound
+statistic without ambiguity, and the current set already contains several.
+\texttt{m1\_m2\_ratio} is either the ratio of the medians or the median of the
+ratios, and those are different numbers. \texttt{cd8\_fc} is a paired per-patient
+fold change, so it is a statistic of two samples at once. A proportion of patients
+above a threshold is a statistic no location-and-scale vocabulary can name.
+
+Writing the function removes the ambiguity, and the same function then runs on
+the simulated cloud. That is the contract: \emph{one function, two samples}. It
+is testable, which a naming convention is not.
+\end{notebox}
+
+The \texttt{uncertainty} slot is the one that fixes the \texttt{ci95} problem in
+section \ref{sec:distinction}. A patient-level 95\% interval is two entries in
+\texttt{statistics}, namely \texttt{q2.5} and \texttt{q97.5}. A confidence
+interval on the median is one entry in \texttt{uncertainty}, tagged
+\texttt{median}. Today both are written to one field named \texttt{ci95} and
+nothing distinguishes them.
+
+\section{Checklist: cleaning up the data record}
+
+One principle. \textbf{The record holds what the paper reported. Every
+transformation happens at load, in one line, and is reversible.} Each item below
+is a place where that is not true today.
+
+\begin{itemize}[label={},leftmargin=1.6em]
+
+\item[$\square$] \textbf{Stop materialising derived quantiles. Keep
+\texttt{distribution\_code}.} The field does two different jobs, and only one is
+cruft.
+
+Sometimes it is a real derivation. \texttt{tam\_density} is the sum of the
+CD163$+$ and CD163$-$ densities that Liudahl 2021 reports separately, each with a
+median and quartiles. A sum of two lognormals has no closed form, so the code
+builds both marginals, marginalises an unidentified within-patient correlation
+$\rho\sim\mathrm{Beta}(a,b)$ through a one-factor copula, and samples. That is the
+honest record of how a model observable was assembled from what the paper
+printed, and it handles the unknown correlation by integrating it out rather than
+assuming it. Keep it.
+
+Sometimes it is format padding: a source reports a location and a scale, and the
+code exists only to manufacture quantiles at $0.25$ and $0.75$. That output lands
+in columns indistinguishable from digitized data, so nothing downstream can tell
+which is which. The assumption is not the problem. Hiding it in the record is.
+
+The fix is small. \texttt{distribution\_code} already ends in
+\texttt{pop.summarize(samples)}, and a set of named statistics is exactly what
+section \ref{sec:record} wants. Have it return those, and stop reading a fixed
+quantile grid off the samples.
+
+\item[$\square$] \textbf{Populate \texttt{dispersion\_type} on every scale
+statistic.} The field exists on each input and is \texttt{null} in every target
+checked. It needs one of two values, \texttt{dispersion} or \texttt{precision},
+because \texttt{ci95} currently holds both and they differ by $\sqrt n$. For the
+21 targets with per-patient values it can be set by inspection, since the raw
+data sits in the same file.
+
+\item[$\square$] \textbf{Drop the manufactured columns from the marginal-targets
+CSV.} \texttt{q10}, \texttt{q25}, \texttt{q75}, \texttt{q90} and \texttt{iqr}
+exist to serve a fixed three-quantile input format that the model in section
+\ref{sec:model} does not ask for. Replace them with the slots of section
+\ref{sec:record}. Keep \texttt{kind}, or something like it, as provenance: it is
+the only marker of whether the shape came from patients or from us.
+
+\item[$\square$] \textbf{Keep the per-patient values wherever they exist.} They
+are the only check on the shape assumption, and the only route to anything about
+the joint distribution across observables. Storing them costs nothing.
+
+\end{itemize}
+
+Model changes are a separate list. Nothing above depends on settling them.
+
+\end{document}

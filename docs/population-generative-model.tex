@@ -43,10 +43,14 @@
 
 \newcommand{\reals}{\mathbb{R}}
 \newcommand{\Ncal}{\mathcal{N}}
+\newcommand{\Mset}{\mathcal{M}}
 \newcommand{\Tr}{^{\!\top}}
 \DeclareMathOperator{\Cov}{Cov}
 \DeclareMathOperator{\Corr}{Corr}
 \DeclareMathOperator{\diag}{diag}
+\DeclareMathOperator{\tr}{tr}
+\newcommand{\ctr}{\mathrm{ctr}}
+\newcommand{\wid}{\mathrm{wid}}
 
 %% Status of each term: does the fit estimate it, or not?
 \newcommand{\INF}{\textcolor{accent}{\textbf{inferred}}}
@@ -83,7 +87,7 @@ Each table gives the status of the term. \INF{} means that the fit estimates
 it. \STG{} means that we compute it from the stage-1 output before the fit.
 \FIX{} means that we set or build it before the fit by some other route. \DER{}
 means that it is a function of the other terms. \OBS{} means that we read it
-from a paper. Six quantities are \INF; everything else is not.
+from a paper.
 
 \subsection*{Sizes}
 All sizes are constants.
@@ -94,13 +98,20 @@ Term & Value & Meaning \\
 \midrule
 $P$ & 271 & The number of model parameters. \\
 $M$ & 65 & The number of observables, over all scenarios. \\
-$N$ & 2000 & The number of patients that we simulate. \\
-$C$ & 27 & The number of study cohorts. \\
-$R$ & 163 & The number of anchor rows (one quantile of one observable). \\
+$M_w$ & 49 & The number of observables whose source reports a usable scale. \\
+$N$ & $2\times10^4$ & The number of patients that we simulate. Section \ref{sec:obs} sets it. \\
+$C$ & 29 & The number of study cohorts. The pooled CD8 target splits into three; see section \ref{sec:repeat}. \\
+$A$ & 118 & The number of anchor rows. It is $67$ centre rows plus $51$ width rows, because one observable now has three cohorts. \\
 $n_c$ & 6--702 & The number of real patients in cohort $c$. \\
+$B$ & $2\times10^3$ & Bootstrap replicates for the sampling covariance. \\
+$B'$ & 200 & Independent clouds for the Monte Carlo covariance. \\
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\noindent
+Earlier versions of this note wrote $R$ for both the correlation matrix and the
+number of anchor rows. The anchor count is now $A$. $R$ is only the matrix.
 
 \subsection*{Quantities for one patient}
 \begin{center}\small
@@ -123,10 +134,13 @@ $x_i$ & $M$ & \DER & The observables of patient $i$, on the log scale. \\
 Term & Size & Status & Meaning \\
 \midrule
 $\mu$ & $P$ & \INF & The centre of the population, on the log scale. \\
-$\omega$ & $P$ & \INF & The spread of each parameter between patients, on the log scale. \\
-$\omega_0$ & $P$ & \FIX & The prior centre for $\omega$. Section \ref{sec:omega} builds it in four layers. Layer 4 uses stage-1 output for $9$ parameters. \\
+$\omega$ & $P$ & \DER & The spread of each parameter between patients, on the log scale. \\
+$s$ & 1 & \INF & The global width multiplier, on the log scale. It scales every assumed width at once. \\
+$u$ & $P$ & \INF & The departure of each assumed width from the global level. It sums to zero. \\
+$\Mset$ & 9 & \FIX & The set of parameters whose spread a source measured. These take no $s$ and no $u$. \\
+$\omega_0$ & $P$ & \FIX & The prior centre for $\omega$. Section \ref{sec:omega} builds it in four layers. \\
 $\Omega$ & $P\times P$ & \DER & The covariance of the population, on the log scale. \\
-$R$ & $P\times P$ & \STG & The correlation matrix of the population. Equation \eqref{eq:R} computes it from the stage-1 posterior copula. That copula covers $65$ of the $271$ parameters; $R$ is the identity elsewhere. \\
+$R$ & $P\times P$ & \STG & The correlation matrix of the population. Section \ref{sec:R}. \\
 $L_R$ & $P\times P$ & \FIX & The Cholesky factor of $R$, so that $R=L_R L_R\Tr$. \\
 $D_\omega$ & $P\times P$ & \DER & $\diag(\omega)$, the matrix of marginal widths. \\
 \bottomrule
@@ -140,14 +154,17 @@ $D_\omega$ & $P\times P$ & \DER & $\diag(\omega)$, the matrix of marginal widths
 Term & Size & Status & Meaning \\
 \midrule
 $g$ & map & \FIX & The model. It changes log parameters into log observables. \\
-$Q(\phi)$ & $R$ & \DER & The quantiles that the model predicts. \\
-$y$ & $R$ & \OBS & The quantiles that the papers report. \\
+$Q^\ctr$ & $M$ & \DER & The median that the model predicts, per observable. \\
+$Q^\wid$ & $M_w$ & \DER & The log interquartile range that the model predicts. \\
+$y$ & $A$ & \OBS & The same two quantities, read from the papers. \\
 $\eta$ & $C$ & \INF & An offset for each study. \\
+$\mathcal{E}_c$ & rule & \FIX & The eligibility rule of cohort $c$, where the paper reports one. \\
 $\delta$ & $M$ & \INF & A structural error in the centre, for each observable. \\
-$\kappa$ & $M$ & \INF & A structural error in the width, for each observable. \\
+$\kappa$ & $M_w$ & \INF & A structural error in the width, for each observable with a width row. \\
 $\kappa_0$ & 1 & \INF & The width error shared by every observable. \\
 $\varepsilon$ & $M$ & \FIX & The held-out residual of the emulator, for each observable. \\
-$\Sigma$ & $R\times R$ & \FIX & The covariance of the observed quantiles. The fit does not change it. \\
+$\Sigma$ & $A\times A$ & \FIX & The covariance of the observed rows. The fit does not change it. \\
+$\Sigma_{\text{MC}}$ & $A\times A$ & \FIX & The part of $\Sigma$ that comes from the finite cloud. It is common to every cohort. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -158,9 +175,11 @@ $\Sigma$ & $R\times R$ & \FIX & The covariance of the observed quantiles. The fi
 \toprule
 Term & Value & Status & Meaning \\
 \midrule
-$\mu_0$ & $P$ & \STG & The centre of the prior on $\mu$. The mean of the stage-1 prior, on the log scale. \\
-$\tau_\mu$ & 0.5 & \FIX & The width of the prior on $\mu$. \\
-$\tau_\omega$ & 0.5 & \FIX & The width of the prior on $\omega$, on the log scale. \\
+$\mu_0$ & $P$ & \STG & The centre of the prior on $\mu$. Section \ref{sec:centre}. \\
+$\Sigma_1$ & $P\times P$ & \STG & The covariance of the prior on $\mu$. The stage-1 covariance on the log scale. \\
+$\tau_s$ & 0.5 & \FIX & The width of the prior on $s$. It trades directly against $\kappa_0$. \\
+$\tau_\omega$ & 0.5 & \FIX & The width of the prior on $u$, on the log scale. \\
+$\tau_{\omega,j}$ & --- & \FIX & The width of the prior on $\log\omega_j$ for $j\in\Mset$. It comes from the sample size $n_j$. \\
 $\tau_\eta$ & --- & \INF & The scale of the study offsets. \\
 $\tau_\delta$ & --- & \INF & The scale of the centre errors. \\
 $\tau_\kappa$ & --- & \INF & The scale of the width errors. \\
@@ -171,11 +190,14 @@ $\phi$ & --- & \INF & All the quantities that the fit estimates. \\
 
 \noindent
 The full parameter vector is
-$\phi=(\mu,\ \log\omega,\ \eta_{\text{raw}},\ \delta_{\text{raw}},\
-\kappa_{\text{raw}},\ \log\kappa_0,\ \log\tau_\eta,\ \log\tau_\delta,\
-\log\tau_\kappa)$.
+\begin{equation*}
+\phi=(\mu,\ u_{\text{raw}},\ s,\ \log\omega_\Mset,\
+\eta_{\text{raw}},\ \delta_{\text{raw}},\ \kappa_{\text{raw}},\ \log\kappa_0,\
+\log\tau_\eta,\ \log\tau_\delta,\ \log\tau_\kappa).
+\end{equation*}
 
 \section{How to make one patient}
+\label{sec:patient}
 
 \begin{enumerate}
 \item Draw $z_i$ from a standard normal distribution. Do this one time only,
@@ -195,6 +217,13 @@ In one equation:
 \qquad \theta_i=\exp(\vartheta_i).
 \label{eq:patient}
 \end{equation}
+
+One cloud serves every cohort. Cohorts differ only by the eligibility rule
+$\mathcal{E}_c$ of section \ref{sec:cohort}, which selects a subset of that one
+cloud. This is deliberate twice over. It states that every study samples the same
+population, which is the claim the model is making. It also makes the Monte Carlo
+error common to every cohort, so section \ref{sec:obs} can model that error as one
+object rather than as $C$ independent ones.
 
 The covariance of the population follows directly:
 \begin{equation}
@@ -221,52 +250,114 @@ holds at every value of $\omega$, not only at one point.
 
 \begin{notebox}
 \textbf{Why step 1 happens only one time.} We draw $z$ once and we keep it. The
-map from $\phi$ to $Q(\phi)$ is then smooth and has no random noise. The sampler
-needs this property to calculate a gradient. The same $N$ patients move
+map from $\phi$ to $Q(\phi)$ is then continuous and has no random noise. The
+sampler needs this property to calculate a gradient. The same $N$ patients move
 continuously as $\phi$ moves.
 
-The cost is a fixed approximation error of order $N^{-1/2}$ in $Q$, instead of
-an error that averages away. Section \ref{sec:obs} adds this error to $\Sigma$.
+The map is continuous but it is not smooth. A quantile selects an order
+statistic, and the selected patient changes when two patients swap rank. An
+eligibility rule has the same defect at its threshold. Both give a piecewise
+gradient, and only the few patients near each level carry it. We therefore use
+a smooth quantile: weight patient $i$ by a kernel in its own rank, and take a
+weighted quantile. \texttt{inference/importance.py} already supplies
+\texttt{weighted\_quantile}. The bandwidth is a numerical choice and it must be
+small against the width of the cloud.
+
+The remaining cost is a fixed approximation error of order $N^{-1/2}$ in $Q$.
+Section \ref{sec:obs} measures that error and adds it to $\Sigma$.
 \end{notebox}
 
 \section{How to predict the data}
 
 \begin{enumerate}
-\item Make $N$ patients with the steps in the previous section.
+\item Make $N$ patients with the steps in the previous section, one cloud per
+      cohort.
 \item Put each patient through the model $g$. This gives $N$ observable vectors
       $x_i=g(\vartheta_i)$.
-\item For each observable, sort the $N$ values.
-\item Read the values at the probability levels $0.25$, $0.50$ and $0.75$.
-\item Collect these values into $Q(\phi)$.
+\item Where the paper reports an eligibility rule, keep only the patients that
+      satisfy it. Use a smooth weight at the threshold, not a hard indicator.
+\item For each observable, take the smooth weighted quantiles at $0.25$, $0.50$
+      and $0.75$.
+\item Reduce them to two rows.
 \end{enumerate}
 
-Written as an equation, the prediction for observable $m$ at level $p$ is
+The two rows are the centre and the log width:
 \begin{equation}
-Q_m(p;\phi) \;=\; \widehat F_{m,\phi}^{-1}(p),
+Q^\ctr_m(\phi) \;=\; \widehat F^{-1}_{m,\phi}(0.5),
 \qquad
-\widehat F_{m,\phi}(t) \;=\; \frac1N\sum_{i=1}^{N}\mathbf 1\{x_{im}\le t\}.
+Q^\wid_m(\phi) \;=\; \log\big\{\widehat F^{-1}_{m,\phi}(0.75)-\widehat
+F^{-1}_{m,\phi}(0.25)\big\}.
 \label{eq:Q}
 \end{equation}
+An observable whose source reports a centre only has a centre row and no width
+row. There are $M=65$ observables with a centre and $M_w=49$ with a width. One
+observable carries three cohorts, so the rows number $67$ and $51$, and $A=118$.
+Section \ref{sec:repeat} explains the difference between an observable and a
+row.
+
+\begin{notebox}
+\textbf{Why the rows are the centre and the log width.} An earlier version used
+the three raw quantiles as three rows. Three changes follow from this one.
+
+The sampling distribution of an interquartile range is skewed and is bounded
+below by zero. At $n_c=6$ a normal error term on the raw quantiles is wrong. On
+the log scale the same quantity is close to normal at every cohort size that we
+have.
+
+The width correction becomes additive. Section \ref{sec:obs} shows this. An
+additive correction on one row makes the aliasing of section \ref{sec:widthid}
+visible instead of implicit.
+
+The count of width parameters falls from $65$ to $49$. Sixteen observables have
+no width row, so their $\kappa_m$ was never identified and always returned its
+prior. Those entries are now absent rather than reported.
+\end{notebox}
 
 There is no closed form for $F_{m,\phi}$. The model $g$ is a set of differential
 equations and it is not linear, so the pushforward of a log-normal through it
-belongs to no standard family. Step 3 is therefore a numerical calculation, not
+belongs to no standard family. Step 4 is therefore a numerical calculation, not
 a shortcut. In practice $g$ is a neural-network surrogate for the simulator,
-which is what makes $N=2000$ evaluations per gradient step affordable.
+which is what makes $C\times N$ evaluations per gradient step affordable.
 
-The levels $0.25$, $0.50$ and $0.75$ are what the sources report. All $65$
-targets use this grid.
+\section{What the emulator must cover}
+\label{sec:emulator}
+
+The emulator sets a hard limit on what the fit can say, and the limit is a
+property of the training pool and not of the sampler.
+
+\textbf{Every parameter varies in the pool.} If the pool held a parameter fixed,
+the emulator never saw that parameter move. The likelihood along that direction
+is then not flat. It does not exist, and a $\theta$ that varies the parameter is
+an extrapolation. The pool must therefore vary all $P$ widths that the fit
+estimates.
+
+\textbf{The pool must cover the flanks.} The rows in \eqref{eq:Q} read the cloud
+at $0.25$ and $0.75$, not at the centre. A design that covers the centre of the
+prior well and the tails poorly gives its worst predictions exactly where the
+data enter.
+
+\textbf{Measure $\varepsilon$ where the fit reads the emulator.} The held-out
+residual of the training design is the wrong number to use. After the fit, draw
+from $F(\theta\mid\hat\phi)$, run those draws through the full simulator, and
+compare. If the error there exceeds the design error, the fit read the emulator
+outside its region and the run is not valid.
+
+\textbf{Report a resolution number per parameter.} With $P$ active inputs, a
+direction can look flat because the emulator did not resolve it. That reads the
+same as a flat likelihood and it is a different thing. A per-parameter
+sensitivity of the emulator, measured on the pool, separates the two.
 
 \section{The observation equation}
 \label{sec:obs}
 
-The model corrects its prediction in two ways before the comparison. One
-correction moves the centre. The other changes the width.
-\begin{equation}
-\widetilde Q_m(p) \;=\; \underbrace{Q_m(0.5)\;+\;\kappa_m\big(Q_m(p)-Q_m(0.5)\big)}_{\text{width correction}}
-\;+\;\underbrace{\eta_{c(m)}\;+\;\delta_m}_{\text{centre correction}} .
-\label{eq:corrected}
-\end{equation}
+The model corrects its prediction before the comparison. One correction moves the
+centre. The other changes the width.
+\begin{align}
+\widetilde Q^\ctr_m &\;=\; Q^\ctr_m(\phi) \;+\; \eta_{c(m)} \;+\; \delta_m ,
+\label{eq:corrctr}\\
+\widetilde Q^\wid_m &\;=\; Q^\wid_m(\phi) \;+\; \log\kappa_m .
+\label{eq:corrwid}
+\end{align}
 Then
 \begin{equation}
 y \;=\; \widetilde Q(\phi) \;+\; e,
@@ -276,74 +367,89 @@ y \;=\; \widetilde Q(\phi) \;+\; e,
 
 Each term answers one question about how the model can be wrong.
 
-$\eta_c$ absorbs a measurement offset that applies to a whole study.
-$\delta_m$ absorbs a systematic error of the model in the centre of observable
-$m$. $\kappa_m$ absorbs a systematic error of the model in the \emph{width} of
-observable $m$: it stretches the predicted quantiles about their own median, so
-$\kappa_m=1$ means no error and $\kappa_m=2$ means the model produces half the
-spread that the study reports.
+$\eta_c$ absorbs a measurement offset that applies to a whole study. $\delta_m$
+absorbs a systematic error of the model in the centre of observable $m$.
+$\kappa_m$ absorbs a systematic error of the model in the \emph{width} of
+observable $m$, so $\kappa_m=1$ means no error and $\kappa_m=2$ means the model
+produces half the spread that the study reports.
 
 Without $\kappa$ the model has no way to be wrong about a width. Only $\omega$
 could then close a gap in spread, and the fit would report a fault of the
 simulator as diversity between patients. Section \ref{sec:widthid} explains what
 separates the two.
 
-$\Sigma$ is the covariance of a quantile that comes from $n_c$ patients. For two
-rows of the same cohort, at observables $j,l$ and levels $p_a,p_b$:
+\subsection{How we build \texorpdfstring{$\Sigma$}{Sigma}}
+\label{sec:sigma}
+
+$\Sigma$ has three parts. Each part comes from a different cause.
 \begin{equation}
-\Sigma_{(j,p_a),(l,p_b)}
-\;=\;
-\frac{C_{jl}(p_a,p_b)\;-\;p_a\,p_b}
-     {n_c\;f_j\big(Q_j(p_a)\big)\;f_l\big(Q_l(p_b)\big)} .
+\Sigma \;=\; \Sigma_{\text{samp}} \;+\; \Sigma_{\text{MC}} \;+\;
+\diag(\varepsilon^2).
 \label{eq:Sigma}
 \end{equation}
-In this equation:
-\begin{itemize}
-\item $p_a$ and $p_b$ are the two probability levels.
-\item $n_c$ is the number of patients in the cohort.
-\item $f_j$ and $f_l$ are the densities of the two observables at those
-      quantiles. We estimate them by quantile spacing,
-      $f_m(Q_m(p))\approx 2h/\{Q_m(p+h)-Q_m(p-h)\}$ with $h=0.035$.
-\item $C_{jl}$ is a joint probability, given below.
-\end{itemize}
 
-If the two rows are for the same observable, then
-\begin{equation}
-C_{jj}(p_a,p_b)=\min(p_a,p_b).
-\end{equation}
-This value is exact.
+\textbf{$\Sigma_{\text{samp}}$: the cohort has a finite number of patients.} We
+do not use an asymptotic formula. We resample the model's own cloud:
+\begin{enumerate}
+\item Take the cloud at the plug-in value $\phi_0$.
+\item Draw $n_c$ patients from it with replacement.
+\item Compute the rows of cohort $c$ from those $n_c$ patients, with the same
+      quantile convention that the paper used.
+\item Repeat $B$ times. Take the sample covariance across the rows of that
+      cohort.
+\end{enumerate}
+This is exact at every $n_c$. It needs no density estimate and no bandwidth. It
+carries the dependence between observables of the same cohort exactly, because
+the cloud carries it. Rows of different cohorts get zero entries here, because
+the real patients differ. $\Sigma_{\text{samp}}$ is therefore block diagonal by
+cohort.
 
-If the two rows are for two different observables, then the model uses a
-Gaussian copula:
-\begin{equation}
-C_{jl}(p_a,p_b)=\Phi_2\big(z_{p_a},\,z_{p_b};\,\rho_{jl}\big),
-\qquad z_p=\Phi^{-1}(p),
-\end{equation}
-where $\Phi_2(\cdot,\cdot;\rho)$ is the standard bivariate normal distribution
-function and $\rho_{jl}$ is the normal-score correlation of the two observables
-across the cloud. Rows from different cohorts have a covariance of $0$.
+\begin{notebox}
+\textbf{The formula, if you want one.} For a sample of size $n$ from any
+continuous distribution $F$, the order statistic $X_{(k)}$ satisfies
+$F(X_{(k)})\sim\mathrm{Beta}(k,\,n{+}1{-}k)$ exactly, at every $n$. Two levels
+are jointly Dirichlet. So you can draw $u\sim\mathrm{Beta}(k,n{+}1{-}k)$, map
+through the cloud's own quantile function $\widehat F^{-1}_{m,\phi_0}$, and read
+the moments off the result. This is distribution free and it needs no
+asymptotics.
 
-Two further errors go on the diagonal of \eqref{eq:Sigma}. The first is the
-error of the emulator, $\varepsilon_m$, which is its held-out residual standard
-deviation for observable $m$. The second is the Monte Carlo error of
-$Q$, which comes from the finite cloud. We fold the second into the sample size,
-because a quantile from $n_c$ real patients compared against a quantile from $N$
-simulated patients behaves like one from $n_{\text{eff}}$ patients:
-\begin{equation}
-\frac{1}{n_{\text{eff}}} \;=\; \frac{1}{n_c} \;+\; \frac{1}{N},
-\qquad
-\Sigma \;\leftarrow\; \Sigma\big|_{n_c\to n_{\text{eff}}} \;+\; \diag(\varepsilon^2).
-\label{eq:neff}
-\end{equation}
+The bootstrap above is the same calculation, and it also reproduces whatever
+interpolation rule the paper applied. We prefer it for that reason.
+
+The earlier version of this note used the Bahadur covariance, which needs a
+density estimate $f_m$ at each quantile and a bandwidth $h=0.035$. That formula
+is an asymptotic approximation to the quantity above. It is poor at $n_c=6$, and
+some cohorts are that small.
+\end{notebox}
+
+\textbf{$\Sigma_{\text{MC}}$: the cloud is finite.} One cloud of $N$ patients
+makes the prediction for all $C$ cohorts. Its error is therefore the same error
+in every row, and not an independent error per cohort. We measure it directly.
+Draw $B'$ independent clouds of size $N$ at $\phi_0$. Compute the full $A$-vector
+$\widetilde Q$ for each cloud. Take the sample covariance across the $B'$ clouds.
+The result is dense across cohorts. Keep it as a low-rank matrix plus a diagonal
+when $B'<A$.
+
+Report $\tr\Sigma_{\text{MC}}/\tr\Sigma_{\text{samp}}$. A reader must be able to
+see whether the cloud mattered.
+
+Reduce this term before you model it. Two actions do most of the work. Raise
+$N$: the term falls as $N^{-1}$ and the emulator makes $N$ cheap. At
+$N=2\times10^4$ against the largest cohort at $n_c=702$, it adds about $3.5\%$.
+Stratify $z$ instead of drawing it independently: a scrambled Sobol sequence or
+a stratified normal sample cuts the quantile variance at the same $N$.
+
+\textbf{$\diag(\varepsilon^2)$: the emulator is not the simulator.} Section
+\ref{sec:emulator} says how to measure $\varepsilon$ and where.
 
 \begin{assumpbox}
-\textbf{$\Sigma$ does not change during the fit.} The terms $f_m$ and
-$\rho_{jl}$ depend on the population, so they depend on $\phi$. We evaluate them
-once, at a plug-in value $\phi_0$, and then hold them fixed. The method is
-therefore an estimating equation, not a full likelihood.
+\textbf{$\Sigma$ does not change during the fit.} The cloud that we resample
+depends on $\phi$. We evaluate $\Sigma$ once, at a plug-in value $\phi_0$, and
+then hold it fixed. The method is therefore an estimating equation, not a full
+likelihood.
 
-This is deliberate. If $\Sigma$ changes with $\phi$, then $\Sigma$ grows with
-$\sigma_u^2$, and the term $-\tfrac12\log\det\Sigma$ rewards a narrow
+This is deliberate. If $\Sigma$ changes with $\phi$, then $\Sigma$ grows with the
+population spread, and the term $-\tfrac12\log\det\Sigma$ rewards a narrow
 population whatever the fit quality. A test showed the size of the error. With
 cohorts of $20$, $40$ and $120$ patients, a live $\Sigma$ recovered $0.878$,
 $0.941$ and $0.963$ of the true spread. A fixed $\Sigma$ recovered $1.002$,
@@ -351,53 +457,209 @@ $0.999$ and $1.001$.
 
 The plug-in value is not critical. A change of $\phi_0$ by a factor of two moved
 the estimate by $0.14$ to $0.32$ sampling standard deviations.
+
+Take $\phi_0$ from the flat fit of section \ref{sec:flat}: the pair
+$(\hat\mu_{\text{flat}},\,\omega_0)$. That fit costs about $1/N$ of this one, and
+it is a better anchor than the prior mean.
 \end{assumpbox}
+
+\begin{assumpbox}
+\textbf{The frozen cloud gives a bias, not a noise.} For one fixed $z_{1:N}$ the
+Monte Carlo error is a fixed offset in $\widetilde Q$. It does not average away
+over the $A$ rows. $\Sigma_{\text{MC}}$ is correct on average over clouds, which
+is a hedge and not a cure.
+
+Measure the residual bias directly. Run the whole fit three times, with three
+different frozen clouds, and compare the posteriors. Section \ref{sec:checks}
+lists this as a required check.
+\end{assumpbox}
+
+\section{The flat special case}
+\label{sec:flat}
+
+The flat problem asks for one parameter vector, not a population. It fits the
+reported medians and it ignores the reported spreads. This model contains it,
+and the reduction is worth stating, because we run the flat fit first.
+
+\subsection{The reduction}
+
+Set $\omega=0$. Then $D_\omega L_R z_i = 0$ for every $i$, all $N$ patients
+collapse onto one point, and
+\begin{equation}
+Q^\ctr_m(\phi) \;=\; g_m(\mu).
+\end{equation}
+That is the flat forward map exactly.
+
+The width rows do not survive the same limit. $Q^\wid_m=\log 0$ is not defined.
+We remove them. The reduction is therefore a mask on the rows together with
+$\omega=0$, and not a value of a parameter alone.
+
+What remains is a small model:
+\begin{equation}
+y^\ctr_{m,c} \;=\; g_m(\mu) \;+\; \eta_c \;+\; \delta_m \;+\; e,
+\qquad e\sim\Ncal(0,\Sigma),
+\qquad \mu\sim\Ncal(\mu_0,\Sigma_1).
+\label{eq:flat}
+\end{equation}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\toprule
+ & Terms \\
+\midrule
+Unchanged & $\mu$, $\mu_0$, $\Sigma_1$, $\eta$, $\delta$, $\tau_\eta$,
+             $\tau_\delta$, $\varepsilon$ \\
+Removed & $\omega$, $s$, $u$, $\omega_0$, $\Mset$, $R$, $L_R$, $\kappa$,
+          $\kappa_0$, $\tau_\kappa$, $z_{1:N}$, $\Sigma_{\text{MC}}$ \\
+Sections that go & \ref{sec:spread}, \ref{sec:widthid}, \ref{sec:omega},
+                   \ref{sec:R}, \ref{sec:emit} \\
+Rows & $67$ centre rows, against $118$ \\
+Forward passes per gradient step & $1$, against $C\times N$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Two parts of this document carry over word for word. Section \ref{sec:alias} on
+the aliasing of $\eta$ and $\delta$ describes the map from observables to
+cohorts, and that map does not change. Section \ref{sec:repeat} on the CD8 split
+is the same, and it buys the same thing.
+
+\subsection{Three things that the mask does not do}
+
+\begin{assumpbox}
+\textbf{The estimand is different, and one symbol hides it.} Flat $\mu$ is the
+parameter vector that reproduces the reported medians. Population $\mu$ is the
+centre of the population. For a nonlinear $g$ these differ, because
+$g(\mu)\neq Q^\ctr(\mu,\omega)$ when $\omega\neq 0$. The difference is exactly
+the Jensen gap of section \ref{sec:centre}.
+
+So do not carry $\hat\mu_{\text{flat}}$ into the population model as a centre,
+and do not read the population $\hat\mu$ as a flat calibration. Measure the gap
+first, as section \ref{sec:centre} requires, and then translate.
+\end{assumpbox}
+
+\textbf{$\Sigma$ must come from another source.} Section \ref{sec:sigma}
+resamples the model's cloud. The flat model has no cloud to resample. It has a
+better source: the spread that the paper itself reports. The standard error of a
+reported median follows from that spread and from $n_c$, with no plug-in and no
+simulation.
+
+Note the reversal. In the population model the interquartile range is signal. In
+the flat model the same number is only noise calibration. The two fits therefore
+use the same published table in two different ways, and a target that reports no
+spread is weaker in both.
+
+\textbf{The eligibility rule stops working.} A filter on one point does nothing.
+The flat model therefore has no cohort device at all, and $\eta_c$ carries every
+difference between studies on its own. The assumption box of section
+\ref{sec:cohort} applies to the flat model without any qualification: the assay
+story is asserted, and nothing in the flat fit can test it.
+
+\subsection{Why we run it first}
+
+\textbf{It is a test of everything except the population layer.} The prior on
+$\mu$, the forward map, the corrections, the alias structure and the sampler all
+run in \eqref{eq:flat}, at about $1/N$ of the cost. A fault in any of them is a
+fault that the population fit would also have. Find it in the cheap model.
+
+\textbf{It supplies the plug-in.} Section \ref{sec:sigma} holds $\Sigma$ at a
+value $\phi_0$. Take $\phi_0=(\hat\mu_{\text{flat}},\,\omega_0)$.
+
+\textbf{It measures the Jensen gap for free.} Compare $g(\hat\mu_{\text{flat}})$
+against $Q^\ctr$ evaluated at the same centre with $\omega_0$. That is the number
+that section \ref{sec:centre} asks for, and the flat fit is where to get it.
+
+\eqref{eq:flat} is the population code with a mask, and it is not the neural
+posterior estimator that answers the flat question elsewhere in this package.
+The two routes take the same data to the same estimand. They do not share a
+likelihood, a prior on the corrections, or a sampler. A disagreement between them
+is informative, and it is not a defect by itself.
 
 \section{The priors}
 
 \subsection{The centre}
+\label{sec:centre}
 
 \begin{equation}
-\mu_j \;\sim\; \Ncal\big(\mu_{0j},\;\tau_\mu^2\big),
-\qquad j=1,\dots,P,
-\qquad \tau_\mu=0.5 .
+\mu \;\sim\; \Ncal\big(\mu_0,\;\Sigma_1\big).
+\label{eq:muprior}
 \end{equation}
-The vector $\mu_0$ is the mean of the stage-1 composite prior on the log scale.
-We estimate it from $2\times10^4$ draws.
+$\mu_0$ and $\Sigma_1$ are the mean and the covariance of the stage-1 composite
+prior, on the log scale. Where the stage-1 object is a copula, use its own
+\texttt{log\_prob} as the prior term and skip the Gaussian approximation.
 
-The value $\tau_\mu$ measures how well we know the centre of the population. It
-shrinks as data accumulate. It is a different quantity from $\omega$, which is
-the variability between patients and does not shrink. To confuse the two is the
-standard-error-versus-standard-deviation error, one level up in the hierarchy.
+Earlier versions used $\Sigma_1=\tau_\mu^2 I_P$ with $\tau_\mu=0.5$. That gave a
+parameter constrained to within $0.05$ and a parameter constrained to within
+$1.5$ the same width, and it discarded the stage-1 correlations. Both are
+available at no cost, so both are now used.
+
+The width of \eqref{eq:muprior} measures how well we know the centre of the
+population. It shrinks as data accumulate. It is a different quantity from
+$\omega$, which is the variability between patients and does not shrink. To
+confuse the two is the standard-error-versus-standard-deviation error, one level
+up in the hierarchy.
 
 \begin{assumpbox}
-\textbf{Known limitation.} The value $\tau_\mu$ is one number for every
-parameter. A parameter that stage 1 determined to within $0.05$ and a parameter
-constrained only to within $1.5$ therefore get the same width. The stage-1
-correlations do not enter the prior on $\mu$ at all. The per-parameter widths
-$s_j$ are available and unused. The principled choice is to replace
-$\tau_\mu^2 I_P$ by the stage-1 covariance itself.
+\textbf{Two conditions on $\mu_0$, and both are checkable.}
+
+\emph{The Jensen gap.} Stage 1 estimated a parameter that reproduces a reported
+summary. Under a nonlinear multivariate $g$, that parameter is not the parameter
+of the median patient. So $g(\mu_0)$ and $Q^\ctr(\mu_0,\omega_0)$ differ.
+Measure the difference per observable and compare it against $\tau_\delta$. If
+it is small, record the number and continue. If it is not small, correct $\mu_0$
+by one offline solve: find the shift $c$ with
+$\mathrm{median}_i\{g(\mu_0+c+D_{\omega_0}L_R z_i)\}=g(\mu_0)$. That costs one
+forward pass on the cloud.
+
+\emph{Double use of the data.} \eqref{eq:muprior} is a prior on $\mu$ only if the
+stage-1 sources are disjoint from the $C$ cohorts. If any publication feeds both,
+$\mu_0$ counts that data twice and the posterior on $\mu$ comes out too narrow.
+The source lists make this checkable, and it has not yet been checked.
 \end{assumpbox}
 
 \subsection{The spread}
+\label{sec:spread}
 
+The widths split into two sets. A parameter is in $\Mset$ when a source measured
+its spread across biological units, in the sense of section \ref{sec:omega}. At
+present $|\Mset|=9$.
+
+For a measured parameter, $j\in\Mset$:
 \begin{equation}
-\log\omega_j \;\sim\; \Ncal\big(\log\omega_{0j},\;\tau_\omega^2\big),
-\qquad j=1,\dots,P,
-\qquad \tau_\omega=0.5 .
+\log\omega_j \;\sim\; \Ncal\big(\log\omega_{0j},\;\tau_{\omega,j}^2\big),
+\qquad
+\tau_{\omega,j}^2 \;=\; \frac{1}{2(n_j-1)+\tau^{-2}} .
+\label{eq:omegameas}
+\end{equation}
+The width is the posterior width that the shrinkage \eqref{eq:shrink} already
+implies. A measured parameter takes no global multiplier.
+
+For an assumed parameter, $j\notin\Mset$:
+\begin{equation}
+\log\omega_j \;=\; \log\omega_{0j} \;+\; s \;+\; u_j,
+\qquad
+s\sim\Ncal(0,\tau_s^2),
+\qquad
+u_j\sim\Ncal(0,\tau_\omega^2),
+\qquad
+\sum_{j\notin\Mset} u_j = 0 .
 \label{eq:omegaprior}
 \end{equation}
-The centre $\omega_0$ comes from the four-layer construction in section
-\ref{sec:omega}.
+We impose the constraint by centring: $u = u_{\text{raw}} - \bar u_{\text{raw}}$.
 
-The value $\tau_\omega$ controls how far the data can move the spread away from
+The split is the point. $s$ is one number that moves every assumed width
+together. $u$ holds the pattern and has $P-|\Mset|-1$ free values. Section
+\ref{sec:widthid} needs the two to be separate quantities, because $s$ is the one
+that competes with $\kappa_0$ and $u$ is not.
+
+The value $\tau_\omega$ controls how far the data can move one width away from
 its anchor. On the log scale, $\tau_\omega=0.5$ gives a central $95\%$ interval
 of about $[0.37,\,2.72]$ for each parameter.
 
-This choice is not harmless. The data constrain at most about $50$ functions of
-$\Omega$ (section \ref{sec:whatdataconstrain}), against $P=271$ free values of
-$\omega$. Most parameters therefore return their prior. A large $\tau_\omega$
-reports a wide population that no study measured.
+This choice is not harmless. The data give at most $M_w=49$ constraints on
+$\Omega$ (section \ref{sec:whatdataconstrain}), against $P=271$ widths. Most
+parameters therefore return their prior. A large $\tau_\omega$ reports a wide
+population that no study measured.
 
 \subsection{The corrections}
 
@@ -409,42 +671,300 @@ reports a wide population that no study measured.
 \delta_{\text{raw}} &\sim\Ncal(0,I_M), &
 \log\tau_\delta &\sim\Ncal(\log 0.15,\,1),\\
 \log\kappa &= \log\kappa_0 + \tau_\kappa\,\kappa_{\text{raw}}, &
-\kappa_{\text{raw}} &\sim\Ncal(0,I_M), &
+\kappa_{\text{raw}} &\sim\Ncal(0,I_{M_w}), &
 \log\tau_\kappa &\sim\Ncal(\log 0.15,\,1),
 \end{align}
-with $\log\kappa_0\sim\Ncal(0,\,0.5^2)$. These are non-centred forms. The centre
-$0.15$ matches the floor of the translation-relevance rubric used at stage 1.
+with $\log\kappa_0\sim\Ncal(0,\,\tau_s^2)$. These are non-centred forms. The
+centre $0.15$ matches the floor of the translation-relevance rubric used at
+stage 1.
 
-The width correction splits into two parts on purpose. $\kappa_0$ is one number
-for every observable. $\kappa_m$ then departs from it by $\tau_\kappa$. Section
-\ref{sec:widthid} uses that split.
+The prior on $\log\kappa_0$ takes the same width as the prior on $s$. The two
+compete for one direction, and giving them the same width states that we have no
+preference between them before the data arrive.
+
+\subsection{The cohort terms}
+\label{sec:cohort}
+
+Studies do not recruit the same patients. A cohort of resectable patients and a
+cohort of metastatic patients are not two samples from one distribution, so the
+claim that one $F$ generates all $C$ cohorts is a real assumption and not a
+formality. This subsection says what the model does about it, and what it
+deliberately does not do.
+
+All but one observable belong to exactly one cohort. Section \ref{sec:alias}
+shows that a \emph{free} per-cohort term on the observation is therefore aliased
+with $\delta$, exactly, for those observables. Only two things escape that: a
+term that costs no parameter, or an observable that appears in more than one
+cohort. Section \ref{sec:repeat} is the second case.
+
+\subsubsection*{The eligibility rule}
+
+Cohort $c$ recruited patients that satisfy some criterion. Write $\mathcal{E}_c$
+for the region of observable space that the criterion defines. The cohort is then
+the same population under a condition, and we read its quantiles from the part of
+the cloud that meets the condition:
+\begin{equation}
+\widehat F_{m,\phi,c}(t) \;=\;
+\frac{\sum_i w^{(c)}_i\,\mathbf 1\{x_{im}\le t\}}{\sum_i w^{(c)}_i},
+\qquad
+w^{(c)}_i \;=\; \mathbf 1\{x_i\in\mathcal{E}_c\}.
+\label{eq:elig}
+\end{equation}
+Then $Q^\ctr_{m,c}$ and $Q^\wid_{m,c}$ come off that weighted distribution
+function. At the boundary, use a smooth weight
+$w^{(c)}_i=\sigma\{(x_{ik}-a)/h\}\,\sigma\{(b-x_{ik})/h\}$ rather than a hard
+indicator, for the reason that the note in section \ref{sec:patient} gives. The
+bounds $a$ and $b$ come from the methods section of the paper.
+
+The device has three properties, and the second one is the reason to want it.
+
+\textbf{It costs no parameter.} The bounds are read, not estimated. There is
+nothing for $\delta_m$ to trade against, so the aliasing of section
+\ref{sec:alias} does not engage at all.
+
+\textbf{It moves the width, and not only the centre.} $\eta_c$ shifts the median
+of a cohort and can do nothing else. A truncation changes the median \emph{and}
+the interquartile range, for the observable that carries the criterion and,
+through the population correlations, for the other observables of that cohort. It
+is the only device in this model that can make one cohort narrower than another.
+Section \ref{sec:widthid} is entirely about a shortfall in width, so this matters
+more than the shift does.
+
+\textbf{It is the literal description of what the study did.} The population does
+not change. The study observed a part of it and reported which part.
+
+\begin{assumpbox}
+\textbf{Three limits, and the first one is not yet measured.}
+
+\emph{Most criteria cannot be expressed.} Equation \eqref{eq:elig} needs a
+criterion that is a region of \emph{observable} space. Many are not.
+
+\begin{center}\small
+\begin{tabularx}{0.93\textwidth}{@{}Xl@{}}
+\toprule
+Criterion & Usable \\
+\midrule
+Tumour diameter between two values & yes, if burden is an observable \\
+Resectable against metastatic & in part, if it maps to a burden threshold \\
+Performance status, age & no, the model does not represent them \\
+Treatment naive & no, that is a different scenario \\
+Mutation status & no, that is a covariate on parameters \\
+Biopsy accessible & no, there is no model correlate \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Nobody has counted how many of the $29$ cohorts state a criterion in the first
+group. That count is the measure of how much this device can carry, and it is
+unknown. Make the count before relying on it. If it is small, then $\eta_c$
+carries almost every difference between studies, and assumption (vi) carries the
+model.
+
+\emph{An inferred criterion is not free.} A study that used resection specimens
+selected on resectability, whether or not it says so. A filter applied on that
+basis is an assumption in the costume of a reported fact. Record which rules were
+read and which were inferred, and treat the inferred ones as assumptions.
+
+\emph{The cross-observable part inherits $R$.} A filter on observable $k$ moves
+observable $m$ only through their dependence across patients, which comes from
+$g$ and from $R$. Section \ref{sec:R} says $R$ is assumed and close to the
+identity. So the effect on the filtered observable is sound, and the effect on
+the other observables of the cohort is real but its size is assumed.
+\end{assumpbox}
+
+\textbf{Meta-regression, once the attribute table exists.} Replace the free
+$\eta_c$ by $\eta_c = Z_c\beta$, where $Z_c$ holds cohort attributes: stage, line
+of therapy, sample type, assay platform, region. The free count then falls from
+$C$ to $\dim\beta$, and cohorts that share attributes share the effect. The
+coefficients pool across all $C$ cohorts, which is what makes them estimable. We
+do not have the table yet, so $\eta_c$ stays free for now.
+
+The same device can be moved one level down, onto the parameters:
+$\mu_c=\mu+\Gamma z_c$, with $\Gamma$ pooled across cohorts and each column tied
+to a declared mechanism, such as stage moving a growth rate. That is the ordinary
+covariate model of an NLME analysis. It is the correct upgrade path, and it is
+also gated on the attribute table. Declare the links one at a time and from
+biology. Do not fit a basis.
+
+\begin{assumpbox}
+\textbf{What $\eta_c$ asserts, and what we cannot test.} An additive offset on
+every log readout of one study is an \emph{assay calibration} story: this
+platform reads high by a constant factor. A cohort-level shift in the parameters
+would be a \emph{biology} story: this study recruited different patients. The two
+predict the same thing for a cohort with one observable, and most cohorts have
+about two. These data cannot separate them.
+
+The model asserts the assay story by construction. That is a choice, it is not a
+finding, and any claim about $\mu$ inherits it. Section \ref{sec:data} lists the
+data that would let the two be told apart.
+\end{assumpbox}
+
+\begin{notebox}
+\textbf{Why there is no cohort random effect on the parameters.} An earlier
+version carried $\mu_c=\mu+Sb_c$, with $b_c\sim\Ncal(0,\psi^2I_q)$ and $S$ a
+fixed $P\times q$ loading. It was removed.
+
+The construct itself is ordinary: a cohort random effect is the second level of
+any NLME model. The failure was $S$. Its columns must say which directions in
+parameter space a cohort may move along, and no evidence specifies them. Choosing
+them by hand encodes a guess as a structural constraint. Choosing $S=I_P$ adds a
+second variance component that competes with $\omega$ and that these data cannot
+resolve.
+
+The decisive objection is one of consistency. Section \ref{sec:whatdataconstrain}
+deletes the basis matrix $W$, and the reason given is that a low-rank loading in
+parameter space, whose columns we chose rather than measured, is not a biological
+statement. $S$ is the same kind of object and it fails the same test. It was
+introduced three sections after its twin was rejected.
+
+The identification was thin in any case. A cohort holds about two observables, so
+two rows had to separate a $q$-dimensional mechanistic shift from a free
+$\delta_m$ per observable plus a shared $\eta_c$. Removing $b_c$, $S$, $\psi$ and
+$q$ costs nothing that was ever identified. The covariate model above recovers
+the same intent with coefficients that pool, and the eligibility rule recovers
+part of it for free.
+\end{notebox}
+
+\subsection{The repeated endpoint}
+\label{sec:repeat}
+
+One endpoint does appear more than once. The pooled CD8 target combines three
+cohorts into one row. Split it back out. This is the single most valuable change
+in this document, and it is extraction work rather than modelling work.
+
+Write $m^\ast$ for that observable and $c_1,c_2,c_3$ for its cohorts. The three
+centre rows are
+\begin{equation}
+\widetilde Q^\ctr_{m^\ast,c_k} \;=\; Q^\ctr_{m^\ast}(\phi) \;+\; \eta_{c_k} \;+\;
+\delta_{m^\ast},
+\qquad k=1,2,3 .
+\end{equation}
+The three rows share one $\delta_{m^\ast}$ and differ only in $\eta$. Four things
+follow.
+
+\textbf{Two contrasts of $\eta$ become identified.} The differences
+$\eta_{c_1}-\eta_{c_2}$ and $\eta_{c_1}-\eta_{c_3}$ are read directly from the
+data. Only the mean of the three stays aliased with $\delta_{m^\ast}$. This is
+the first identified study effect in the model.
+
+\textbf{$\tau_\eta$ gets one direct measurement.} Two contrasts are a weak
+estimate of a scale, and they are the only estimate available. $\tau_\eta$ then
+sets how much of every \emph{other} residual in the model goes to a study effect
+rather than to a model error. The value of these two contrasts therefore reaches
+far past their own three rows.
+
+\textbf{The pooled width was too large.} A pool of three cohorts with different
+centres is a mixture. Its interquartile range holds the between-patient spread
+\emph{and} the spread of the three centres. The pooled row therefore fed
+$\omega$ with a width that no single cohort has. The shortfall figure of section
+\ref{sec:widthid}, $0.62$ of the observed interquartile range, is biased by this
+in the direction that makes the simulator look narrower than it is. Recompute it
+after the split.
+
+\textbf{The split is a variance-components decomposition.} Within a sub-cohort
+the width is between-patient variability. Across the three sub-cohorts the
+medians differ by a study effect plus a sampling error. This is the one place in
+the whole dataset where both quantities are visible for the same endpoint. It is
+also a direct test of $\Sigma_{\text{samp}}$: the disagreement of the three
+medians must match what the bootstrap of section \ref{sec:sigma} predicts.
+
+Two conditions apply. The sources must report a per-cohort $n$, median and
+interquartile range, not only the pool. And the three sub-cohorts are small, so
+the asymptotic quantile covariance would have been a poor description of them.
+The bootstrap form of $\Sigma_{\text{samp}}$ is what makes the split affordable.
+
+If the three sub-cohorts report a centre only, then $A=116$ rather than $118$,
+and the width argument above still holds for the pooled row that they replace.
+
+Search the remaining sources for the same pattern. Every further repeated
+endpoint moves section \ref{sec:alias} further from a prior structure and closer
+to a measurement.
+
+One further question is worth asking of these three cohorts alone. Do any of them
+report a second observable? If they do, then the three cohorts hold a repeated
+endpoint \emph{and} more than one readout, which is the only configuration in the
+whole set that could separate an assay effect from a recruitment effect. That is
+the condition in assumption (vi), and this is the one place where it might
+already be satisfied. Check it before accepting that assumption as unavoidable.
 
 \subsection{What separates a narrow model from a narrow population}
 \label{sec:widthid}
 
-Both $\kappa$ and $\omega$ can widen a predicted interquartile range, so we must
-say what tells them apart.
+Both $\kappa$ and $\omega$ can widen a predicted interquartile range. The rows in
+\eqref{eq:corrwid} make the competition exact and one dimensional, so we can
+state it rather than argue about it.
 
-$\kappa_0$ is one number that stretches every observable by the same factor.
-$\omega$ has $P$ entries, and each one widens a different set of observables,
-through the sensitivities $J_m$. A uniform shortfall in width is therefore
-cheap under $\kappa_0$ and expensive under $\omega$, because no single parameter
-feeds every observable. A shortfall with structure is the reverse.
+To first order the variance of observable $m$ across patients is
+\begin{equation}
+\mathrm{Var}[x_m] \;\approx\; \sum_{j,k} J_{mj}J_{mk}R_{jk}\,\omega_j\omega_k,
+\qquad J_m=\partial g_m/\partial\vartheta .
+\end{equation}
+Substitute \eqref{eq:omegaprior}. Every assumed width carries the same factor
+$e^{s}$. Write $\lambda_m$ for the share of that variance that comes from the
+measured set $\Mset$. Then
+\begin{equation}
+Q^\wid_m \;\approx\; \text{const}_m \;+\; (1-\lambda_m)\,s,
+\qquad\text{so}\qquad
+\widetilde Q^\wid_m \;\approx\; \text{const}_m \;+\; (1-\lambda_m)\,s \;+\;
+\log\kappa_0 \;+\; \tau_\kappa\kappa_{\text{raw},m}.
+\label{eq:ridge}
+\end{equation}
+
+Three statements follow, and each one is checkable.
+
+\textbf{If $\lambda_m=0$ for every observable, then $s$ and $\log\kappa_0$ are
+aliased exactly, to first order.} Only their sum appears. The prior then decides
+the split, and nothing else does. This is the honest reading of the current
+model.
+
+\textbf{The break is $\lambda_m$, and it must vary across observables.} A
+measured width takes no $s$, by \eqref{eq:omegameas}. An observable driven mostly
+by $\Mset$ therefore reads $\log\kappa_0$ almost directly, and the difference
+between a high-$\lambda$ observable and a low-$\lambda$ one separates the two.
+Compute $\lambda_m$ for all $M_w$ observables and report the spread before you
+quote the split. With $|\Mset|=9$ the values may all be near zero, in which case
+the split is a prior statement and must be reported as one.
+
+\textbf{The earlier argument was wrong in a way that mattered.} It compared
+$\kappa_0$ against one $\omega_j$ and concluded that a uniform shortfall is cheap
+under $\kappa_0$, because no single parameter feeds every observable. A uniform
+rescaling of \emph{all} widths does feed every observable, exactly. What
+separated the two was the prior mass: a common shift of $P$ independent
+$\log\omega_j$ costs $P(\log c)^2/2\tau_\omega^2$, which grows with $P$. The
+split therefore depended on how many inert parameters stayed in the vector.
+Removing $200$ unused parameters would have moved it. The form
+\eqref{eq:omegaprior} removes that dependence, because the global direction is
+now one parameter with one prior width $\tau_s$.
 
 The current model produces about $0.62$ of the observed interquartile range at
-the median observable. Under this form, that uniform part goes to $\kappa_0$,
-and $\omega$ moves only for the pattern that remains.
+the median observable. Under \eqref{eq:ridge} that uniform shortfall lands on the
+ridge $s+\log\kappa_0$. Report the joint posterior of $(s,\log\kappa_0)$ as a two
+dimensional figure. A ridge is a result. A marginal that hides a ridge is not.
 
-Per observable, the split is not identified. Each observable has three anchor
-rows. $\delta_m$ takes the centre and $\kappa_m$ takes the width, which leaves
-one degree of freedom. So $\tau_\delta$ and $\tau_\kappa$ carry the separation,
-exactly as in section \ref{sec:alias}.
+Recompute the $0.62$ after the CD8 split of section \ref{sec:repeat}. A pooled
+cohort reports the width of a mixture, which is wider than the width of any
+component. Any pooled row therefore pushes this figure down, and it does so for
+a reason that has nothing to do with the simulator.
 
-\section{How we build \texorpdfstring{$\omega$}{omega}}
+A third action attacks the same problem from the data side. With three quantile
+levels, $\kappa_m$ copies any width change exactly, because it stretches the
+prediction about its own median. With five levels, or a reported range, or a
+reported mean beside a reported median, a change in $\omega$ changes the
+\emph{shape} of the pushforward and $\kappa$ cannot copy it. Every extra level
+that a source gives is a direct attack on this aliasing, and it costs nothing but
+extraction work.
+
+Per observable the split is still not identified. Each observable with a width
+row has one centre row and one width row. $\delta_m$ takes the centre and
+$\kappa_m$ takes the width, which leaves nothing. So $\tau_\delta$ and
+$\tau_\kappa$ carry the separation, exactly as in section \ref{sec:alias}.
+
+\section{How we build \texorpdfstring{$\omega_0$}{omega0}}
 \label{sec:omega}
 
 The vector $\omega_0$ is the prior centre for the marginal widths in
-\eqref{eq:omegaprior}. We build it in four layers. Each layer replaces the layer before it.
+\eqref{eq:omegameas} and \eqref{eq:omegaprior}. We build it in four layers. Each
+layer replaces the layer before it.
 
 \begin{enumerate}[label=\textbf{L\arabic*.}]
 \item \textbf{Default.} $\omega_j=0.35$ for every parameter. This is a
@@ -457,14 +977,14 @@ The vector $\omega_0$ is the prior centre for the marginal widths in
       belief about it.
 \item \textbf{Data.} A submodel target can report a spread across biological
       units. We then combine that spread with the value from L1 to L3. We do not
-      replace it.
+      replace it. A parameter that reaches L4 enters the set $\Mset$.
 \end{enumerate}
 
 For L4, the sampling standard deviation of a log spread from $n$ units is about
 $\{2(n-1)\}^{-1/2}$. The data therefore carry precision $2(n-1)$ against a
 class-prior precision $\tau^{-2}$. This gives
 \begin{equation}
-\log\omega_j \;=\;
+\log\omega_{0j} \;=\;
 \frac{2(n_j-1)\,\log\hat s_j \;+\; \tau^{-2}\,\log\omega^{(0)}_j}
      {2(n_j-1)\;+\;\tau^{-2}},
 \qquad \tau=0.5 .
@@ -472,7 +992,9 @@ class-prior precision $\tau^{-2}$. This gives
 \end{equation}
 In this equation, $\hat s_j$ is the spread that the source reports, $n_j$ is the
 number of biological units behind it, and $\omega^{(0)}_j$ is the value from L1
-to L3. The data become stronger than the prior at about $n=3$.
+to L3. The data become stronger than the prior at about $n=3$. The precision in
+the denominator is also the precision that \eqref{eq:omegameas} uses as the prior
+width for $j\in\Mset$.
 
 A parameter with no value of $n_j$ keeps $\omega^{(0)}_j$. A spread with no
 sample size carries no information.
@@ -489,6 +1011,11 @@ $178$ parameters, but for $145$ of them the reported spread is numerically equal
 to the epistemic posterior width. Without the gate, the model would take those
 $145$ epistemic widths as between-patient spread. At present the gate admits $9$
 of $271$ parameters. The other $262$ come from L1 to L3.
+
+The gate now does a second job. $\Mset$ is exactly the set that L4 admits, and
+section \ref{sec:widthid} needs $\Mset$ to be non-empty to identify $\kappa_0$
+at all. Every parameter that the gate admits therefore buys identification as
+well as a width. Widening the gate to buy identification would defeat it.
 \end{assumpbox}
 
 \section{Where \texorpdfstring{$R$}{R} comes from}
@@ -534,21 +1061,33 @@ Better candidates for $R$ exist and slot into the same place:
 \item a shrunk form $(1-\lambda)I + \lambda\,\Corr(\Cov_\pi[\vartheta])$.
 \end{itemize}
 Because $R$ enters only through \eqref{eq:patient}, a comparison across these
-choices is a sensitivity analysis and not a redesign. Section \ref{sec:assump}
-records that this comparison has not yet been run.
+choices is a sensitivity analysis and not a redesign. Section \ref{sec:checks}
+lists that comparison, and it has not yet been run.
+
+\begin{notebox}
+\textbf{A correlation is not a constraint.} Some parameters partition a conserved
+total, so their values must satisfy an identity. $R$ cannot state an identity. A
+correlation of $-1$ makes two parameters move together on a line, but the line is
+not the constraint surface, and a lognormal draw does not sit on it. Only a
+reparameterisation can enforce such a constraint. Section \ref{sec:emit} filters
+the draws that break one, which detects the problem and does not fix it.
+\end{notebox}
 
 \section{What the data constrain}
 \label{sec:whatdataconstrain}
 
 The data constrain $\Omega$ only through the width of an observable
-distribution. To first order, the spread of observable $m$ across patients is
-$J_m\Omega J_m\Tr$, where $J_m=\partial g_m/\partial\vartheta$. Each observable
-that reports a scale therefore gives one linear function of $\Omega$.
+distribution. To first order the spread of observable $m$ across patients is
+$J_m\Omega J_m\Tr$. Each width row therefore gives one linear function of
+$\Omega$.
 
 Published summaries are marginal, one observable at a time. The cross terms
 $J_j\Omega J_l\Tr$ are never observed. Of the $65$ targets, $49$ report a usable
-scale, and every one uses the same three probability levels. At most about $50$
-functions of $\Omega$ are therefore identified.
+scale. There are therefore at most $49$ constraints on $\Omega$, and $\kappa$
+takes some of them. There are $51$ width rows, because the CD8 target of section
+\ref{sec:repeat} contributes three. Rows and constraints are different counts:
+those three rows measure the same function of $\Omega$ three times, which buys
+precision and not a new direction.
 
 Two consequences follow.
 
@@ -579,7 +1118,7 @@ directions that the \emph{measurements} resolve. A correlation that appears
 because a combination happened to be observable is not a biological statement.
 Third, the truncation to $K$ directions limited how much model error the fit
 could report as patient diversity. That is protection by restriction and not by
-correctness; assumption (iv) names the correct fix.
+correctness; section \ref{sec:widthid} now names the correct fix.
 
 The present form keeps what the rotation was supposed to deliver, namely the
 prior correlations, and states them as an explicit and replaceable object.
@@ -588,29 +1127,42 @@ prior correlations, and states them as an explicit and replaceable object.
 \section{The corrections are aliased}
 \label{sec:alias}
 
-Every observable belongs to exactly one cohort. We measured this: all $65$
-observables appear in one cohort each, and none appears twice. That fact has a
-consequence that the notation hides.
+Sixty-four of the $65$ observables belong to exactly one cohort. Only the CD8
+target of section \ref{sec:repeat} appears in more than one. That fact has a
+consequence that the notation hides, and it applies to all but one observable.
 
 Take a cohort $c$ that holds observables $m_1,\dots,m_k$. Equation
-\eqref{eq:corrected} uses only the sum $\eta_c+\delta_{m_i}$. Add a constant to
+\eqref{eq:corrctr} uses only the sum $\eta_c+\delta_{m_i}$. Add a constant to
 $\eta_c$, subtract the same constant from every $\delta_{m_i}$ in that cohort,
 and the likelihood does not change. $\eta$ and $\delta$ are therefore aliased,
 exactly, and only their priors separate them.
 
+The eligibility rule of section \ref{sec:cohort} is the one cohort device that
+escapes this. It enters before $g$ and it costs no parameter, so there is nothing
+for $\delta$ to trade against. A cohort effect that carries a free parameter does
+not escape, whichever level it acts on, which is why section \ref{sec:cohort}
+removed the parameter version rather than tuning it.
+
 \begin{assumpbox}
 \textbf{What $\eta$ is, and is not.} In an ordinary meta-analysis, a study
-effect is identified because the same endpoint appears in several studies. No
-endpoint appears twice here. $\eta_c$ is therefore not an identified study
-effect.
+effect is identified because the same endpoint appears in several studies. One
+endpoint does that here, and it gives two contrasts. For the other $26$ cohorts
+$\eta_c$ is not an identified study effect.
 
-Read it instead as a correlation structure on the corrections: the model states
-that the errors within one study share a common part. That claim has content,
-and it is a reasonable claim, but it is a prior structure and not a measurement.
+Read those as a correlation structure on the corrections: the model states that
+the errors within one study share a common part. That claim has content, and it
+is a reasonable claim, but it is a prior structure and not a measurement.
+
+What changes with the CD8 split is the \emph{scale}. $\tau_\eta$ is now measured
+rather than asserted, and $\tau_\eta$ decides how much of every other cohort's
+residual is a study effect. Two contrasts are a thin basis for that, so report
+the posterior for $\tau_\eta$ beside any statement that depends on it. Section
+\ref{sec:cohort} names the two routes to more: further repeated endpoints, or a
+cohort attribute table.
 \end{assumpbox}
 
-The count is worth stating plainly. The model has $65$ values of $\delta$, $65$
-of $\kappa$ and $27$ of $\eta$, against $R=163$ anchor rows. Sixteen observables
+The count is worth stating plainly. The model has $65$ values of $\delta$, $49$
+of $\kappa$ and $29$ of $\eta$, against $A=118$ anchor rows. Sixteen observables
 have a single anchor row each, because their source reports a centre only; for
 those, $\delta_m$ absorbs the residual exactly.
 
@@ -621,8 +1173,119 @@ $\tau_\delta$ and $\tau_\kappa$ do the work, and they are estimated from how
 much the corrections disagree with each other.
 
 This is a partial-pooling argument and it is sound. But the model does not have
-$163$ independent measurements of the population, and no report should suggest
+$118$ independent measurements of the population, and no report should suggest
 that it does.
+
+\section{How to emit the population}
+\label{sec:emit}
+
+The fit gives a posterior over $\phi$. A virtual population is a set of patients.
+The rule that turns one into the other is part of the model, and getting it wrong
+throws away the distinction that section \ref{sec:centre} was careful to make.
+
+The object that carries both quantities is the posterior predictive over
+patients:
+\begin{equation}
+p(\theta_{\text{new}}\mid \text{data})
+\;=\;\int F(\theta\mid\phi)\;p(\phi\mid\text{data})\;d\phi .
+\label{eq:predictive}
+\end{equation}
+Its spread holds the variability between patients \emph{and} our uncertainty
+about the population. Do not collapse the two by accident. We emit three
+products, and each one carries its own label.
+
+\textbf{The reference population.} Draw at one $\hat\phi$: the posterior mean of
+$\mu$ and the posterior median of $\omega$. Its spread is between-patient
+variability only. Use it when one population must be shipped, and say on the
+label that it carries no uncertainty about $\phi$.
+
+\textbf{The ensemble.} Keep $S$ populations, one per posterior draw of $\phi$.
+Run the downstream study once per population. Report the spread of the
+\emph{results} across populations. This keeps the two variances separate in the
+answer, and it is the default deliverable.
+
+\textbf{The pooled predictive.} Equation \eqref{eq:predictive} itself: draw
+$\phi^{(s)}$, then draw patients from $F(\cdot\mid\phi^{(s)})$, then pool. It is
+wider than the reference population. Use it only when the decision needs one
+population that is right on average.
+
+Four rules apply to all three.
+
+\begin{enumerate}
+\item \textbf{Draw fresh $z$.} The $N$ frozen patients are a device that makes
+      the gradient work. They are not a population. Draw new $z$ for the
+      deliverable, at whatever size the deliverable needs.
+\item \textbf{Carry the corrections forward.} For an observable that the fit
+      used, apply $\delta_m$ and $\kappa_m$ to the prediction. For a \emph{new}
+      observable, draw $\delta_{\text{new}}\sim\Ncal(0,\tau_\delta^2)$ and
+      $\log\kappa_{\text{new}}\sim\Ncal(\log\kappa_0,\tau_\kappa^2)$ from the
+      fitted hyperparameters. This is what the hierarchical form is for. A
+      prediction that drops the corrections claims that the model is correct,
+      after a fit that measured how wrong it is.
+\item \textbf{Filter for viability, and report the rate.} Score each drawn
+      $\theta$ with the restriction classifier
+      (\texttt{inference/restriction.py}), which predicts whether the simulator
+      returns a usable output. Run the survivors through the full simulator, not
+      the emulator. Report the rejection rate. A high rate means that $F$ puts
+      mass outside the feasible set of the model. That is a fault in the fit and
+      not a step in post-processing.
+\item \textbf{Keep prevalence weighting for one job only.} If a downstream user
+      needs the population to match a reported marginal exactly, reweight the
+      emitted patients (\texttt{vpop/weighting.py}, Allen et al. 2016). Report
+      that as an adjustment on top of the fit. It is never the fit.
+\end{enumerate}
+
+\section{Checks}
+\label{sec:checks}
+
+No number in this model is reportable until the checks below have run. They run
+in this order. Each one gates the next, because a later verdict means nothing
+while an earlier one fails.
+
+\begin{enumerate}
+\item \textbf{Simulation-based calibration on $\phi$.} Draw $\phi^*$ from the
+      prior, simulate anchor rows through \eqref{eq:obs}, refit, and check that
+      $\phi^*$ lands uniformly inside its own posterior. This tests the sampler
+      and the likelihood code. It never sees the real data. If it fails, nothing
+      below is readable.
+\item \textbf{The width split.} Generate synthetic data with a known $\omega$ and
+      a known uniform narrowing of the simulator. Fit. Confirm that $s$ takes the
+      narrowing and $u$ takes the pattern. Report the recovered
+      $(s,\log\kappa_0)$ pair against the truth. Report $\lambda_m$ for all $M_w$
+      observables beside it.
+\item \textbf{The frozen cloud.} Run the whole fit three times with three
+      different frozen clouds $z_{1:N}$. Compare the posteriors. The difference
+      is the bias that $\Sigma_{\text{MC}}$ hedges and does not remove.
+\item \textbf{The plug-in for $\Sigma$.} Change $\phi_0$ by a factor of two and
+      refit. Section \ref{sec:sigma} records the result of this test on the
+      earlier form of $\Sigma$. Repeat it on the bootstrap form.
+\item \textbf{The three CD8 cohorts.} Their three medians differ by a study
+      effect plus a sampling error. Check that the disagreement matches what the
+      bootstrap $\Sigma_{\text{samp}}$ predicts. This is a direct test of section
+      \ref{sec:sigma}, and it is the only one available. Report the posterior
+      for $\tau_\eta$ that these two contrasts produce, and compare it against
+      its prior.
+\item \textbf{Standardised residuals.} Compute $(y-\widetilde
+      Q)_r/\sqrt{\Sigma_{rr}}$ for all $A$ rows. Look for structure by cohort, by
+      observable class and by $n_c$. Structure by cohort means that the cohort
+      terms of section \ref{sec:cohort} are doing the wrong job.
+\item \textbf{Leave one cohort out.} Refit without cohort $c$, then predict its
+      rows and check coverage. Repeat over cohorts. This is the only external
+      check in the list, and it is the one that tests whether $\tau_\delta$ and
+      $\tau_\kappa$ are honest.
+\item \textbf{The emulator, where the fit reads it.} Section \ref{sec:emulator}.
+      Draw from $F(\theta\mid\hat\phi)$, run the full simulator, and compare
+      against the emulator. Report the result beside the design residual.
+\item \textbf{The variance budget.} For every parameter, report which of three
+      things produced its width: the data moved it, the prior returned it, or the
+      pool could not represent it. Quote no per-parameter width without this
+      table.
+\item \textbf{Sensitivity to $R$.} Refit under the four candidates of section
+      \ref{sec:R}, including the identity. Report how far $\hat\mu$ and
+      $\hat\omega$ move. $R$ is assumed, so this number is part of the result.
+\item \textbf{The viability rate.} Section \ref{sec:emit}, rule 3. Report the
+      fraction of emitted patients that the simulator rejects.
+\end{enumerate}
 
 \section{What the fit estimates}
 
@@ -631,23 +1294,29 @@ that it does.
 \toprule
 Quantity & Status & Source \\
 \midrule
-$\mu$ & estimated, $P$ & Prior centre from stage 1. Width $\tau_\mu=0.5$. \\
-$\omega$ & estimated, $P$ & Prior centre $\omega_0$. Width $\tau_\omega=0.5$. \\
+$\mu$ & estimated, $P$ & Prior \eqref{eq:muprior} from the stage-1 mean and covariance. \\
+$s$ & estimated, $1$ & The global width multiplier. Aliased with $\kappa_0$; see section \ref{sec:widthid}. \\
+$u$ & estimated, $P{-}|\Mset|{-}1$ & The pattern of the widths. Sums to zero. \\
+$\log\omega_\Mset$ & estimated, $9$ & Measured widths. Prior width from the source sample size. \\
 $\eta,\ \delta$ & estimated & Centre corrections. Aliased; see section \ref{sec:alias}. \\
 $\kappa,\ \kappa_0$ & estimated & Width corrections. See section \ref{sec:widthid}. \\
 $\tau_\eta,\tau_\delta,\tau_\kappa$ & estimated & These carry the separation of the corrections. \\
-$\varepsilon$ & fixed & Emulator residual, on the diagonal of $\Sigma$. \\
+$\varepsilon$ & fixed & Emulator residual, on the diagonal of $\Sigma$. Section \ref{sec:emulator}. \\
 $R=\Corr(\Omega)$ & fixed & Section \ref{sec:R}. An input, not a result. \\
 $\omega_0$ & fixed & Section \ref{sec:omega}. \\
-$\Sigma$ & fixed & Equation \eqref{eq:Sigma}, at a plug-in $\phi_0$. \\
+$\mathcal{E}_c$ & fixed & Eligibility rules. Section \ref{sec:cohort}. \\
+$\Sigma$ & fixed & Section \ref{sec:sigma}, at a plug-in $\phi_0$. \\
 $z_{1:N}$ & fixed & Drawn one time. \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-The fit estimates $2P+C+2M+6$ quantities against $R=163$ anchor rows. Only about
-$50$ functions of $\Omega$ are identified by the data, so the prior carries most
-of $\omega$, and the shrinkage of the corrections carries the rest.
+The fit estimates about $690$ quantities against $A=118$ anchor rows.
+At most $49$ functions of $\Omega$ are identified by the data, so the prior
+carries most of $\omega$, and the shrinkage of the corrections carries the rest.
+A count of free parameters is not a warning by itself in a hierarchical model.
+It is a warning here, because section \ref{sec:alias} shows that the $118$ rows
+are not $118$ independent measurements.
 
 \section{Assumptions}
 \label{sec:assump}
@@ -657,9 +1326,8 @@ of $\omega$, and the shrinkage of the corrections carries the rest.
 population are an input \eqref{eq:R}, and no part of them is identified by these
 data. The current choice is the stage-1 correlation matrix, which is epistemic:
 it shows how our uncertainties move together, not how patients differ. It is
-also close to the identity. Section \ref{sec:R} lists better candidates. The
-sensitivity of the fit across those candidates has not been measured, and it
-should be, since $R$ is assumed rather than known.
+also close to the identity. Section \ref{sec:R} lists better candidates, and
+check 9 measures the sensitivity. That check has not yet been run.
 
 \item \textbf{No data gives the correlations between patients.} Papers report
 each observable on its own, so the cross terms $J_j\Omega J_l\Tr$ are never
@@ -667,42 +1335,222 @@ observed. To measure them, we need two or more observables in the same
 individuals. Digitised per-patient figures could supply this, but only if the
 extraction keeps the identity of each patient across panels.
 
-\item \textbf{The spread is mostly prior, not data.} About $50$ functions of
+\item \textbf{The spread is mostly prior, not data.} At most $49$ functions of
 $\Omega$ are identified against $271$ free widths. Also, $262$ of the $271$
 values of $\omega_0$ come from a class default rather than a measurement. The
 width of the reported population is therefore in large part a statement of
 assumption. This is why $\omega_0$ must come from external evidence, and why
 $\tau_\omega$ should not be widened for convenience.
 
-\item \textbf{The width correction and the population spread compete.} The
-term $\kappa$ exists so that a narrow simulator does not have to be reported as
-diverse patients. Section \ref{sec:widthid} argues that $\kappa_0$ takes the
-uniform part and $\omega$ takes the structured part. That argument rests on no
-single parameter feeding every observable, which is true but is not a proof.
-Check it: fit synthetic data generated with a known $\omega$ and a known uniform
-narrowing, and confirm that the fit puts each in the right place.
+\item \textbf{The global width and the global model error share one direction.}
+Equation \eqref{eq:ridge} shows that $s$ and $\log\kappa_0$ enter every width row
+through the sum $(1-\lambda_m)s+\log\kappa_0$. If $\lambda_m$ is near zero for
+every observable, the prior width $\tau_s$ decides the split and the data do
+not, because $s$ and $\log\kappa_0$ share it. Report $\lambda_m$ and the joint posterior of the pair. Check 2
+tests the split on synthetic data, and it has not yet been run.
 
-\item \textbf{The corrections are aliased and the priors separate them.}
-Section \ref{sec:alias} shows that $\eta_c$ and $\delta_m$ are exactly aliased,
-because no observable appears in two cohorts. The count of anchor rows overstates
-the information by a wide margin. Any statement about $\mu$ or $\omega$ depends
-on $\tau_\delta$ and $\tau_\kappa$ remaining small, which is an assumption about
-how consistent the sources are.
+\item \textbf{The centre corrections are aliased and the priors separate them.}
+Section \ref{sec:alias} shows that $\eta_c$ and $\delta_m$ are exactly aliased
+for $64$ of the $65$ observables, because those observables appear in one cohort
+each. The count of anchor rows overstates the information by a wide margin. Any
+statement about $\mu$ or $\omega$ depends on $\tau_\delta$ and $\tau_\kappa$
+remaining small, which is an assumption about how consistent the sources are.
 
-\item \textbf{The emulator error term exists but is not populated.} The slot
-$\varepsilon_m$ is in the model and enters $\Sigma$ through \eqref{eq:neff}. In
-the current pipeline nothing writes to it, so it is zero. The emulator's
-held-out residual is not negligible: relative to the within-cohort spread it
-lies between $0.095$ and $0.254$, and the range is wide because the pool used to
-measure the denominator does not vary most parameters. Until $\varepsilon$ is
-wired, every target is trusted more than it should be, and the highest-$n$
-targets most of all.
+The CD8 split of section \ref{sec:repeat} is the one exception, and it changes
+the status of $\tau_\eta$ from asserted to measured. It rests on two contrasts.
+Treat it as one weak measurement and not as a solution.
+
+\item \textbf{Cohort differences are assumed to be assay effects.} $\eta_c$
+shifts every readout of a study by a common amount, which is a statement about
+calibration. A cohort that recruited different patients would instead shift the
+parameters. For a cohort with one observable the two predict the same number, and
+most cohorts have about two, so these data cannot separate them. The model takes
+the assay reading by construction, and every statement about $\mu$ inherits that
+choice. Section \ref{sec:cohort} explains why we removed the parameter-level term
+rather than carrying both.
+
+\item \textbf{The emulator error term is specified and not yet populated.} The
+slot $\varepsilon_m$ enters $\Sigma$ through \eqref{eq:Sigma}. In the current
+pipeline nothing writes to it, so it is zero. The emulator's held-out residual is
+not negligible: relative to the within-cohort spread it lies between $0.095$ and
+$0.254$. Until $\varepsilon$ is wired, every target is trusted more than it
+should be, and the highest-$n$ targets most of all. Section \ref{sec:emulator}
+also requires that this residual be re-measured on draws from the fitted
+population, and that has not been done.
 
 \item \textbf{The measured spreads are biased in both directions.} A reported
 across-patient spread also contains assay noise and biopsy-site variation, which
 makes it too large. A spread measured across animals of one genetic background
 is smaller than a spread across human patients, which makes it too small. We
 correct neither effect in \eqref{eq:shrink}.
+
+\item \textbf{Parts of this note describe the model and not the code.} The
+document is the specification. At the time of writing,
+\texttt{vpop/population\_fit.py} still uses the basis form
+$\vartheta=\mu+W(\sigma_u\odot z)$ and has no $\kappa$, no $s$ and no $u$, no
+eligibility rule, and an asymptotic $\Sigma$. The items to build are: the
+$(s,u,\Mset)$ split of section \ref{sec:spread}; the two-row anchors of
+\eqref{eq:Q}; the additive $\log\kappa$ of \eqref{eq:corrwid}; the bootstrap
+$\Sigma_{\text{samp}}$ and the measured $\Sigma_{\text{MC}}$ of section
+\ref{sec:sigma}; the cohort terms of section \ref{sec:cohort}; the stage-1
+covariance in \eqref{eq:muprior}; and the emission rules of section
+\ref{sec:emit}. The CD8 split of section \ref{sec:repeat} is also outstanding,
+and every count in this note that involves $C$ or $A$ assumes it. Do that one
+first. It is extraction work, it needs no new code path beyond a cohort index,
+and it is the only change here that adds information rather than structure.
 \end{enumerate}
+
+\section{What data to gather next}
+\label{sec:data}
+
+Section \ref{sec:assump} lists nine assumptions. Most of them are not defects of
+the method. They are statements that the available data cannot answer a
+question. This section says which data would answer which one, and in what
+order to go and get it.
+
+\begin{notebox}
+\textbf{The rule that sets the order.} A new anchor row is worth what it shares
+with a row that you already hold.
+
+A row that shares an \emph{endpoint} with another study identifies $\eta$. A row
+that shares a \emph{cohort} with another observable separates an assay effect
+from a recruitment effect, and helps $\mu$. A row that shares a \emph{patient}
+with another observable identifies $R$. A row that shares nothing arrives with
+its own $\delta_m$ and its own $\kappa_m$, so it contributes only through the
+shrinkage of the corrections.
+
+This rule reverses the usual instinct. One more observable, in one more cohort,
+at the same three quantile levels, is the least valuable thing that you can add.
+It is also the easiest thing to add.
+\end{notebox}
+
+\subsection{Price the options before you buy them}
+
+Three checks in section \ref{sec:checks} cost almost nothing, and they set the
+ranking below. Run them first.
+
+\textbf{Check 9, the sensitivity to $R$.} Refit under the identity and under the
+stage-1 matrix. If $\hat\mu$ and $\hat\omega$ barely move, then item 1 below is
+worth less than it claims. If they move, item 1 is the whole question. You
+cannot know which without the run.
+
+\textbf{The $\lambda_m$ report of section \ref{sec:widthid}.} It says whether
+measured parameter spreads can break the ridge between $s$ and $\log\kappa_0$,
+and which observables would do it.
+
+\textbf{Check 8 and the emulator resolution of section \ref{sec:emulator}.} A
+parameter that the emulator cannot resolve gains nothing from a better prior.
+Do not buy data for those parameters.
+
+\subsection{The ranking}
+
+\begin{enumerate}
+\item \textbf{Two or more observables in the same patients.} This is the only
+source of $R$, and it is the only item that attacks an assumption that section
+\ref{sec:whatdataconstrain} calls unreachable from summary data. It does four
+jobs at once. It gives the cross terms $J_j\Omega J_l\Tr$. It gives a full
+marginal instead of three quantiles. It puts several observables in one cohort.
+It removes the plug-in from $\Sigma$.
+
+The cheap form of this item exists today. Papers in this area print per-patient
+dot plots. Digitise them, and keep the identity of each patient across panels.
+Twenty patients with five observables each would change this model more than
+twenty new targets. The extraction discipline is the whole requirement. A panel
+digitised without patient identity is worth a fraction of the same panel
+digitised with it. Removes (i) and (ii).
+
+\item \textbf{Repeated endpoints across studies.} The cheapest item here, and
+the CD8 target of section \ref{sec:repeat} proves that the stock exists. For each
+of the $65$ observables, search for a second publication that reports the same
+quantity in a comparable cohort. Five repeated endpoints move section
+\ref{sec:alias} from a prior structure to a measurement, and $\tau_\eta$ then
+governs how the model splits every other residual between a study effect and a
+model error. Removes (v).
+
+\item \textbf{Across-patient spreads for parameters, ordered by sensitivity.}
+Nine of $271$ parameters have a measured spread. Each one that you add does two
+jobs: it improves $\omega_0$, and it enters $\Mset$, which is what makes
+$\lambda_m$ vary and breaks the width ridge. The second job is why the early
+returns are large.
+
+Do not search at random. Rank the parameters by their contribution to the
+predicted variance of the observables that have a width row. That ranking is
+computable today from $J_m$, $R$ and $\omega_0$. Then find donor-to-donor or
+patient-to-patient spreads for the top of the list, with sample sizes. The gate
+of section \ref{sec:omega} still applies: biological units only, and never
+replicates. Removes part of (iii) and part of (iv).
+
+\item \textbf{More quantile levels from the papers that you already cite.} With
+three levels, $\kappa_m$ copies any width change exactly. With a reported range,
+a tenth and a ninetieth centile, or a mean printed beside a median, it cannot,
+because $\omega$ changes the shape of the pushforward and $\kappa$ only stretches
+it. This is a re-read of sources that are already in the set. It is the cheapest
+attack on the largest remaining ambiguity. Removes part of (iv).
+
+\item \textbf{Cohort attributes and eligibility criteria.} For all $29$ cohorts:
+stage, line of therapy, treatment status, sample type, assay platform, region.
+This turns $29$ free values of $\eta_c$ into $Z_c\beta$, whose coefficients pool
+across cohorts, and it is also what a covariate model on the parameters would
+need. A quantitative eligibility rule is better still, because it removes a
+parameter instead of constraining one. This is data entry against sources that we
+hold. Removes part of (v) and part of (vi).
+
+The attribute table also does one thing that no other item does. An attribute
+that is plainly instrumental, such as the assay platform, and an attribute that
+is plainly clinical, such as the stage, load on the same $\eta_c$ today. Split
+them and the assay reading of assumption (vi) becomes testable rather than
+asserted.
+
+\item \textbf{Repeat measurements on the same patient.} Assumption (viii) says
+that every reported across-patient spread also holds assay noise, and that we
+correct none of it. So every $\omega_0$ that L4 built is too large by an unknown
+amount. A technical replicate, or a paired sample from one patient, measures that
+noise directly and lets us subtract it. This is the only item in the list that
+removes a known bias rather than a known ambiguity. Removes (viii).
+\end{enumerate}
+
+\subsection{Summary}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}Xll@{}}
+\toprule
+Data & Removes & Cost \\
+\midrule
+Per-patient values, several observables, identity kept & (i), (ii) & digitisation \\
+The same endpoint in a second study & (v) & literature search \\
+Parameter spreads with $n$, ranked by sensitivity & (iii), (iv) & literature search \\
+Extra quantile levels from current sources & (iv) & re-read \\
+Cohort attributes and eligibility rules & (v), (vi) & data entry \\
+Replicate or paired samples & (viii) & new measurement \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{If we can commission one measurement}
+
+One cohort. One platform. Five to ten of the model's observables, measured in the
+same patients, with the per-patient values published. That is item 1, item 5 and
+part of item 2 in a single study. Nothing else on the list gives three at once.
+
+\subsection{What not to buy}
+
+A new observable, in a new cohort, at three quantile levels. It arrives with a
+new $\eta_c$, a new $\delta_m$ and a new $\kappa_m$. The model gains one row and
+three parameters, and the information reaches $\mu$ and $\omega$ only through
+$\tau_\delta$ and $\tau_\kappa$.
+
+The same observable, placed in a cohort that is already in the set, is worth
+several times more. It adds no $\eta$, and it gives that cohort a second
+observable, which is what assumption (vi) needs before an assay effect and a
+recruitment effect can be told apart. When there is a choice of source, that is
+the choice.
+
+\subsection{Make this list computable}
+
+\texttt{inference/obed.py} ranks candidate measurements by expected information
+gain. Point it at $(\mu,\ s,\ \log\kappa_0,\ \log\omega_\Mset)$ rather than at
+the full $\phi$, and this section becomes a number instead of a judgement. The
+ranking above is what we expect it to return. The run is how we find out where
+the expectation is wrong.
 
 \end{document}
