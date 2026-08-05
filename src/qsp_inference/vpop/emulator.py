@@ -19,7 +19,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["load_arm", "arm_forward", "build_g_fn", "check_against_torch"]
+__all__ = ["load_arm", "arm_forward", "build_g_fn", "build_extra_fn",
+           "check_against_torch"]
 
 
 def load_arm(path: str | Path) -> dict:
@@ -40,6 +41,7 @@ def load_arm(path: str | Path) -> dict:
         "layers": layers,
         "param_names": list(ck["param_names"]),
         "target_names": list(ck["target_names"]),
+        "transform": ck.get("transform", "asinh"),
         **{k: np.asarray(ck[k], dtype=np.float64)
            for k in ("x_mu", "x_sd", "t_mu", "t_sd", "scale")},
     }
@@ -48,8 +50,11 @@ def load_arm(path: str | Path) -> dict:
 def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
     """``(N, P)`` log-parameters -> ``(N, K)`` species, in the trained units.
 
-    Inverts the training transform: standardise, MLP, unstandardise, then
-    ``x = scale * sinh(y)``.
+    Inverts the training transform: standardise, MLP, unstandardise, then undo
+    whichever transform the checkpoint records. ``log``/``exp`` is positive by
+    construction, which is what ``h_r`` needs since it takes logs; ``asinh`` is
+    read only for checkpoints trained before that was fixed, and ``sinh`` is
+    unbounded below, so those emit negative cell counts.
     """
     h = (log_theta - jnp.asarray(arm["x_mu"])) / jnp.asarray(arm["x_sd"])
     last = len(arm["layers"]) - 1
@@ -58,7 +63,15 @@ def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
         if k != last:
             h = h * jax.nn.sigmoid(h)  # SiLU
     t = h * jnp.asarray(arm["t_sd"]) + jnp.asarray(arm["t_mu"])
-    return jnp.asarray(arm["scale"]) * jnp.sinh(t)
+    # Defaulting is not safe here: reading a checkpoint under the wrong inverse
+    # returns plausible numbers and nothing downstream notices, so an unlabelled
+    # one is assumed to predate the change rather than to match the current code.
+    transform = arm.get("transform", "asinh")
+    if transform == "log":
+        return jnp.exp(t)
+    if transform == "asinh":
+        return jnp.asarray(arm["scale"]) * jnp.sinh(t)
+    raise ValueError(f"unknown emulator transform {transform!r}")
 
 
 def build_g_fn(
@@ -97,6 +110,42 @@ def build_g_fn(
     return g_fn
 
 
+def build_extra_fn(
+    arms: Mapping[str, Mapping],
+    scenarios: Sequence[tuple[str, float]],
+    extra_at: Sequence[tuple[int, str]],
+) -> Callable[[jnp.ndarray, int, str], jnp.ndarray]:
+    """``extra_fn(vartheta, s, name) -> (N,)`` for a readout the reduce composed.
+
+    Kept out of ``g_fn``'s block deliberately. A precomposed readout is not a
+    species and not every arm emits one, so padding the block would either cost
+    the arms that lack it their training rows or leave a column nothing may read.
+    Here each ``(scenario, name)`` resolves against the arm that actually serves
+    it, and one that does not is refused at build rather than at the first
+    gradient.
+    """
+    picks = {}
+    for s, name in extra_at:
+        arm_name, t = scenarios[int(s)]
+        if arm_name not in arms:
+            raise KeyError(f"scenario names arm {arm_name!r}, which has no emulator")
+        arm = arms[arm_name]
+        index = {n: i for i, n in enumerate(arm["target_names"])}
+        key = f"{name}@{t:g}"
+        if key not in index:
+            raise KeyError(
+                f"{arm_name} emits no {key!r}, so it cannot serve a precomposed "
+                f"readout. The reduce emits it only for the arms that carry one."
+            )
+        picks[(int(s), name)] = (arm_name, index[key])
+
+    def extra_fn(vartheta: jnp.ndarray, s: int, name: str) -> jnp.ndarray:
+        arm_name, col = picks[(int(s), name)]
+        return arm_forward(arms[arm_name], vartheta)[:, col]
+
+    return extra_fn
+
+
 def check_against_torch(path: str | Path, n: int = 64, seed: int = 0) -> float:
     """Max relative gap between this forward pass and the torch module it ports.
 
@@ -117,7 +166,9 @@ def check_against_torch(path: str | Path, n: int = 64, seed: int = 0) -> float:
     net = _torch_net(ck)
     with torch.no_grad():
         t = net(torch.tensor((x - arm["x_mu"]) / arm["x_sd"], dtype=torch.float32)).numpy()
-    want = arm["scale"] * np.sinh(t.astype(np.float64) * arm["t_sd"] + arm["t_mu"])
+    tt = t.astype(np.float64) * arm["t_sd"] + arm["t_mu"]
+    want = (np.exp(tt) if arm.get("transform", "asinh") == "log"
+            else arm["scale"] * np.sinh(tt))
     return float(np.max(np.abs(got - want) / (np.abs(want) + 1e-30)))
 
 

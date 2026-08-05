@@ -48,6 +48,10 @@ class Mechanism:
     beta_species: jnp.ndarray   # indices of species carrying a free beta
     g_fn: GFn
     h_fn: HFn
+    # Readouts the reduce already composed. They are not species and not every arm
+    # emits one, so they travel beside g_fn's fixed-width block rather than in it.
+    extra_fn: Optional[Callable] = None
+    extra_at: Tuple[Tuple[int, str], ...] = ()
 
     @property
     def n_readouts(self) -> int:
@@ -78,7 +82,16 @@ def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndar
     vartheta = patient_cloud(mu, omega, mech)
     y = jnp.stack([mech.g_fn(vartheta, s) for s in range(mech.n_scenarios)])
     beta = jnp.zeros(mech.n_species).at[mech.beta_species].set(beta_free)
-    return mech.h_fn(y * jnp.exp(beta)[None, None, :], log_R)
+    # Not scaled by beta: a precomposed readout is already the readout, and the
+    # ones that qualify are beta-invariant by construction.
+    scaled = y * jnp.exp(beta)[None, None, :]
+    if mech.extra_fn is None or not mech.extra_at:
+        # Passed only when there is one, so an h_r with no precomposed readouts
+        # keeps the two-argument signature it has always had.
+        return mech.h_fn(scaled, log_R)
+    return mech.h_fn(
+        scaled, log_R,
+        {(s, n): mech.extra_fn(vartheta, s, n) for s, n in mech.extra_at})
 
 
 def apply_map(x, a, b, c_row, Z) -> jnp.ndarray:

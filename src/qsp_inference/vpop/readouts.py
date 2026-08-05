@@ -132,7 +132,7 @@ def declared_reference(target: Mapping[str, Any]) -> Optional[float]:
 
 
 def _check_per_patient(h_fn, readouts, n_scenarios, n_species, n_aux,
-                       n_patients: int = 8) -> None:
+                       n_patients: int = 8, needs_extra=()) -> None:
     """Refuse readouts whose value for one patient reads another's.
 
     eq:readout is a per-patient map, so perturbing patient ``j`` may move column
@@ -146,14 +146,19 @@ def _check_per_patient(h_fn, readouts, n_scenarios, n_species, n_aux,
     # Per species and per scenario, so a ratio and a fold change both move.
     bump = jnp.asarray(rng.uniform(1.2, 1.8, (n_scenarios, n_species)))
     log_R = jnp.zeros(n_aux) if n_aux else None
+    # The precomposed channel is probed too: it is per-patient like everything
+    # else, and a readout reading it must still move with its own patient.
+    ex = {k: jnp.asarray(rng.uniform(0.5, 2.0, n_patients)) for k in needs_extra}
+    bump_ex = rng.uniform(1.2, 1.8, len(needs_extra))
 
-    base = np.asarray(h_fn(y, log_R))
+    base = np.asarray(h_fn(y, log_R, ex or None))
     leaks, deaf = set(), set(range(len(readouts)))
     for j in range(n_patients):
         # Bitwise, not within a tolerance. A per-patient map recomputes the other
         # columns from unchanged inputs, so they come back identical; a tolerance
         # would instead hide any readout whose scale the probe does not match.
-        got = np.asarray(h_fn(y.at[:, j, :].multiply(bump), log_R))
+        ex_j = {k: v.at[j].multiply(bump_ex[i]) for i, (k, v) in enumerate(ex.items())}
+        got = np.asarray(h_fn(y.at[:, j, :].multiply(bump), log_R, ex_j or None))
         moved = (got != base) & ~(np.isnan(got) & np.isnan(base))
         own = tuple(range(moved.ndim - 2))       # patient axis already indexed out
         rest = tuple(range(moved.ndim - 1))
@@ -182,6 +187,7 @@ def build_h_fn(
     observables_fn: Callable,
     aux_order: Sequence[str] = (),
     scenario_of: Optional[Mapping[str, Sequence[int]]] = None,
+    precomposed: Optional[Mapping[str, str]] = None,
 ) -> Callable:
     """``h_r`` for every readout at once: ``(S,N,Q), (A,) -> (N,M)`` on the log scale.
 
@@ -197,11 +203,29 @@ def build_h_fn(
     into the derived symbols the bodies name. ``aux_order`` fixes which entry of
     ``log R`` belongs to which auxiliary parameter.
     """
-    refused = sorted(set(readouts) & NEEDS_TRAJECTORY)
+    given_pre = dict(precomposed or {})
+    unknown = sorted(set(given_pre) - set(readouts))
+    if unknown:
+        raise UntraceableReadout(
+            f"precomposed names {unknown} that are not among the readouts"
+        )
+    clash = sorted(n for n in given_pre.values() if n in states)
+    if clash:
+        raise UntraceableReadout(
+            f"{clash} are precomposed readouts and also states. They travel in a "
+            f"separate channel precisely because they are not species, so a name "
+            f"in both is one of them shadowing the other."
+        )
+
+    # A trajectory functional is refused unless the surrogate emits it already.
+    # tumor_doubling_time is the case: it reads each patient's first and last
+    # timepoint, and the last is patient-dependent, so no fixed readout time
+    # expresses it and the reduce computes it where the trajectory still exists.
+    refused = sorted(set(readouts) & NEEDS_TRAJECTORY - set(given_pre))
     if refused:
         raise UntraceableReadout(
             f"{', '.join(refused)} read the whole trajectory, which h_r is not "
-            f"given; exclude them or supply a separate evaluator"
+            f"given; exclude them, precompose them, or supply a separate evaluator"
         )
 
     given = {r: tuple(v) for r, v in (scenario_of or {}).items()}
@@ -212,7 +236,7 @@ def build_h_fn(
             f"{', '.join(sorted(set(readouts) - set(at)))}"
         )
     for r in readouts:
-        want = 1 + (declared_reference(targets[r]) is not None)
+        want = 1 + (r not in given_pre and declared_reference(targets[r]) is not None)
         if not at:
             if want == 2:
                 raise UntraceableReadout(
@@ -226,14 +250,22 @@ def build_h_fn(
             )
 
     compiled = {r: compile_observable(targets[r]["observable"]["code"], label=r)
-                for r in readouts}
-    wanted = {r: tuple(targets[r]["observable"]["species"]) for r in readouts}
+                for r in readouts if r not in given_pre}
+    wanted = {r: tuple(targets[r]["observable"]["species"])
+              for r in readouts if r not in given_pre}
+
     times = {r: float(targets[r]["observable"].get("readout_time") or 0.0)
              for r in readouts}
 
     live = sorted({int(i) for s in at.values() for i in s})
 
-    def h_fn(y, log_R=None):
+    # Which (scenario, name) the caller has to supply. Declared so the caller
+    # evaluates exactly these and no scenario is asked for a column its arm does
+    # not emit.
+    needs_extra = tuple(sorted(
+        ((at[r][-1] if r in at else 0), name) for r, name in given_pre.items()))
+
+    def h_fn(y, log_R=None, extra=None):
         y = jnp.asarray(y)
         aux = {} if log_R is None else {
             name: jnp.exp(jnp.asarray(log_R)[i])
@@ -250,6 +282,18 @@ def build_h_fn(
         columns = []
         for r in readouts:
             s = at.get(r)
+            if r in given_pre:
+                # Already the readout, so nothing to compose. It arrives outside
+                # the species block and therefore untouched by beta, which is
+                # right for a log-ratio of one species at two times: a per-species
+                # bias cancels identically and beta could never have reached it.
+                key = ((s[-1] if s is not None else 0), given_pre[r])
+                if extra is None or key not in extra:
+                    raise UntraceableReadout(
+                        f"{r} is precomposed but no value was supplied for {key}"
+                    )
+                columns.append(jnp.log(extra[key]))
+                continue
             if s is None:
                 values = {sym: derived[None][sym] for sym in wanted[r]}
             else:
@@ -265,5 +309,6 @@ def build_h_fn(
 
     n_scenarios = 1 + max((int(i) for s in at.values() for i in s), default=1)
     _check_per_patient(h_fn, tuple(readouts), n_scenarios,
-                       len(states), len(aux_order))
+                       len(states), len(aux_order), needs_extra=needs_extra)
+    h_fn.needs_extra = needs_extra
     return h_fn
