@@ -77,7 +77,15 @@ class TestRecoveryTable:
 
 class TestDegeneraciesRefused:
     def _kw(self, **over):
-        kw = dict(mu_0=jnp.zeros(3), L_sigma_1=jnp.eye(3), omega_0=jnp.full(3, 0.4))
+        # PopulationPrior has no defaults on purpose, so a test fixture states
+        # the whole claim set the same way a project does.
+        kw = dict(
+            mu_0=jnp.zeros(3), L_sigma_1=jnp.eye(3), omega_0=jnp.full(3, 0.4),
+            measured=(), tau_s=0.3, tau_u=0.3,
+            sigma_a=0.5, sigma_b=0.5, tau_beta=0.15, n_beta=0, dim_z=1,
+            log_R_0=jnp.zeros(0), sigma_R=jnp.zeros(0),
+            pin_discrepancy=False, pin_u=False, pin_aux=False,
+        )
         kw.update(over)
         return kw
 
@@ -92,4 +100,13 @@ class TestDegeneraciesRefused:
 
     def test_every_width_measured_is_refused(self):
         with pytest.raises(ValueError, match="nothing to do"):
-            PopulationPrior(**self._kw(measured=(0, 1, 2)))
+            PopulationPrior(**self._kw(measured=(0, 1, 2),
+                                       tau_omega_measured=0.2))
+
+    def test_a_measured_width_needs_its_own_prior_width(self):
+        """eq:omegameas' sigma is a claim, so it cannot ride on a default."""
+        with pytest.raises(ValueError, match="tau_omega_measured"):
+            PopulationPrior(**self._kw(measured=(0,)))
+        assert PopulationPrior(
+            **self._kw(measured=(0,), tau_omega_measured=0.2)
+        ).tau_omega_measured == 0.2

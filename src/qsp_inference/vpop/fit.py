@@ -9,7 +9,7 @@ zero.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Mapping, Optional, Sequence, Tuple
 
 import jax.numpy as jnp
@@ -21,34 +21,47 @@ __all__ = ["PopulationPrior", "Problem", "build_omega",
 
 @dataclass(frozen=True)
 class PopulationPrior:
-    """Everything eq:mu through eq:auxprior needs, for one problem."""
+    """Everything eq:mu through eq:auxprior needs, for one problem.
+
+    **No field carries a default, deliberately.** Every one of these is a claim:
+    ``tau_s`` says how far the spreads may move, ``n_beta`` says whether a
+    mechanism discrepancy exists, ``pin_discrepancy`` says which model is being
+    fitted. A default would let a caller assert one without writing it down, and
+    a rubric number asserted by a dataclass is indistinguishable in the posterior
+    from one somebody chose. The project states them; this class stores them.
+
+    The one exception is ``tau_omega_measured``, which decides nothing when no
+    width is measured. It is required exactly when ``measured`` is non-empty.
+    """
 
     mu_0: jnp.ndarray            # (P,) prior centre, eq:mu
     L_sigma_1: jnp.ndarray       # (P, P) chol of the stage-1 covariance
     omega_0: jnp.ndarray         # (P,) prior widths
-    measured: Tuple[int, ...] = ()   # j in M, the widths eq:omegameas applies to
+    measured: Tuple[int, ...]    # j in M, the widths eq:omegameas applies to
 
-    tau_s: float = 0.3           # eq:omegaassumed, the global level
-    tau_u: float = 0.3           # eq:omegaassumed, the pattern across parameters
-    tau_omega_measured: float = 0.2
+    tau_s: float                 # eq:omegaassumed, the global level
+    tau_u: float                 # eq:omegaassumed, the pattern across parameters
 
-    sigma_a: float = 0.5         # eq:abprior
-    sigma_b: float = 0.5
-    tau_beta: float = 0.15       # eq:betaprior, fixed rather than estimated
-    n_beta: int = 0              # |S|, the declared subset carrying a free beta
-    dim_z: int = 1               # columns of Z
+    sigma_a: float               # eq:abprior
+    sigma_b: float
+    tau_beta: float              # eq:betaprior, fixed rather than estimated
+    n_beta: int                  # |S|, the declared subset carrying a free beta
+    dim_z: int                   # columns of Z
 
-    log_R_0: jnp.ndarray = field(default_factory=lambda: jnp.zeros(0))
-    sigma_R: jnp.ndarray = field(default_factory=lambda: jnp.zeros(0))
+    log_R_0: jnp.ndarray         # eq:auxprior; zeros(0) declares no auxiliaries
+    sigma_R: jnp.ndarray
 
     # The falsifiable baseline. With eq:disc off, a mismatch has nowhere to hide
     # and shows up as residual structure that can be read; with it on, 18 free
     # parameters can absorb most of one, so a good fit says little. The cost is
     # that real assay bias then lands on mu, so this configuration diagnoses and
-    # does not ship.
-    pin_discrepancy: bool = False   # a = b = 0
-    pin_u: bool = False             # omega = omega_0 exp(s), one multiplier
-    pin_aux: bool = False           # log R at its prior centre
+    # does not ship. False is not the neutral choice it looks like: it turns the
+    # discrepancy layer on, which is a modelling decision, so it is stated too.
+    pin_discrepancy: bool           # a = b = 0
+    pin_u: bool                     # omega = omega_0 exp(s), one multiplier
+    pin_aux: bool                   # log R at its prior centre
+
+    tau_omega_measured: Optional[float] = None   # required iff measured
 
     @property
     def n_params(self) -> int:
@@ -65,6 +78,12 @@ class PopulationPrior:
     def __post_init__(self):
         if self.n_aux != int(jnp.asarray(self.sigma_R).shape[0]):
             raise ValueError("log_R_0 and sigma_R must have the same length")
+        if self.measured and self.tau_omega_measured is None:
+            raise ValueError(
+                "measured widths need tau_omega_measured: eq:omegameas puts a "
+                "prior on log omega_j and its width is a claim about how much "
+                "the measurement is trusted, not a detail."
+            )
         if not self.assumed:
             raise ValueError("every width is measured, so s and u have nothing to do")
         if self.n_beta == 1:
