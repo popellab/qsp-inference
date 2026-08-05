@@ -200,14 +200,17 @@ def build_omega_center(
         else:
             prior_omega, level = global_default, "global_default"
 
-        # Level 4: shrink the data toward it, weighted by n.
+        # Level 4: shrink the data toward it, weighted by n. A sigma with no
+        # resolvable n carries no weight, so it leaves the prior untouched --
+        # and the level must keep saying so, otherwise the provenance reports
+        # "data_shrunk" for a parameter the data never moved.
         data_omega = population_sigma.get(name)
         n_bio = population_n.get(name)
+        value = prior_omega
         if data_omega is not None:
             value = shrink_toward_prior(data_omega, n_bio, prior_omega, tau=tau)
-            level = "data_shrunk"
-        else:
-            value = prior_omega
+            if value != prior_omega:
+                level = "data_shrunk"
 
         omega[j] = value
         provenance.append(
