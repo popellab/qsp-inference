@@ -40,7 +40,7 @@ class PopulationPrior:
     measured: Tuple[int, ...]    # j in M, the widths eq:omegameas applies to
 
     tau_s: float                 # eq:omegaassumed, the global level
-    tau_u: float                 # eq:omegaassumed, the pattern across parameters
+    tau_u: float                 # eq:omegaassumed, the pattern. See population_model.
 
     sigma_a: float               # eq:abprior
     sigma_b: float
@@ -57,8 +57,11 @@ class PopulationPrior:
     # that real assay bias then lands on mu, so this configuration diagnoses and
     # does not ship. False is not the neutral choice it looks like: it turns the
     # discrepancy layer on, which is a modelling decision, so it is stated too.
+    #
+    # There is no pin for u. How far the width pattern may move is a continuous
+    # question that tau_u already answers, and a flag on top of it would let a
+    # caller assert the answer twice.
     pin_discrepancy: bool           # a = b = 0
-    pin_u: bool                     # omega = omega_0 exp(s), one multiplier
     pin_aux: bool                   # log R at its prior centre
 
     tau_omega_measured: Optional[float] = None   # required iff measured
@@ -150,15 +153,33 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
         # reparameterise around it, and do not orthonormalise Z to avoid it:
         # iid on an orthonormal basis is a different prior from iid on a.
         s = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
-        # u is 271 numbers against however many scale rows the corpus prints.
-        # Pinning it says the widths are proportional, which is an assumption;
-        # leaving it free says nothing and adds prior noise to omega. Neither is
-        # neutral, so it is declared rather than defaulted.
-        u_raw = (jnp.zeros(len(prior.assumed)) if prior.pin_u else
-                 numpyro.sample(
-                     "u_raw",
-                     dist.Normal(0.0, prior.tau_u)
-                     .expand([len(prior.assumed)]).to_event(1)))
+        # u is one number per assumed width against however many scale rows the
+        # corpus prints, so most of it is unidentified whatever tau_u is. The
+        # prior is what decides between the two ways that can go wrong. Wide, and
+        # the unidentified components sit at the prior and print a width profile
+        # that looks individuated when the individuation is a prior draw. Pinned
+        # to zero, and a direction the scale rows genuinely constrain cannot move
+        # either. Small and free is neither: the constrained directions are pulled
+        # off zero, the rest stay near it, and no rank cutoff has to be defended.
+        #
+        # tau_u is set from the omega_0 role table rather than chosen. u must not
+        # be able to carry a parameter across the gap between two roles, because
+        # the role is the only thing actually claimed about that parameter; a
+        # tau_u whose plausible excursion clears the narrowest gap has overruled
+        # it silently. The project derives the number and passes it.
+        #
+        # The prior is normal, so it shrinks uniformly and pulls on a constrained
+        # direction too. That is the wrong trade if some width is expected to be
+        # strongly identified, and a heavy tail would be the tool. None is, here,
+        # so the sampling cost is not worth taking. It is a choice, not a default.
+        #
+        # The unidentified components stay at tau_u, so the posterior spread of u
+        # is not by itself evidence. Report the pooling factor, posterior sd of
+        # u_j over tau_u: near 1 means the corpus said nothing about that width.
+        u_raw = numpyro.sample(
+            "u_raw",
+            dist.Normal(0.0, prior.tau_u)
+            .expand([len(prior.assumed)]).to_event(1))
         if prior.measured:
             idx = np.asarray(prior.measured)
             log_omega_measured = numpyro.sample(
