@@ -41,6 +41,15 @@ class PopulationPrior:
     log_R_0: jnp.ndarray = field(default_factory=lambda: jnp.zeros(0))
     sigma_R: jnp.ndarray = field(default_factory=lambda: jnp.zeros(0))
 
+    # The falsifiable baseline. With eq:disc off, a mismatch has nowhere to hide
+    # and shows up as residual structure that can be read; with it on, 18 free
+    # parameters can absorb most of one, so a good fit says little. The cost is
+    # that real assay bias then lands on mu, so this configuration diagnoses and
+    # does not ship.
+    pin_discrepancy: bool = False   # a = b = 0
+    pin_u: bool = False             # omega = omega_0 exp(s), one multiplier
+    pin_aux: bool = False           # log R at its prior centre
+
     @property
     def n_params(self) -> int:
         return int(jnp.asarray(self.omega_0).shape[0])
@@ -122,9 +131,15 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
         # reparameterise around it, and do not orthonormalise Z to avoid it:
         # iid on an orthonormal basis is a different prior from iid on a.
         s = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
-        u_raw = numpyro.sample(
-            "u_raw",
-            dist.Normal(0.0, prior.tau_u).expand([len(prior.assumed)]).to_event(1))
+        # u is 271 numbers against however many scale rows the corpus prints.
+        # Pinning it says the widths are proportional, which is an assumption;
+        # leaving it free says nothing and adds prior noise to omega. Neither is
+        # neutral, so it is declared rather than defaulted.
+        u_raw = (jnp.zeros(len(prior.assumed)) if prior.pin_u else
+                 numpyro.sample(
+                     "u_raw",
+                     dist.Normal(0.0, prior.tau_u)
+                     .expand([len(prior.assumed)]).to_event(1)))
         if prior.measured:
             idx = np.asarray(prior.measured)
             log_omega_measured = numpyro.sample(
@@ -136,10 +151,14 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
         omega = numpyro.deterministic(
             "omega", build_omega(s, u_raw, log_omega_measured, prior))
 
-    a = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
-                       .expand([prior.dim_z]).to_event(1))
-    b = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
-                       .expand([prior.dim_z]).to_event(1))
+    if prior.pin_discrepancy:
+        a = numpyro.deterministic("a", jnp.zeros(prior.dim_z))
+        b = numpyro.deterministic("b", jnp.zeros(prior.dim_z))
+    else:
+        a = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
+                           .expand([prior.dim_z]).to_event(1))
+        b = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
+                           .expand([prior.dim_z]).to_event(1))
 
     if prior.n_beta:
         beta_raw = numpyro.sample(
@@ -149,12 +168,14 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     else:
         beta_free = jnp.zeros(0)
 
-    if prior.n_aux:
+    if not prior.n_aux:
+        log_R = None
+    elif prior.pin_aux:
+        log_R = numpyro.deterministic("log_R", jnp.asarray(prior.log_R_0))
+    else:
         log_R = numpyro.sample(
             "log_R", dist.Normal(jnp.asarray(prior.log_R_0),
                                  jnp.asarray(prior.sigma_R)).to_event(1))
-    else:
-        log_R = None
 
     taus = tau_all(mu, omega, a, b, beta_free, problem.plans,
                    problem.specs_by_cohort, problem.refs, problem.mech,
