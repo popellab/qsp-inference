@@ -3,6 +3,10 @@
 import numpy as np
 import pytest
 
+# inference.importance imports torch at module scope, and torch is the optional
+# [sbi] extra.
+pytest.importorskip("torch")
+
 from qsp_inference.vpop import (
     EigenbasisPopulation,
     widen_on_identified,

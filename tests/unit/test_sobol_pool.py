@@ -10,6 +10,11 @@ import numpy as np
 import pytest
 from scipy import stats
 
+# copula_prior imports torch at module scope, and torch is the optional [sbi]
+# extra. Skipping here rather than at each test keeps collection from failing
+# where it is not installed.
+pytest.importorskip("torch")
+
 from qsp_inference.priors.copula_prior import GaussianCopulaPrior
 from qsp_inference.priors.inference_prior import PriorSpec
 from qsp_inference.priors.theta_pool import ThetaPoolSpec
