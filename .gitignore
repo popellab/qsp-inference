@@ -14,7 +14,8 @@ venv/
 *.so
 .DS_Store
 
-# LaTeX build artifacts (docs/*.tex -> *.pdf is committed, intermediates are not)
+# LaTeX build artifacts. The .tex is the source; the rendered .pdf is not tracked,
+# since it is regenerable and a binary diff on every edit reviews as noise.
 *.aux
 *.fdb_latexmk
 *.fls
@@ -30,3 +31,4 @@ docs/*_files/
 
 # Run logs.
 sbi-logs/
+docs/*.pdf
