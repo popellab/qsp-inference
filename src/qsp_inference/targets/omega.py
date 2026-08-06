@@ -52,12 +52,21 @@ class OmegaEntry:
     prior_omega: float | None = None  # levels 1-3 value, before any data shrinkage
     data_omega: float | None = None  # raw population-block sigma, pre-shrinkage
     n_biological: int | None = None
+    # The scale omega is a standard deviation ON. `log` is the default and means
+    # a lognormal margin. `logit` is for a quantity bounded on (0, 1): no omega
+    # keeps a lognormal margin inside the bound, so a fractional maximum effect
+    # at median 0.8 puts a quarter of the population above complete inhibition
+    # whatever width it is given. Orthogonal to the role, which says how wide.
+    scale: str = "log"
+
+
+SCALES = ("log", "logit")
 
 
 def load_omega_overrides(
     path: Path | str, *, role_omega: Mapping[str, float]
-) -> dict[str, tuple[str, float | None]]:
-    """Read the role / explicit-omega overrides CSV. Missing file = no overrides.
+) -> dict[str, tuple[str, float | None, str]]:
+    """Read the role / explicit-omega / scale overrides CSV. Missing file = no overrides.
 
     ``role_omega`` is the project's known-role map; a row naming a role outside it
     is an error (a typo would otherwise silently fall through to the default).
@@ -65,7 +74,7 @@ def load_omega_overrides(
     path = Path(path)
     if not path.exists():
         return {}
-    out: dict[str, tuple[str, float | None]] = {}
+    out: dict[str, tuple[str, float | None, str]] = {}
     with path.open() as fh:
         rows = csv.DictReader(line for line in fh if not line.lstrip().startswith("#"))
         for row in rows:
@@ -85,7 +94,21 @@ def load_omega_overrides(
                     f"omega overrides: parameter '{name}' has implausible omega={explicit}. "
                     "omega is a log-sd; expected roughly (0, 2)."
                 )
-            out[name] = (role, explicit)
+            scale = (row.get("scale") or "log").strip() or "log"
+            if scale not in SCALES:
+                raise ValueError(
+                    f"omega overrides: parameter '{name}' has unknown scale '{scale}'. "
+                    f"Known scales: {list(SCALES)}"
+                )
+            if name in out:
+                # The file is hand-edited and this is a dict, so a repeated name
+                # would silently take the last row and drop a rationale someone
+                # wrote. Nothing downstream can see that it happened.
+                raise ValueError(
+                    f"omega overrides: parameter '{name}' appears more than once in "
+                    f"{path}. Merge the rows; the later one would silently win."
+                )
+            out[name] = (role, explicit, scale)
     return out
 
 
@@ -190,7 +213,7 @@ def build_omega_center(
     provenance: list[OmegaEntry] = []
 
     for j, name in enumerate(param_names):
-        role, explicit = overrides.get(name, ("default", None))
+        role, explicit, scale = overrides.get(name, ("default", None, "log"))
 
         # Levels 1-3: the prior omega, before any data.
         if explicit is not None:
@@ -222,6 +245,7 @@ def build_omega_center(
                 prior_omega=float(prior_omega),
                 data_omega=None if data_omega is None else float(data_omega),
                 n_biological=n_bio,
+                scale=scale,
             )
         )
 
@@ -235,9 +259,11 @@ def write_provenance(provenance: list[OmegaEntry], path: Path | str) -> None:
     with path.open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(
-            ["name", "omega", "level", "role", "prior_omega", "data_omega", "n_biological"]
+            ["name", "omega", "level", "role", "scale",
+             "prior_omega", "data_omega", "n_biological"]
         )
         for e in provenance:
             w.writerow(
-                [e.name, e.omega, e.level, e.role, e.prior_omega, e.data_omega, e.n_biological]
+                [e.name, e.omega, e.level, e.role, e.scale,
+                 e.prior_omega, e.data_omega, e.n_biological]
             )

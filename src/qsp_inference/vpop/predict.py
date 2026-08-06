@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -52,6 +53,9 @@ class Mechanism:
     # emits one, so they travel beside g_fn's fixed-width block rather than in it.
     extra_fn: Optional[Callable] = None
     extra_at: Tuple[Tuple[int, str], ...] = ()
+    # (P,) bool, or None for all-lognormal. True where the margin is bounded on
+    # (0, 1) and omega is a log-odds sd. See patient_cloud.
+    logit: Optional[jnp.ndarray] = None
 
     @property
     def n_readouts(self) -> int:
@@ -66,8 +70,37 @@ class Mechanism:
 
 
 def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
-    """eq:crn. ``(N, P)`` log-parameters, smooth in ``(mu, omega)`` at frozen ``z``."""
-    return mu[None, :] + mech.zL * omega[None, :]
+    """eq:crn. ``(N, P)`` log-parameters, smooth in ``(mu, omega)`` at frozen ``z``.
+
+    Returns log theta for every parameter whatever its margin, so nothing
+    downstream has to know which is which.
+
+    A parameter marked ``logit`` is bounded on (0, 1) and no lognormal margin
+    respects that: a fractional maximum effect at median 0.8 puts a quarter of
+    the population above complete inhibition at omega 0.35, and the only width
+    that fixes it is one that denies the quantity varies. The correlation is a
+    Gaussian copula -- ``zL`` is standard normal before any margin is applied --
+    so the margin is separable and only this line changes.
+
+    ``mu`` stays on the log scale for every parameter, including these. eq:muprior
+    and the stage-1 copula therefore need no reinterpretation, and at ``z = 0``
+    the expression returns ``mu`` exactly, so the median is what it always was.
+    Only the spread moves to log-odds.
+    """
+    log_theta = mu[None, :] + mech.zL * omega[None, :]
+    if mech.logit is None:
+        return log_theta
+    # Both branches evaluate, so the unselected one must not produce a nan.
+    # jnp.where propagates nan through the gradient of the branch it discards,
+    # and most parameters have a median above 1, where logit is undefined. The
+    # fix has to substitute a safe base BEFORE the nonlinearity, not clamp at the
+    # singularity: clipping keeps the value finite but leaves 1/(1 - m) ~ 1e8 in
+    # the discarded arm, which is what makes d/dmu nan rather than large. Masking
+    # mu first keeps that arm far from the boundary and its gradient exactly zero.
+    m = jnp.exp(jnp.where(jnp.asarray(mech.logit), mu, -1.0))
+    logit_mu = jnp.log(m) - jnp.log1p(-m)
+    log_theta_b = jax.nn.log_sigmoid(logit_mu[None, :] + mech.zL * omega[None, :])
+    return jnp.where(jnp.asarray(mech.logit)[None, :], log_theta_b, log_theta)
 
 
 def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndarray:
