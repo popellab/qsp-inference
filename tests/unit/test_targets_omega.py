@@ -33,7 +33,7 @@ def test_global_default_when_nothing_specific():
 
 
 def test_role_and_explicit_layers():
-    overrides = {"a": ("packing_limit", None), "b": ("default", 0.9)}
+    overrides = {"a": ("packing_limit", None, "log"), "b": ("default", 0.9, "log")}
     omega, prov = _build(["a", "b", "c"], overrides=overrides)
     assert omega[0] == pytest.approx(0.15)  # role
     assert omega[1] == pytest.approx(0.9)   # explicit
@@ -44,7 +44,7 @@ def test_role_and_explicit_layers():
 def test_data_shrinks_toward_prior_by_n():
     """Large n pulls omega toward the data spread; tiny n leaves the prior."""
     names = ["hi_n", "lo_n"]
-    overrides = {"hi_n": ("default", None), "lo_n": ("default", None)}
+    overrides = {"hi_n": ("default", None, "log"), "lo_n": ("default", None, "log")}
     omega, prov = _build(
         names, overrides=overrides,
         population_sigma={"hi_n": 1.2, "lo_n": 1.2},
@@ -55,6 +55,28 @@ def test_data_shrinks_toward_prior_by_n():
     assert omega[1] < 0.6
     assert all(e.level == "data_shrunk" for e in prov)
     assert prov[0].data_omega == 1.2 and prov[0].n_biological == 500
+
+
+def test_a_sigma_with_no_resolvable_n_does_not_claim_to_be_data_shrunk():
+    """The level must report what actually happened, not what was offered.
+
+    A population block routinely covers far more parameters than have a
+    resolvable ``n_biological`` (in pdac: 178 offered, 9 resolvable). Those
+    parameters keep their prior untouched, so labelling them ``data_shrunk``
+    reports a whole prior as data-informed when the data never moved it.
+    """
+    omega, prov = _build(
+        ["no_n", "with_n"],
+        population_sigma={"no_n": 1.2, "with_n": 1.2},
+        population_n={"with_n": 500},  # "no_n" has none
+    )
+    assert omega[0] == pytest.approx(GLOBAL)
+    assert prov[0].level == "global_default"
+    assert prov[0].data_omega == 1.2  # the sigma is still recorded, for audit
+    assert prov[0].n_biological is None
+
+    assert omega[1] > 1.0
+    assert prov[1].level == "data_shrunk"
 
 
 def test_shrink_toward_prior_edges():
@@ -85,7 +107,7 @@ def test_overrides_csv_roundtrip(tmp_path):
     p = tmp_path / "omega.csv"
     p.write_text("# comment\nname,role,omega\na,packing_limit,\nb,default,0.8\n")
     ov = load_omega_overrides(p, role_omega=ROLE)
-    assert ov == {"a": ("packing_limit", None), "b": ("default", 0.8)}
+    assert ov == {"a": ("packing_limit", None, "log"), "b": ("default", 0.8, "log")}
 
 
 def test_missing_overrides_file_is_empty(tmp_path):
@@ -97,5 +119,47 @@ def test_write_provenance_roundtrips(tmp_path):
     out = tmp_path / "prov.csv"
     write_provenance(prov, out)
     text = out.read_text()
-    assert "name,omega,level,role,prior_omega,data_omega,n_biological" in text
-    assert "a,0.35,global_default,default,0.35," in text
+    assert "name,omega,level,role,scale,prior_omega,data_omega,n_biological" in text
+    assert "a,0.35,global_default,default,log,0.35," in text
+
+
+# --- scale: the margin omega is a standard deviation on -------------------
+
+
+def test_scale_defaults_to_log_and_is_read_off_the_csv(tmp_path):
+    p = tmp_path / "omega.csv"
+    p.write_text("name,role,omega,scale\na,default,,logit\nb,default,,\n")
+    ov = load_omega_overrides(p, role_omega=ROLE)
+    assert ov["a"][2] == "logit"
+    assert ov["b"][2] == "log"
+
+
+def test_unknown_scale_rejected(tmp_path):
+    """A typo must not fall through to lognormal on a bounded quantity."""
+    p = tmp_path / "omega.csv"
+    p.write_text("name,role,omega,scale\na,default,,logistic\n")
+    with pytest.raises(ValueError, match="unknown scale"):
+        load_omega_overrides(p, role_omega=ROLE)
+
+
+def test_scale_reaches_provenance(tmp_path):
+    p = tmp_path / "omega.csv"
+    p.write_text("name,role,omega,scale\na,default,,logit\n")
+    _, prov = _build(["a", "b"], overrides=load_omega_overrides(p, role_omega=ROLE))
+    assert [e.scale for e in prov] == ["logit", "log"]
+
+
+def test_scale_is_orthogonal_to_role():
+    """A logit margin says which scale, never how wide; the role still sets omega."""
+    ov = {"a": ("packing_limit", None, "logit")}
+    omega, prov = _build(["a"], overrides=ov)
+    assert omega[0] == pytest.approx(0.15)
+    assert prov[0].role == "packing_limit" and prov[0].scale == "logit"
+
+
+def test_a_repeated_parameter_is_an_error_not_a_silent_overwrite(tmp_path):
+    """The CSV is hand-edited; a dict would take the last row and drop a rationale."""
+    p = tmp_path / "omega.csv"
+    p.write_text("name,role,omega\na,packing_limit,\na,default,0.8\n")
+    with pytest.raises(ValueError, match="appears more than once"):
+        load_omega_overrides(p, role_omega=ROLE)

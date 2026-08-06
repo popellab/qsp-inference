@@ -56,7 +56,10 @@ from qsp_inference.audit.report import (
     AuditConfig,
     _run_inference,
     _write_submodel_priors,
+    component_target_ids,
+    load_cascade_cuts,
     load_freshness_by_component,
+    load_target_ids_by_filename,
     load_joint_samples,
     load_joint_samples_by_component,
     load_parameter_groups,
@@ -168,6 +171,11 @@ def main() -> int:
         groups,
         output,
         freshness_by_component=freshness_by_component,
+        cascade_cuts=load_cascade_cuts(config.param_groups),
+        comp_targets=component_target_ids(
+            freshness_by_component,
+            load_target_ids_by_filename(config.submodel_dir),
+        ),
     )
     return 0
 
