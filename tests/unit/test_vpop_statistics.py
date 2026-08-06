@@ -245,3 +245,17 @@ class TestDifferentiability:
         g = jax.grad(lambda w: expected_quantile(cloud, w, 0.25, 9))(np.ones(4_000))
         assert np.all(np.isfinite(g))
         assert np.any(np.asarray(g) != 0.0)
+
+def test_mass_survives_an_edge_a_hair_outside_the_unit_interval():
+    """betainc is nan just outside [0, 1], and the edges are only probabilities
+    by definition, not by arithmetic: cumsum and sum reduce in different orders,
+    so the last edge can land an ulp over. Platform-dependent, which is how it
+    passed on arm64 and returned nan on x86."""
+    jax.config.update("jax_enable_x64", True)
+    w = np.random.default_rng(2).exponential(1.0, 5_000)
+    # force the failure the reduction order can produce on its own
+    w[-1] = np.nextafter(w[-1], np.inf)
+    for kappa in (1, 3, 12, 20):
+        got = float(order_statistic_mass(w, kappa, 20).sum())
+        assert np.isfinite(got), f"kappa={kappa} gave {got}"
+        assert got == pytest.approx(1.0)

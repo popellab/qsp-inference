@@ -74,7 +74,13 @@ def order_statistic_mass(w, kappa: int, n: int):
     """
     _require_x64()
     w = jnp.asarray(w)
+    # Clipped because the edges are cumulative probabilities by definition but
+    # not by arithmetic: cumsum and sum reduce in different orders, so the last
+    # edge can land an ulp above 1, and betainc is nan just outside [0, 1] rather
+    # than saturating. Whether it does depends on the platform's summation order,
+    # which is how this passed on arm64 and returned nan on x86.
     edges = jnp.concatenate([jnp.zeros(1, w.dtype), jnp.cumsum(w) / jnp.sum(w)])
+    edges = jnp.clip(edges, 0.0, 1.0)
     return jnp.diff(betainc(float(kappa), float(n - kappa + 1), edges))
 
 
