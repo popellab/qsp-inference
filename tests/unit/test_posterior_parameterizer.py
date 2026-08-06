@@ -250,16 +250,21 @@ class TestWritePriorsYaml:
         assert m["median"] > 0.0
         assert m["scale"] == pytest.approx(1.4744178704979357e-11, rel=1e-5)
 
-        # The whole point: the round-tripped spec must still admit a log fit.
-        # copula_prior pulls in torch, an optional extra, so this half of the
-        # check only runs where it is installed; the assertions above are the
-        # ones that must hold everywhere.
+        # The round-tripped spec must still be one copula_prior can act on.
+        # What "act on" means changed: since the prior started carrying the
+        # posterior's own shape, a bare gamma is no longer a log-space marginal
+        # and is refused by name rather than silently refitted to a family. The
+        # rounding assertions above are the subject of this test; this half
+        # guards that a tiny scale still reaches that check as a live value
+        # instead of a zero. copula_prior pulls in torch, an optional extra.
         pytest.importorskip("torch")
-        from qsp_inference.priors.copula_prior import _log_transform_marginal
+        from qsp_inference.priors.copula_prior import (
+            StalePriorFormat,
+            _log_transform_marginal,
+        )
 
-        fitted = _log_transform_marginal(dict(m))
-        assert np.isfinite(fitted.mean())
-        assert fitted.std() > 0.0
+        with pytest.raises(StalePriorFormat, match="not a log-space shape"):
+            _log_transform_marginal(dict(m))
 
 
 # =============================================================================
