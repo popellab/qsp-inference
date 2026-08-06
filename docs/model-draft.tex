@@ -475,6 +475,24 @@ as the comparison.
 $\mu_0$ and $\Sigma_1$ the mean and covariance of the stage-1 composite prior on
 the log scale. Recall that this is the stage 1- fitting in which we are specifically trying to learn the location parameter per QSP parameter.
 
+Four parameters are bounded on $(0,1)$ and carry a logit rather than a lognormal
+margin in \eqref{eq:crn}, so that no $\omega$ can place a patient outside the
+bound. For those, \eqref{eq:mu} is truncated rather than Gaussian: $\exp(\mu_j)$ is
+a population median and is bounded whenever the parameter is, while $\Sigma_1$ is
+unbounded and puts real mass outside --- $15\%$ for \texttt{phi\_col\_max}, $13\%$
+for \texttt{p\_T\_kill\_per\_contact}, $10\%$ for \texttt{Emax\_Cy\_Treg}. Those draws
+are rejected, which renormalises the prior on that component. The truncation is a
+consequence of the bound and not a separate modelling choice, but it is a
+departure from \eqref{eq:mu} as written and the posterior on those four should be
+read against the truncated law.
+
+Note also that the role assigned to such a parameter no longer fixes its realised
+spread: at $\omega=0.35$ a log margin gives a CV of $0.36$ at any median, while a
+logit margin gives $0.075$ at median $0.79$ and $0.35$ at median $0.03$. A
+maximum fractional suppression near its bound genuinely cannot vary as much as an
+unbounded rate, so this is the bound doing its work rather than a distortion, but
+the width a reader infers from the role is wrong for these four.
+
 \paragraph{Spread.} Let $\Mset$ be the parameters whose between-patient spread a
 source has measured, with sample size $n_j$. For $j\in\Mset$,
 \begin{equation}
