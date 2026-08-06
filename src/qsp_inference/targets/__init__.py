@@ -28,6 +28,11 @@ from qsp_inference.targets.omega import (
     load_population_n,
     write_provenance,
 )
+from qsp_inference.targets.correlation import (
+    MAX_COMMUNALITY,
+    STRENGTH,
+    correlation_from_loadings,
+)
 
 __all__ = [
     "ObservedAnchors",
@@ -42,4 +47,7 @@ __all__ = [
     "load_omega_overrides",
     "load_population_n",
     "write_provenance",
+    "STRENGTH",
+    "MAX_COMMUNALITY",
+    "correlation_from_loadings",
 ]

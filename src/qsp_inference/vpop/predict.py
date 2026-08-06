@@ -18,7 +18,7 @@ import numpy as np
 
 from qsp_inference.vpop.rows import tau_row
 
-__all__ = ["Mechanism", "patient_cloud", "readout_cloud", "apply_map",
+__all__ = ["Mechanism", "apply_margins", "patient_cloud", "readout_cloud", "apply_map",
            "reference_levels", "cohort_cloud", "block_weights",
            "quantile_mass_table", "cohort_columns", "tau_rows",
            "tau_block", "tau_from_readouts", "tau_all"]
@@ -69,8 +69,13 @@ class Mechanism:
                            jnp.asarray(self.z) @ jnp.asarray(self.L_R).T)
 
 
-def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
-    """eq:crn. ``(N, P)`` log-parameters, smooth in ``(mu, omega)`` at frozen ``z``.
+def apply_margins(mu, omega, zL, logit=None) -> jnp.ndarray:
+    """``(N, P)`` log theta from correlated standard normals. eq:crn's margin step.
+
+    Split out of :func:`patient_cloud` so the emulator's training pool can be
+    drawn through the identical expression. A pool drawn from a different margin
+    than the fit evaluates the surrogate off the manifold it learned, with no
+    symptom, because every number stays plausible.
 
     Returns log theta for every parameter whatever its margin, so nothing
     downstream has to know which is which.
@@ -87,9 +92,10 @@ def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
     the expression returns ``mu`` exactly, so the median is what it always was.
     Only the spread moves to log-odds.
     """
-    log_theta = mu[None, :] + mech.zL * omega[None, :]
-    if mech.logit is None:
+    log_theta = mu[None, :] + zL * omega[None, :]
+    if logit is None:
         return log_theta
+    logit = jnp.asarray(logit)
     # Both branches evaluate, so the unselected one must not produce a nan.
     # jnp.where propagates nan through the gradient of the branch it discards,
     # and most parameters have a median above 1, where logit is undefined. The
@@ -97,10 +103,15 @@ def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
     # singularity: clipping keeps the value finite but leaves 1/(1 - m) ~ 1e8 in
     # the discarded arm, which is what makes d/dmu nan rather than large. Masking
     # mu first keeps that arm far from the boundary and its gradient exactly zero.
-    m = jnp.exp(jnp.where(jnp.asarray(mech.logit), mu, -1.0))
+    m = jnp.exp(jnp.where(logit, mu, -1.0))
     logit_mu = jnp.log(m) - jnp.log1p(-m)
-    log_theta_b = jax.nn.log_sigmoid(logit_mu[None, :] + mech.zL * omega[None, :])
-    return jnp.where(jnp.asarray(mech.logit)[None, :], log_theta_b, log_theta)
+    log_theta_b = jax.nn.log_sigmoid(logit_mu[None, :] + zL * omega[None, :])
+    return jnp.where(logit[None, :], log_theta_b, log_theta)
+
+
+def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
+    """eq:crn. ``(N, P)`` log-parameters, smooth in ``(mu, omega)`` at frozen ``z``."""
+    return apply_margins(mu, omega, mech.zL, mech.logit)
 
 
 def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndarray:
