@@ -143,6 +143,26 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     mu_raw = numpyro.sample("mu_raw", dist.Normal(0.0, 1.0).expand([P]).to_event(1))
     mu = numpyro.deterministic("mu", prior.mu_0 + prior.L_sigma_1 @ mu_raw)
 
+    # eq:muprior is Gaussian on the log scale and so unbounded, but exp(mu_j) is a
+    # population median and a parameter bounded on (0, 1) has a bounded median.
+    # The stage-1 prior proposes one outside with real mass: 15% for phi_col_max,
+    # 10% for Emax_Cy_Treg. -inf on the density is what rejects it -- NUTS rejects
+    # on the log density, never on a parameter value, and a margin returning -inf
+    # would hand the emulator theta = 0 to simulate instead.
+    #
+    # This makes eq:muprior a TRUNCATED Gaussian for those parameters, not the
+    # Gaussian the draft states. The factor is piecewise constant, so its gradient
+    # is zero and the leapfrog is unharmed, but the prior it leaves behind is
+    # renormalised and the draft has to say so.
+    logit_mask = getattr(problem.mech, "logit", None)
+    if logit_mask is not None:
+        from qsp_inference.vpop.predict import mu_out_of_bound
+
+        numpyro.factor(
+            "mu_within_bound",
+            jnp.where(mu_out_of_bound(mu, logit_mask), -jnp.inf, 0.0),
+        )
+
     if flat:
         # omega_0 and not zero: a point mass makes eq:V return zero, turns w^(c)
         # into a switch on the whole cohort, and collapses every location

@@ -75,3 +75,51 @@ def test_no_logit_parameters_is_the_old_behaviour_exactly(logit):
     m = _mech(z, logit)
     expected = MU[None, :] + m.zL * OMEGA[None, :]
     assert np.allclose(np.asarray(patient_cloud(MU, OMEGA, m)), np.asarray(expected))
+
+
+def test_a_per_row_mu_composes_the_two_spreads():
+    """The pool draws one mu per row; the fit shares one across the cloud. The
+    same expression has to serve both, or the emulator trains on a margin the fit
+    does not use."""
+    n = 4096
+    rng = np.random.default_rng(3)
+    z = rng.standard_normal((n, P))
+    mech = _mech(z)
+    # mu must stay inside the bound on the logit column: exp(mu) is that
+    # patient-set's median, and a median outside (0, 1) is not a width question.
+    # See the note on eq:muprior for bounded parameters.
+    jitter = 0.2 * rng.standard_normal((n, P))
+    jitter[:, 1] = -np.abs(jitter[:, 1])
+    mu_rows = jnp.asarray(MU[None, :] + jitter)
+
+    per_row = patient_cloud(mu_rows, OMEGA, mech)
+    assert per_row.shape == (n, P)
+
+    # row i of the (N, P) call equals the shared-mu call restricted to that row
+    one = patient_cloud(mu_rows[7], OMEGA, _mech(z[7:8]))
+    assert np.allclose(np.asarray(per_row[7]), np.asarray(one[0]), atol=1e-12)
+
+    # and the bounded margin still holds when mu varies per row
+    theta = np.asarray(jnp.exp(per_row))
+    assert theta[:, 1].max() < 1.0
+
+
+def test_an_out_of_bound_mu_is_finite_in_the_margin_and_flagged_for_rejection():
+    """Two halves of one mechanism. The margin must stay finite so the leapfrog
+    gradient survives; the flag is what actually rejects, via -inf on the density.
+    A margin returning -inf would give theta = 0, which the emulator would
+    cheerfully simulate."""
+    from qsp_inference.vpop.predict import apply_margins, mu_out_of_bound
+
+    bad = jnp.asarray([jnp.log(5.0), 0.30, jnp.log(0.8)])   # index 1 above its bound
+    ok = jnp.asarray([jnp.log(5.0), -0.30, jnp.log(0.8)])
+
+    assert bool(mu_out_of_bound(bad, LOGIT))
+    assert not bool(mu_out_of_bound(ok, LOGIT))
+    assert not bool(mu_out_of_bound(bad, None))
+
+    zL = jnp.asarray(np.random.default_rng(4).standard_normal((32, P)))
+    got = apply_margins(bad, OMEGA, zL, LOGIT)
+    assert bool(jnp.all(jnp.isfinite(got))), "a rejected draw must not poison the gradient"
+    g = jax.grad(lambda m: apply_margins(m, OMEGA, zL, LOGIT).sum())(bad)
+    assert bool(jnp.all(jnp.isfinite(g)))

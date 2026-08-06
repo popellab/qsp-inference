@@ -18,7 +18,7 @@ import numpy as np
 
 from qsp_inference.vpop.rows import tau_row
 
-__all__ = ["Mechanism", "apply_margins", "patient_cloud", "readout_cloud", "apply_map",
+__all__ = ["Mechanism", "apply_margins", "mu_out_of_bound", "patient_cloud", "readout_cloud", "apply_map",
            "reference_levels", "cohort_cloud", "block_weights",
            "quantile_mass_table", "cohort_columns", "tau_rows",
            "tau_block", "tau_from_readouts", "tau_all"]
@@ -92,7 +92,12 @@ def apply_margins(mu, omega, zL, logit=None) -> jnp.ndarray:
     the expression returns ``mu`` exactly, so the median is what it always was.
     Only the spread moves to log-odds.
     """
-    log_theta = mu[None, :] + zL * omega[None, :]
+    # ``mu`` is (P,) in the fit, where one mu is shared by the whole cloud, and
+    # (N, P) when drawing the emulator's pool, where every row carries its own mu
+    # draw and the two spreads compose. Same expression either way.
+    mu = jnp.asarray(mu)
+    mu = mu if mu.ndim == 2 else mu[None, :]
+    log_theta = mu + zL * omega[None, :]
     if logit is None:
         return log_theta
     logit = jnp.asarray(logit)
@@ -103,10 +108,34 @@ def apply_margins(mu, omega, zL, logit=None) -> jnp.ndarray:
     # singularity: clipping keeps the value finite but leaves 1/(1 - m) ~ 1e8 in
     # the discarded arm, which is what makes d/dmu nan rather than large. Masking
     # mu first keeps that arm far from the boundary and its gradient exactly zero.
-    m = jnp.exp(jnp.where(logit, mu, -1.0))
+    # Masked to -1 so the discarded arm sits far from the singularity, and
+    # clipped below 0 so an out-of-bound ``mu`` -- which eq:muprior can propose,
+    # since it is unbounded -- yields a finite number here rather than a nan.
+    # The draw at such a mu is meaningless, and ``mu_out_of_bound`` is what
+    # rejects it; this only keeps the gradient finite while that happens.
+    safe_mu = jnp.minimum(jnp.where(logit[None, :], mu, -1.0), -1e-6)
+    m = jnp.exp(safe_mu)
     logit_mu = jnp.log(m) - jnp.log1p(-m)
-    log_theta_b = jax.nn.log_sigmoid(logit_mu[None, :] + zL * omega[None, :])
+    log_theta_b = jax.nn.log_sigmoid(logit_mu + zL * omega[None, :])
     return jnp.where(logit[None, :], log_theta_b, log_theta)
+
+
+def mu_out_of_bound(mu, logit) -> jnp.ndarray:
+    """True where a logit-margin parameter's ``mu`` leaves its own bound.
+
+    ``exp(mu_j)`` is that population's median. For a parameter bounded on (0, 1)
+    the median is bounded too, but eq:muprior is Gaussian on the log scale and
+    unbounded, so it can propose one that is not. The stage-1 prior does this
+    with real mass: 15% for phi_col_max, 10% for Emax_Cy_Treg.
+
+    Returned rather than raised, so the caller can put ``-inf`` on the log density
+    and let NUTS reject the draw. The rejection has to happen there and not in the
+    margin: a margin returning ``-inf`` would give ``theta = 0``, which is a
+    parameter value the emulator would happily simulate.
+    """
+    if logit is None:
+        return jnp.asarray(False)
+    return jnp.any(jnp.asarray(logit) & (jnp.asarray(mu) >= 0.0))
 
 
 def patient_cloud(mu, omega, mech: Mechanism) -> jnp.ndarray:
