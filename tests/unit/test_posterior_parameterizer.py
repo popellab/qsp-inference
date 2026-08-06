@@ -212,6 +212,55 @@ class TestWritePriorsYaml:
             assert "copula" in loaded
             assert loaded["copula"]["type"] == "gaussian"
 
+    def test_tiny_scale_marginal_survives_rounding(self):
+        """A gamma fitted to a ~1e-11 rate must not round its scale to zero.
+
+        Decimal rounding used to zero the scale of any marginal living far
+        below 1 (QSP rates in nmol/cell/hour routinely do). The resulting
+        degenerate gamma fails the log-domain fit in copula_prior and the
+        parameter silently reverts to its CSV lognormal, discarding the
+        submodel anchor.
+        """
+        result = {
+            "metadata": {"n_parameters": 1},
+            "parameters": [
+                {
+                    "name": "k_tiny",
+                    "marginal": {
+                        "distribution": "gamma",
+                        "shape": 2.25735389996691,
+                        "scale": 1.4744178704979357e-11,
+                        "median": 2.8518087376543316e-11,
+                        "cv": 0.665579863361409,
+                    },
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "tiny_priors.yaml"
+            write_priors_yaml(result, path)
+
+            from ruamel.yaml import YAML
+
+            yaml = YAML()
+            m = yaml.load(path)["parameters"][0]["marginal"]
+
+        assert m["scale"] > 0.0
+        assert m["median"] > 0.0
+        assert m["scale"] == pytest.approx(1.4744178704979357e-11, rel=1e-5)
+
+        # The whole point: the round-tripped spec must still admit a log fit.
+        # copula_prior pulls in torch, an optional extra, so this half of the
+        # check only runs where it is installed; the assertions above are the
+        # ones that must hold everywhere.
+        pytest.importorskip("torch")
+        from qsp_inference.priors.copula_prior import _log_transform_marginal
+
+        fitted = _log_transform_marginal(dict(m))
+        assert np.isfinite(fitted.mean())
+        assert fitted.std() > 0.0
+
 
 # =============================================================================
 # Tests: Audit report submodel priors export
