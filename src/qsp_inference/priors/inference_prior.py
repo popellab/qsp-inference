@@ -281,30 +281,41 @@ class PriorPair:
     def n_params(self) -> int:
         return len(self.param_names)
 
-    def sample_original(self, n: int, seed: int) -> np.ndarray:
+    def _sample_log_raw(self, n: int, seed: int, sampler: str) -> np.ndarray:
+        """``(n, d)`` proposal draws in log space, by the named sampler."""
+        if sampler not in ("iid", "sobol"):
+            raise ValueError(f"sampler must be 'iid' or 'sobol', got {sampler!r}")
+        if isinstance(self.proposal, CsvIndependentPrior):
+            if sampler == "sobol":
+                raise NotImplementedError(
+                    "sobol is defined on the log-space copula prior, where the "
+                    "sequence goes in the independent latent space before the "
+                    "Cholesky. The CSV-only path samples each family directly and "
+                    "has no such space; build the spec with a submodel_priors_yaml."
+                )
+            return np.log(self.proposal.sample_original(n, seed))
+        import torch
+
+        with torch.no_grad():
+            if sampler == "sobol":
+                return self.proposal.sample_sobol(n, seed).numpy()
+            torch.manual_seed(int(seed))
+            return self.proposal.sample((n,)).numpy()
+
+    def sample_original(self, n: int, seed: int, sampler: str = "iid") -> np.ndarray:
         """``(n, d)`` draws from the *proposal*, in original parameter space.
 
         This is what a simulator consumes. It samples the proposal, not the
         prior, because that is the distribution the training cloud is meant to
         come from; reporting is corrected afterwards by :meth:`reweight`.
         """
-        if isinstance(self.proposal, CsvIndependentPrior):
+        if sampler == "iid" and isinstance(self.proposal, CsvIndependentPrior):
             return self.proposal.sample_original(n, seed)
-        import torch
+        return np.exp(self._sample_log_raw(n, seed, sampler))
 
-        torch.manual_seed(int(seed))
-        with torch.no_grad():
-            return np.exp(self.proposal.sample((n,)).numpy())
-
-    def sample_log(self, n: int, seed: int) -> np.ndarray:
+    def sample_log(self, n: int, seed: int, sampler: str = "iid") -> np.ndarray:
         """``(n, d)`` draws from the proposal, in log space."""
-        if isinstance(self.proposal, CsvIndependentPrior):
-            return np.log(self.proposal.sample_original(n, seed))
-        import torch
-
-        torch.manual_seed(int(seed))
-        with torch.no_grad():
-            return self.proposal.sample((n,)).numpy()
+        return self._sample_log_raw(n, seed, sampler)
 
     def reweight(self, theta_log, **kwargs):
         """Importance weights carrying proposal draws onto the prior.
