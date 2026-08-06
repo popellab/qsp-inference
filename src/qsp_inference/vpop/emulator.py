@@ -46,19 +46,26 @@ def load_arm(path: str | Path) -> dict:
         return (np.asarray(sd[f"{prefix}.weight"], dtype=np.float64),
                 np.asarray(sd[f"{prefix}.bias"], dtype=np.float64))
 
-    trunk, i = [], 0
-    while f"trunk.{i}.weight" in sd:
-        trunk.append(_lin(f"trunk.{i}"))
-        # Linear, SiLU, Dropout -> stride 3; the last block has no dropout.
-        i += 3 if f"trunk.{i + 3}.weight" in sd else 2
+    def _trunk(prefix: str):
+        out, i = [], 0
+        while f"{prefix}{i}.weight" in sd:
+            out.append(_lin(f"{prefix}{i}"))
+            # Linear, SiLU, Dropout -> stride 3; the last block has no dropout.
+            i += 3 if f"{prefix}{i + 3}.weight" in sd else 2
+        return out
+
+    trunk = _trunk("trunk.")
     for head in ("species", "status"):
         if f"{head}.weight" not in sd:
             raise ValueError(f"{path}: state dict has no {head!r} head")
+    # ``heads="separate"`` stores a second trunk for the status net. Absent it the
+    # trunk is shared and both lists alias the same arrays, which is safe because
+    # a forward pass only reads them.
+    status_trunk = _trunk("status_trunk.") or trunk
     return {
-        # The trunk is shared, so both lists alias the same arrays rather than
-        # copying: a forward pass reads them and nothing writes.
         "layers": trunk + [_lin("species")],
-        "status_layers": trunk + [_lin("status")],
+        "status_layers": status_trunk + [_lin("status")],
+        "heads": ck.get("heads", "shared"),
         "param_names": list(ck["param_names"]),
         "target_names": list(ck["target_names"]),
         "transform": ck.get("transform", "asinh"),
@@ -244,25 +251,31 @@ def _torch_net(ck: Mapping):
     P = sd["trunk.0.weight"].shape[1]
     K = sd["species.weight"].shape[0]
     C = sd["status.weight"].shape[0]
+    separate = "status_trunk.0.weight" in sd
+
+    def _stack():
+        layers, prev = [], P
+        for i, h in enumerate(hidden):
+            layers += [nn.Linear(prev, h), nn.SiLU()]
+            if i < len(hidden) - 1:
+                # Dropout at p=0: identity here, and it keeps the module indices
+                # aligned with the trained state dict's keys.
+                layers += [nn.Dropout(0.0)]
+            prev = h
+        return nn.Sequential(*layers), prev
 
     class Emulator(nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            layers, prev = [], P
-            for i, h in enumerate(hidden):
-                layers += [nn.Linear(prev, h), nn.SiLU()]
-                if i < len(hidden) - 1:
-                    # Dropout at p=0: identity here, and it keeps the module
-                    # indices aligned with the trained state dict's keys.
-                    layers += [nn.Dropout(0.0)]
-                prev = h
-            self.trunk = nn.Sequential(*layers)
+            self.trunk, prev = _stack()
             self.species = nn.Linear(prev, K)
             self.status = nn.Linear(prev, C)
+            if separate:
+                self.status_trunk, _ = _stack()
 
         def forward(self, x):
-            z = self.trunk(x)
-            return self.species(z), self.status(z)
+            return (self.species(self.trunk(x)),
+                    self.status((self.status_trunk if separate else self.trunk)(x)))
 
     net = Emulator()
     net.load_state_dict(sd)
