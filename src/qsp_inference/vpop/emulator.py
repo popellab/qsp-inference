@@ -19,32 +19,91 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["load_arm", "arm_forward", "build_g_fn", "build_extra_fn",
-           "check_against_torch"]
+__all__ = ["load_arm", "arm_forward", "arm_status_logits", "arm_status_logprob",
+           "build_g_fn", "build_extra_fn", "check_against_torch"]
 
 
 def load_arm(path: str | Path) -> dict:
-    """Read one ``emulator_<arm>.pt`` into plain numpy. Torch is import-only."""
+    """Read one ``emulator_<arm>.pt`` into plain numpy. Torch is import-only.
+
+    The checkpoint is a shared trunk with two heads: ``species`` and ``status``.
+    ``layers`` is trunk + species head, which is what :func:`arm_forward` walks;
+    ``status_layers`` is trunk + status head.
+    """
     import torch
 
     ck = torch.load(Path(path), map_location="cpu", weights_only=False)
     sd = ck["state_dict"]
-    layers, i = [], 0
-    while f"{i}.weight" in sd:
-        layers.append((np.asarray(sd[f"{i}.weight"], dtype=np.float64),
-                       np.asarray(sd[f"{i}.bias"], dtype=np.float64)))
+    if "trunk.0.weight" not in sd:
+        raise ValueError(
+            f"{path}: no 'trunk.0.weight' in the state dict. This reader expects a "
+            f"two-head checkpoint (species + status). Retrain with the current "
+            f"train_emulator.py; a single-head checkpoint has no status head and "
+            f"loading it here would silently drop the eligibility map."
+        )
+
+    def _lin(prefix: str):
+        return (np.asarray(sd[f"{prefix}.weight"], dtype=np.float64),
+                np.asarray(sd[f"{prefix}.bias"], dtype=np.float64))
+
+    trunk, i = [], 0
+    while f"trunk.{i}.weight" in sd:
+        trunk.append(_lin(f"trunk.{i}"))
         # Linear, SiLU, Dropout -> stride 3; the last block has no dropout.
-        i += 3 if f"{i + 3}.weight" in sd else 2
-    if not layers:
-        raise ValueError(f"{path}: no Linear layers found in the state dict")
+        i += 3 if f"trunk.{i + 3}.weight" in sd else 2
+    for head in ("species", "status"):
+        if f"{head}.weight" not in sd:
+            raise ValueError(f"{path}: state dict has no {head!r} head")
     return {
-        "layers": layers,
+        # The trunk is shared, so both lists alias the same arrays rather than
+        # copying: a forward pass reads them and nothing writes.
+        "layers": trunk + [_lin("species")],
+        "status_layers": trunk + [_lin("status")],
         "param_names": list(ck["param_names"]),
         "target_names": list(ck["target_names"]),
         "transform": ck.get("transform", "asinh"),
+        "status_codes": list(ck.get("status_codes", [])),
+        "status_labels": list(ck.get("status_labels", [])),
         **{k: np.asarray(ck[k], dtype=np.float64)
            for k in ("x_mu", "x_sd", "t_mu", "t_sd", "scale")},
     }
+
+
+def _mlp(layers, h: jnp.ndarray) -> jnp.ndarray:
+    last = len(layers) - 1
+    for k, (W, b) in enumerate(layers):
+        h = h @ jnp.asarray(W).T + jnp.asarray(b)
+        if k != last:
+            h = h * jax.nn.sigmoid(h)  # SiLU
+    return h
+
+
+def arm_status_logits(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
+    """``(N, P)`` log-parameters -> ``(N, C)`` status-class logits.
+
+    The classes are ``arm["status_codes"]`` in order. No normalisation is undone
+    here: the head's outputs are logits, not a transformed physical quantity.
+    """
+    h = (log_theta - jnp.asarray(arm["x_mu"])) / jnp.asarray(arm["x_sd"])
+    return _mlp(arm["status_layers"], h)
+
+
+def arm_status_logprob(arm: Mapping, log_theta: jnp.ndarray,
+                       code: int = 0) -> jnp.ndarray:
+    """``(N,)`` log-probability that theta lands in status ``code``.
+
+    ``code=0`` is admissible, so ``exp`` of this is the smooth stand-in for the
+    simulator's hard screen. Log rather than probability because it is a term in
+    a log density and taking the log afterwards loses the tail.
+    """
+    codes = list(arm["status_codes"])
+    if code not in codes:
+        raise KeyError(
+            f"status code {code} absent from this arm; it carries {codes}. No row "
+            f"in the training set had that outcome, so the head cannot score it."
+        )
+    return jax.nn.log_softmax(arm_status_logits(arm, log_theta), axis=-1)[
+        :, codes.index(code)]
 
 
 def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
@@ -57,12 +116,7 @@ def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
     unbounded below, so those emit negative cell counts.
     """
     h = (log_theta - jnp.asarray(arm["x_mu"])) / jnp.asarray(arm["x_sd"])
-    last = len(arm["layers"]) - 1
-    for k, (W, b) in enumerate(arm["layers"]):
-        h = h @ jnp.asarray(W).T + jnp.asarray(b)
-        if k != last:
-            h = h * jax.nn.sigmoid(h)  # SiLU
-    t = h * jnp.asarray(arm["t_sd"]) + jnp.asarray(arm["t_mu"])
+    t = _mlp(arm["layers"], h) * jnp.asarray(arm["t_sd"]) + jnp.asarray(arm["t_mu"])
     # Defaulting is not safe here: reading a checkpoint under the wrong inverse
     # returns plausible numbers and nothing downstream notices, so an unlabelled
     # one is assumed to predate the change rather than to match the current code.
@@ -146,12 +200,15 @@ def build_extra_fn(
     return extra_fn
 
 
-def check_against_torch(path: str | Path, n: int = 64, seed: int = 0) -> float:
-    """Max relative gap between this forward pass and the torch module it ports.
+def check_against_torch(path: str | Path, n: int = 64,
+                        seed: int = 0) -> tuple[float, float]:
+    """``(species, status)`` max relative gap against the torch module ported here.
 
     Run it once per checkpoint. The failure it catches -- a layer stride read
     wrong, a normalisation applied in the wrong order -- produces plausible
-    numbers, so nothing downstream would report it.
+    numbers, so nothing downstream would report it. Both heads are checked: they
+    share a trunk, so a trunk bug shows in both, but a head wired to the wrong
+    output block shows in only one.
     """
     import torch
 
@@ -161,32 +218,53 @@ def check_against_torch(path: str | Path, n: int = 64, seed: int = 0) -> float:
 
     rng = np.random.default_rng(seed)
     x = arm["x_mu"] + arm["x_sd"] * rng.standard_normal((n, P))
+    xs = torch.tensor((x - arm["x_mu"]) / arm["x_sd"], dtype=torch.float32)
+
     got = np.asarray(arm_forward(arm, jnp.asarray(x)), dtype=np.float64)
+    got_status = np.asarray(arm_status_logits(arm, jnp.asarray(x)), dtype=np.float64)
 
     net = _torch_net(ck)
     with torch.no_grad():
-        t = net(torch.tensor((x - arm["x_mu"]) / arm["x_sd"], dtype=torch.float32)).numpy()
-    tt = t.astype(np.float64) * arm["t_sd"] + arm["t_mu"]
+        t, s = net(xs)
+    tt = t.numpy().astype(np.float64) * arm["t_sd"] + arm["t_mu"]
     want = (np.exp(tt) if arm.get("transform", "asinh") == "log"
             else arm["scale"] * np.sinh(tt))
-    return float(np.max(np.abs(got - want) / (np.abs(want) + 1e-30)))
+    want_status = s.numpy().astype(np.float64)
+
+    rel = lambda a, b: float(np.max(np.abs(a - b) / (np.abs(b) + 1e-30)))  # noqa: E731
+    return rel(got, want), rel(got_status, want_status)
 
 
 def _torch_net(ck: Mapping):
+    import torch
     import torch.nn as nn
 
     sd = ck["state_dict"]
     hidden = list(ck["hidden"])
-    P = sd["0.weight"].shape[1]
-    K = sd[max(k for k in sd if k.endswith(".weight"))].shape[0]
-    layers, prev = [], P
-    for i, h in enumerate(hidden):
-        layers += [nn.Linear(prev, h), nn.SiLU()]
-        if i < len(hidden) - 1:
-            layers += [nn.Dropout(0.0)]
-        prev = h
-    layers += [nn.Linear(prev, K)]
-    net = nn.Sequential(*layers)
+    P = sd["trunk.0.weight"].shape[1]
+    K = sd["species.weight"].shape[0]
+    C = sd["status.weight"].shape[0]
+
+    class Emulator(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            layers, prev = [], P
+            for i, h in enumerate(hidden):
+                layers += [nn.Linear(prev, h), nn.SiLU()]
+                if i < len(hidden) - 1:
+                    # Dropout at p=0: identity here, and it keeps the module
+                    # indices aligned with the trained state dict's keys.
+                    layers += [nn.Dropout(0.0)]
+                prev = h
+            self.trunk = nn.Sequential(*layers)
+            self.species = nn.Linear(prev, K)
+            self.status = nn.Linear(prev, C)
+
+        def forward(self, x):
+            z = self.trunk(x)
+            return self.species(z), self.status(z)
+
+    net = Emulator()
     net.load_state_dict(sd)
     net.eval()
     return net
