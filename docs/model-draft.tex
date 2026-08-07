@@ -83,6 +83,70 @@ unit of independence, and neither does a cohort: the block is that. A cohort is
 the unit that owns an $n$, an eligibility rule and a level $c_{rc}$, and most
 blocks hold exactly one.
 
+\section{Elicitation}
+\label{sec:elicit}
+
+Two inputs are elicited: the spread centre $\omega_0$ that \eqref{eq:omegaassumed}
+builds on, and the loadings $\Lambda$ that \eqref{eq:Rfactor} turns into a
+between-patient correlation. Nothing measures either. They are stated in the same
+form, and that form is the contract a reader is asked to check.
+
+A value comes from a small set of bins rather than as a free number, since an
+elicitation does not support three significant figures and printing them invites
+a reader to believe them. A bin is named for the warrant for its value rather
+than for the value, because the same number gets claimed for incompatible reasons
+and the name is what lets a reader tell which claim is being made. Each is $O(P)$
+claims about single parameters rather than $P(P-1)/2$ about pairs. Every
+assignment is recorded per parameter alongside the level it came from, so any
+width or correlation traces back to the claim that produced it.
+
+\paragraph{Roles: how wide a parameter is.}
+\begin{center}\small
+\begin{tabularx}{0.95\textwidth}{@{}llrX@{}}
+\toprule
+\texttt{patient\_trait} & $0.70$ & $18$ & clinically observed to vary from patient to patient \\
+\texttt{lumped} & $0.50$ & $50$ & stands in for structure the model does not resolve, so its spread is the coarseness varying and not an observation \\
+\texttt{default} & $0.35$ & $3$ & a biological quantity with no reason to be special \\
+\texttt{packing\_limit} & $0.15$ & $12$ & a geometric ceiling \\
+\texttt{material\_constant} & $0.10$ & $4$ & a property of matter, the same in every person \\
+\texttt{structural} & $0.05$ & $15$ & a numerical gate, not a physical quantity, so varying it across patients has no meaning \\
+\bottomrule
+\end{tabularx}
+\end{center}
+The third column is how the $102$ parameters currently fall. $0.35$ is a $36\%$
+CV and is what a parameter gets when nothing more specific is known; $0.50$ is
+the log-midpoint $\sqrt{0.35\cdot0.70}$, so it privileges neither neighbour. A
+role says how wide and never on what scale: the log or logit margin of
+\eqref{eq:mu} is orthogonal to it, and four parameters carry the logit.
+
+The gaps are load-bearing and not only the values. $\tau_\omega$ of
+\eqref{eq:omegaassumed} is a quarter of the narrowest gap,
+$\log(0.70/0.50)=0.336$, leaving four standard deviations to the nearest role
+boundary, so the fitted pattern cannot move a parameter out of the role it was
+assigned: $\tau_\omega = 0.085$. Changing a value in the ladder changes that
+derivation.
+
+\paragraph{Loadings: what a parameter varies with.} A parameter loads on at most
+a few declared latent patient axes, with a magnitude and a sign:
+\begin{center}\small
+\begin{tabularx}{0.95\textwidth}{@{}llX@{}}
+\toprule
+\texttt{primary} & $0.8$ & the axis explains $64\%$ of a patient's variation in that parameter \\
+\texttt{secondary} & $0.5$ & $25\%$ \\
+\texttt{weak} & $0.3$ & $9\%$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+A parameter with no declared loading is uncorrelated with the rest, and that is
+the default rather than a gap. The communality $\sum_k \Lambda_{jk}^2$ is capped
+at $0.81$, which keeps $R$ strictly positive definite so that its Cholesky cannot
+fail and no nearest-correlation projection is ever called; a projection would
+rewrite entries far from the violation it was called for, and what was reviewed
+would stop being what was shipped. The cap also asserts that no modelled
+parameter is fully determined by the axes. Axes are declared, and a loading
+naming one that is not is dropped and reported rather than creating an axis, so a
+typo cannot become a factor that nothing else loads on.
+
 \section{The model}
 
 \paragraph{Population.}
@@ -104,6 +168,24 @@ z_i \stackrel{\text{iid}}{\sim} \Ncal_P(0,I_P) \ \text{ drawn once},
 R = L_R L_R\Tr .
 \label{eq:crn}
 \end{equation}
+
+\paragraph{Between-patient correlation.} $R$ is elicited rather than inherited
+from stage 1. That posterior correlation is epistemic, and reading it here would
+assert something else, that a patient high in one parameter is high in the other.
+Nothing measures the latter, so it is elicited the way the widths are, as a claim
+about what drives a parameter. Each parameter loads on at most a few latent
+patient axes:
+\begin{equation}
+z_{ij} \;=\; \sum_{k} \Lambda_{jk} f_{ik} \;+\; \psi_j e_{ij},
+\qquad
+\sum_{k}\Lambda_{jk}^2 + \psi_j^2 = 1,
+\qquad
+R \;=\; \Lambda\Lambda\Tr + \diag(\psi^2),
+\label{eq:Rfactor}
+\end{equation}
+with $f_{ik}$ and $e_{ij}$ iid standard normal, so \eqref{eq:Rfactor} is a
+construction of the $z_i$ of \eqref{eq:crn}. The loading ladder and the
+communality cap are in \S\ref{sec:elicit}.
 
 \paragraph{Mechanism.} Simulate patient $i$ under scenario $s$ and read off the
 species at the measured time:
@@ -299,6 +381,38 @@ prints which, the draw falls back to independent, $V_B$ understates those
 off-diagonals and the fit is overconfident there. Record the block as uncounted
 and bound the effect by refitting without the second study.
 
+\paragraph{Study effect.} A study shifts its own location rows together:
+\begin{equation}
+\widehat T_B \mid \eta \;\sim\; \Ncal_{K_B}\Big(
+  \tau_B(\phi) + \textstyle\sum_{s} \eta_s\,\mathbf{1}^{\mathrm{loc}}_{B,s},
+  \ V_B\Big),
+\qquad
+\eta_s \stackrel{\text{iid}}{\sim} \Ncal\big(0,\ \tau_\eta^2\big),
+\label{eq:studyeff}
+\end{equation}
+with $\mathbf{1}^{\mathrm{loc}}_{B,s}\in\{0,1\}^{K_B}$ the indicator of the
+location rows of block $B$ that come from study $s$. The index is the study and
+not the cohort, since arms of one trial share a lab and a patient stream. A width
+row is untouched: $\eta$ is a level effect and \eqref{eq:disc} already gives
+widths their own scale term.
+
+Gaussian and additive, so \eqref{eq:studyeff} marginalises exactly:
+\begin{equation}
+\widehat T_B \;\sim\; \Ncal_{K_B}\Big(\tau_B(\phi),\
+  V_B + \tau_\eta^2 \textstyle\sum_s
+  \mathbf{1}^{\mathrm{loc}}_{B,s}\mathbf{1}^{\mathrm{loc}\Tr}_{B,s}\Big).
+\label{eq:studymarg}
+\end{equation}
+So $\eta$ adds no coordinate to $\phi$, and the addition is free of $\phi$ and
+leaves $V_B$ frozen. A study reporting one row has that row's variance raised by
+$\tau_\eta^2$; a study reporting many keeps its within-study contrasts at full
+weight and discounts only their common level, which is the correction the corpus
+needs, since one study supplies $20$ of the $55$ rows.
+
+$\tau_\eta$ is fixed. A free $\eta_s$ is not available at this corpus: $22$
+studies against $55$ rows, $13$ of them reporting a single row that a free shift
+would fit exactly, and $8$ directions of $\eta$ already spanned by $Z$.
+
 \paragraph{Sampling covariance.} $V_{B}$ is the covariance of the reported
 statistics of block $B$ under resampling of its patients. It has two
 ingredients. The first is a bootstrap from the predicted population at a plug-in
@@ -393,13 +507,19 @@ $\widehat g$, and $\widehat g$ is a property of the parameter values it was
 trained on. So that training design is an input to the model, not an
 implementation detail.
 
-The fit calls the emulator at $\vartheta_i = \mu + D_\omega L_R z_i$. The $\mu$
-part ranges over the stage-1 prior and the $z_i$ part spreads patients around it,
-so the values it is asked about have covariance about $\Sigma_1 + \Omega$. Draw
-the design from that law as a scrambled Sobol sequence, widened to cover the
-flanks and to allow for $s$ making the population wider than $\omega_0$. Every
-parameter has to vary: a design that pinned one would leave the likelihood
-undefined along it rather than merely flat.
+The fit calls the emulator at $\vartheta_i = \mu + D_\omega L_R z_i$, at one
+$\phi$ per evaluation. Do not draw the design from the union over $\phi$, of
+covariance $\Sigma_1 + \Omega$: in $P$ dimensions a Gaussian holds its mass on a
+shell at $\sqrt{P} \pm 1/\sqrt{2}$ and none in its own interior, so such a design
+has no rows near any particular $\phi$, and least of all near $\phi_0$, that
+being the centre. Widening does not repair this; it moves the shell further from
+where the emulator is read.
+
+Draw a \emph{mixture} instead: a scrambled Sobol patient cloud about each of a
+few centres, one of them $(\mu_0, \omega_0)$ exactly, so the operating point is
+covered whatever the others do. Hedge for where the sampler travels by adding
+components, never by widening one. Every parameter has to vary: a design that
+pinned one would leave the likelihood undefined along it rather than merely flat.
 
 Score the emulator on an independent draw from the same law, not on a split of
 the design, since a low-discrepancy sequence leaves its halves interleaved.
@@ -492,6 +612,26 @@ logit margin gives $0.075$ at median $0.79$ and $0.35$ at median $0.03$. A
 maximum fractional suppression near its bound genuinely cannot vary as much as an
 unbounded rate, so this is the bound doing its work rather than a distortion, but
 the width a reader infers from the role is wrong for these four.
+
+\paragraph{The spread centre.} $\omega_0$ is elicited by role
+(\S\ref{sec:elicit}). A parameter may carry an explicit $\omega_{0j}$ in place of
+its role, which none currently does.
+
+Where a submodel target carries a population block, its sample spread $s_j$ over
+$n_j$ donors shrinks the role value rather than replacing it:
+\begin{equation}
+\log\omega_{0j}
+\;=\;
+\frac{2(n_j-1)\,\log s_j \;+\; \tau^{-2}\log\omega^{\mathrm{role}}_{j}}
+     {2(n_j-1) \;+\; \tau^{-2}},
+\qquad \tau = 0.5 ,
+\label{eq:omegashrink}
+\end{equation}
+the same precision weighting as \eqref{eq:omegameas}, since $\log s$ has sampling
+sd $1/\sqrt{2(n_j-1)}$. A sample spread from six donors is itself some $30\%$
+uncertain and should pull $\omega_0$ rather than pin it; at $\tau=0.5$ the
+crossover sits at $n\approx3$. No parameter currently carries a population block,
+so $\omega_0$ is the role ladder throughout.
 
 \paragraph{Spread.} Let $\Mset$ be the parameters whose between-patient spread a
 source has measured, with sample size $n_j$. For $j\in\Mset$,
@@ -778,25 +918,41 @@ priors decide the split.
 
 \section{Fixed inputs}
 
+Every number the model asserts is here. A dash means the input is a structure or
+a per-parameter table rather than a scalar.
+
 \begin{center}\small
-\begin{tabularx}{\textwidth}{@{}lX@{}}
+\begin{tabularx}{\textwidth}{@{}llX@{}}
 \toprule
-$R$ & Population correlation matrix. Not identified by these data. \\
-$\omega_0$ & Prior centre of the spreads, per parameter. \\
-$\mu_0,\ \Sigma_1$ & Stage-1 composite prior, log scale. \\
-$h_r$ & Readout composition, including unit conversions. Already in the target definitions. \\
-$Z$ & Readout attributes for the measurement discrepancy: assay modality, quantity type. \\
-$c_{rc}$ & Pivot of \eqref{eq:disc}: cohort $c$'s median of readout $r$ at $(\mu_0,\omega_0)$. Fixed once, not rebuilt with $V_B$. \\
-$\mathcal{S}$ & Species allowed a mechanism discrepancy. Default: the shared denominators. \\
-$z_{1:N}$ & The latent cloud, drawn once. \\
-$w^{(c)}$ & Eligibility weights, read from each paper's criterion. \\
-$h_q,\ h_w$ & Smoothing bandwidths: the quantile kernel \eqref{eq:smoothq} and the eligibility weight \eqref{eq:elig}. \\
-$\widehat g$ & The emulator, and with it the design it was trained on. Fixes $E_B$ and $\bar d_B$. \\
-$V_{B}$ & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One per block of \eqref{eq:obs}. \\
-$E_B$ & Emulator error covariance on the statistics of block $B$, from \eqref{eq:Ec}. \\
-$\alpha,\ \Gamma$ & Emulator correction of \eqref{eq:gcorr}, fitted at $\phi_0$ from $n_g$ solves and frozen with $V_B$. \\
-$\tau_s,\ \tau_\omega,\ \tau,\ \sigma_a,\ \sigma_b$ & Prior widths. \\
-$\tau_\beta$ & Mechanism discrepancy scale, fixed rather than estimated. \\
+& \textbf{value} & \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Elicited} (\S\ref{sec:elicit})}\\
+$\omega_0$ & --- & Spread centre, per parameter. By role, shrunk by \eqref{eq:omegashrink} where a population block exists. \\
+$\Lambda,\ \psi$ & --- & Loadings and idiosyncratic scales of \eqref{eq:Rfactor}. Bins $0.8/0.5/0.3$ with a sign. \\
+& $0.81$ & Communality cap. Keeps $R$ strictly positive definite. \\
+$R$ & --- & Population correlation. Not identified by these data; built by \eqref{eq:Rfactor}. \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Prior widths}}\\
+$\tau_s$ & $0.30$ & Global level of the spreads, \eqref{eq:omegaassumed}. \\
+$\tau_\omega$ & $0.085$ & Pattern across spreads. Derived, not chosen: a quarter of the ladder's narrowest gap. \\
+$\tau$ & $0.50$ & Trust in the role prior against a measured spread, \eqref{eq:omegameas} and \eqref{eq:omegashrink}. \\
+$\sigma_a,\ \sigma_b$ & $0.50$ & Measurement discrepancy per column of $Z$, \eqref{eq:abprior}. \\
+$\tau_\beta$ & $0.15$ & Mechanism discrepancy scale, fixed rather than estimated. \\
+$\tau_\eta$ & --- & Study effect scale, \eqref{eq:studyeff}. Fixed rather than estimated; not yet set. \\
+\midrule
+\multicolumn{3}{@{}l}{\emph{Structures}}\\
+$\mu_0,\ \Sigma_1$ & --- & Stage-1 composite prior, log scale. \\
+$h_r$ & --- & Readout composition, including unit conversions. Already in the target definitions. \\
+$Z$ & --- & Readout attributes for the measurement discrepancy: assay modality, quantity type. \\
+$c_{rc}$ & --- & Pivot of \eqref{eq:disc}: cohort $c$'s median of readout $r$ at $(\mu_0,\omega_0)$. Fixed once, not rebuilt with $V_B$. \\
+$\mathcal{S}$ & --- & Species allowed a mechanism discrepancy. Default: the shared denominators. \\
+$z_{1:N}$ & --- & The latent cloud, drawn once. \\
+$w^{(c)}$ & --- & Eligibility weights, read from each paper's criterion. \\
+$h_q,\ h_w$ & --- & Smoothing bandwidths: the quantile kernel \eqref{eq:smoothq} and the eligibility weight \eqref{eq:elig}. \\
+$\widehat g$ & --- & The emulator, and with it the design it was trained on. Fixes $E_B$ and $\bar d_B$. \\
+$V_{B}$ & --- & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One per block of \eqref{eq:obs}. \\
+$E_B$ & --- & Emulator error covariance on the statistics of block $B$, from \eqref{eq:Ec}. \\
+$\alpha,\ \Gamma$ & --- & Emulator correction of \eqref{eq:gcorr}, fitted at $\phi_0$ from $n_g$ solves and frozen with $V_B$. \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -819,9 +975,13 @@ correlation $\bar\rho_B$. Rows can outnumber patients: one source supplies 20 of
 the 54 targets from about ten patients per arm, and there
 $V^{\text{boot}}_B$ is singular and only $E_B$ makes $V_B$ invertible.
 
-\item \textbf{No study offset.} A free $\eta_c$ would be aliased with the
-measurement discrepancy. It is omitted and $\gamma_r$ absorbs the study effect,
-so $\gamma_r$ mixes assay bias with study bias.
+\item \textbf{The study offset is shrunk, not free.} A free $\eta_s$ is aliased
+with the measurement discrepancy along $8$ directions, and saturates the $13$
+studies reporting a single row. Equation \eqref{eq:studyeff} fixes $\tau_\eta$
+instead, so how much of a between-study difference is called heterogeneity rather
+than signal is asserted. Only $7$ of the $17$ (quantity type, assay modality)
+cells are reported by more than one study, so the corpus constrains $\tau_\eta$
+weakly. Report the fit at more than one $\tau_\eta$.
 
 \item \textbf{$V$ frozen at $\phi_0$.} Equation \eqref{eq:post} is an estimating
 equation, not a likelihood. Letting $V$ move with $\phi$ would reintroduce a
