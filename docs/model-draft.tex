@@ -515,14 +515,13 @@ has no rows near any particular $\phi$, and least of all near $\phi_0$, that
 being the centre. Widening does not repair this; it moves the shell further from
 where the emulator is read.
 
-Draw a \emph{mixture} instead: a scrambled Sobol patient cloud about each of a
-few centres, one of them $(\mu_0, \omega_0)$ exactly, so the operating point is
-covered whatever the others do. Hedge for where the sampler travels by adding
+Draw a \emph{mixture} instead: a patient cloud about each of a few centres, one
+of them $(\mu_0, \omega_0)$ exactly, so the operating point is covered whatever
+the others do. Hedge for where the sampler travels by adding
 components, never by widening one. Every parameter has to vary: a design that
 pinned one would leave the likelihood undefined along it rather than merely flat.
 
-Score the emulator on an independent draw from the same law, not on a split of
-the design, since a low-discrepancy sequence leaves its halves interleaved.
+Score the emulator on a held-out draw from the same law.
 
 \paragraph{Assembling $V_B$.} Since reported uncertainties go to width rather
 than to the error bar, both the scales and the correlations come from the
