@@ -314,7 +314,8 @@ def tau_rows(specs, x_cohort, w, mech: Mechanism, designs=None,
                 masses[key] = quantile_mass(w_sorted, spec.p, spec.n, spec.convention)
             mass = masses[key]
         out.append(tau_row(spec, x_sorted, w_sorted,
-                           (designs or {}).get(spec.label), mass))
+                           (designs or {}).get(spec.label), mass,
+                           uniform=uniform))
     return jnp.stack(out)
 
 

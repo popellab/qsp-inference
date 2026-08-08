@@ -9,7 +9,11 @@ import numpy as np
 import pytest
 
 from qsp_inference.vpop.fit import PopulationPrior
-from qsp_inference.vpop.recovery import map_estimate, recovery_table
+from qsp_inference.vpop.recovery import (
+    map_estimate,
+    print_recovery,
+    summarise_recovery,
+)
 
 numpyro = pytest.importorskip("numpyro")
 import numpyro.distributions as dist
@@ -61,18 +65,50 @@ class TestMapEstimate:
         assert np.isfinite(f) and f > 0
 
 
-class TestRecoveryTable:
-    def test_perfect_recovery_reads_zero(self):
-        star = {"a": jnp.array([1.0, 2.0])}
-        t = recovery_table(star, star)
-        assert t["a"][0] == pytest.approx(0.0)
-        assert t["a"][1] == pytest.approx(t["a"][2])
+class TestSummariseRecovery:
+    def _draws(self, mean, sd, n=4000, seed=0):
+        rng = np.random.default_rng(seed)
+        return mean + sd * rng.standard_normal((n, np.size(mean)))
 
-    def test_a_block_at_the_prior_mode_reads_as_unidentified(self):
-        star = {"a": jnp.array([3.0, 4.0])}
-        t = recovery_table(star, {"a": jnp.zeros(2)})
-        assert t["a"][0] == pytest.approx(5.0)   # ||hat - star|| == ||star||
-        assert t["a"][2] == pytest.approx(0.0)
+    def test_a_tight_posterior_on_the_truth_is_identified_and_covered(self):
+        rows = summarise_recovery({"a": np.array([1.0, 2.0])},
+                                  {"a": self._draws(np.array([1.0, 2.0]), 0.05)},
+                                  {"a": np.ones(2)})
+        assert all(r.identified and r.covered for r in rows)
+        assert max(abs(r.z) for r in rows) < 0.5
+
+    def test_a_posterior_that_is_the_prior_reads_unidentified(self):
+        """The truth may still be inside it; that is not evidence and says so."""
+        rows = summarise_recovery({"a": np.array([0.0])},
+                                  {"a": self._draws(np.array([0.0]), 1.0)},
+                                  {"a": np.ones(1)})
+        assert not rows[0].identified
+        assert rows[0].shrink == pytest.approx(1.0, abs=0.05)
+
+    def test_a_tight_posterior_off_the_truth_misses_it(self):
+        rows = summarise_recovery({"a": np.array([1.0])},
+                                  {"a": self._draws(np.array([3.0]), 0.05)},
+                                  {"a": np.ones(1)})
+        assert rows[0].identified and not rows[0].covered
+        assert rows[0].z > 10
+
+    def test_the_two_coverage_columns_are_reported_apart(self):
+        """Pooling them lets a corpus that determines nothing score 100%."""
+        rows = summarise_recovery(
+            {"a": np.array([0.0, 5.0])},
+            {"a": np.column_stack([self._draws(np.array([0.0]), 1.0),
+                                   self._draws(np.array([9.0]), 0.05, seed=1)])},
+            {"a": np.ones(2)})
+        lines = print_recovery(rows)
+        header = next(line for line in lines if "cover id" in line)
+        row = next(line for line in lines if line.startswith("a "))
+        assert header.index("cover id") < header.index("cover un")
+        assert "0%" in row and "100%" in row
+
+    def test_a_component_count_mismatch_raises(self):
+        with pytest.raises(ValueError, match="components"):
+            summarise_recovery({"a": np.zeros(3)}, {"a": np.zeros((10, 2))},
+                               {"a": np.ones(3)})
 
 
 class TestDegeneraciesRefused:

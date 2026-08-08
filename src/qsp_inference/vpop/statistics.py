@@ -132,7 +132,7 @@ def mean_row(x_sorted, w):
 
 
 def iqr_row(x_sorted, w, n: int, convention: str = "type7", log: bool = False,
-            u=None):
+            u=None, uniform: bool = True):
     """A reported interquartile range: ``E[IQR]``, or ``E[log IQR]`` when logged.
 
     eq:obs's mean is the expectation of the number the source printed, and a
@@ -144,12 +144,15 @@ def iqr_row(x_sorted, w, n: int, convention: str = "type7", log: bool = False,
     ``E[IQR]`` is exact by linearity of the expectation over the two order
     statistics. ``E[log IQR]`` is not, so it needs the frozen bootstrap design
     ``u``, the same one the moment rows use.
+
+    ``uniform`` is the caller's own statement that no eligibility weights are in
+    force, and is a Python bool rather than something read off ``w``: this runs
+    under ``jit``, where ``w`` is a tracer and any test on its values raises.
     """
     if not log:
         return (expected_quantile(x_sorted, w, 0.75, n, convention)
                 - expected_quantile(x_sorted, w, 0.25, n, convention))
-    w_arr = jnp.asarray(w)
-    if w_arr.size and float(jnp.max(w_arr) - jnp.min(w_arr)) > 1e-12:
+    if not uniform:
         raise NotImplementedError(
             "a logged iqr row under non-uniform eligibility weights needs a "
             "weighted quantile inside the replicate, which is not implemented. "

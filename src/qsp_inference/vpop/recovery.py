@@ -15,13 +15,14 @@ unidentified rather than as a failure.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["map_estimate", "recovery_table"]
+__all__ = ["map_estimate", "RecoveryRow", "summarise_recovery", "print_recovery"]
 
 
 def map_estimate(model: Callable, model_args: Sequence[Any], *,
@@ -65,18 +66,119 @@ def map_estimate(model: Callable, model_args: Sequence[Any], *,
     return info.postprocess_fn(unravel(v)), float(f)
 
 
-def recovery_table(star: Mapping[str, jnp.ndarray],
-                   hat: Mapping[str, jnp.ndarray]) -> Dict[str, Tuple[float, float, float]]:
-    """Per block, ``(||hat - star||, ||star||, ||hat||)``.
+#: Below this, the posterior is narrower than the prior by enough to call the
+#: component identified. At 1.0 the corpus said nothing about it.
+IDENTIFIED_SHRINK = 0.9
 
-    A block that returned to the prior mode reads ``||hat - star|| ~ ||star||``
-    with ``||hat||`` near zero, which is the answer for an unidentified one and
-    not a failure.
+
+@dataclass(frozen=True)
+class RecoveryRow:
+    """One component of ``phi``, against the truth that generated the data."""
+
+    block: str
+    name: str
+    truth: float
+    mean: float
+    sd: float
+    prior_sd: float
+    lo: float
+    hi: float
+
+    @property
+    def z(self) -> float:
+        """``(mean - truth)`` in posterior sd. Only meaningful where identified."""
+        return (self.mean - self.truth) / self.sd if self.sd > 0 else np.inf
+
+    @property
+    def shrink(self) -> float:
+        """Posterior sd over prior sd. 1 is the prior back, 0 is a point mass."""
+        return self.sd / self.prior_sd if self.prior_sd > 0 else np.nan
+
+    @property
+    def identified(self) -> bool:
+        return bool(self.shrink < IDENTIFIED_SHRINK)
+
+    @property
+    def covered(self) -> bool:
+        return bool(self.lo <= self.truth <= self.hi)
+
+
+def summarise_recovery(truth: Mapping[str, np.ndarray],
+                       draws: Mapping[str, np.ndarray],
+                       prior_sd: Mapping[str, np.ndarray],
+                       *, names: Optional[Mapping[str, Sequence[str]]] = None,
+                       level: float = 0.9) -> List[RecoveryRow]:
+    """One :class:`RecoveryRow` per component of every block ``truth`` names.
+
+    ``draws`` is the posterior with a leading sample axis. ``prior_sd`` is what
+    separates the two ways a component can sit on its truth: a posterior that
+    found it, and a posterior that never moved off a prior which happened to be
+    centred near it. Only the first is evidence.
     """
-    out: Dict[str, Tuple[float, float, float]] = {}
-    for k in star:
-        a = np.asarray(star[k], dtype=float).ravel()
-        b = np.asarray(hat[k], dtype=float).ravel()
-        out[k] = (float(np.linalg.norm(b - a)), float(np.linalg.norm(a)),
-                  float(np.linalg.norm(b)))
+    tail = (1.0 - level) / 2.0
+    rows: List[RecoveryRow] = []
+    for block in truth:
+        if block not in draws:
+            raise KeyError(f"no posterior draws for {block!r}")
+        star = np.atleast_1d(np.asarray(truth[block], dtype=float)).ravel()
+        d = np.asarray(draws[block], dtype=float).reshape(
+            np.shape(draws[block])[0], -1)
+        sd_0 = np.broadcast_to(
+            np.atleast_1d(np.asarray(prior_sd[block], dtype=float)).ravel(),
+            star.shape)
+        if d.shape[1] != star.size:
+            raise ValueError(
+                f"{block}: truth has {star.size} components, draws have "
+                f"{d.shape[1]}")
+        label = (list(names[block]) if names and block in names
+                 else [f"{block}[{i}]" for i in range(star.size)])
+        lo, hi = np.quantile(d, [tail, 1.0 - tail], axis=0)
+        rows.extend(
+            RecoveryRow(block=block, name=label[i], truth=float(star[i]),
+                        mean=float(d[:, i].mean()), sd=float(d[:, i].std(ddof=1)),
+                        prior_sd=float(sd_0[i]), lo=float(lo[i]), hi=float(hi[i]))
+            for i in range(star.size))
+    return rows
+
+
+def print_recovery(rows: Sequence[RecoveryRow], *, level: float = 0.9,
+                   worst: int = 6) -> List[str]:
+    """The recovery table as lines to print: per block, then the worst rows.
+
+    Coverage is reported over the identified components and the unidentified ones
+    separately. Pooling them hides the failure this is for: an unidentified
+    component is covered at ``level`` by construction, so a corpus that determines
+    nothing scores perfectly on the pooled number.
+    """
+    out = [f"recovery against phi*, {level:.0%} intervals",
+           f"{'block':<10}{'n':>4}{'ident':>7}{'|z| med':>9}{'|z| max':>9}"
+           f"{'cover id':>10}{'cover un':>10}{'shrink med':>12}"]
+    for block in dict.fromkeys(r.block for r in rows):
+        got = [r for r in rows if r.block == block]
+        ident = [r for r in got if r.identified]
+        unid = [r for r in got if not r.identified]
+        z = np.abs([r.z for r in ident]) if ident else np.array([np.nan])
+        out.append(
+            f"{block:<10}{len(got):>4}{len(ident):>7}"
+            f"{np.median(z):>9.2f}{np.max(z):>9.2f}"
+            f"{_frac(ident):>10}{_frac(unid):>10}"
+            f"{np.median([r.shrink for r in got]):>12.2f}")
+
+    bad = sorted((r for r in rows if r.identified and not r.covered),
+                 key=lambda r: -abs(r.z))[:worst]
+    if not bad:
+        out.append("every identified component covers its truth")
+        return out
+    out.append(f"\nidentified components missing their truth ({len(bad)} shown):")
+    out.append(f"  {'name':<28}{'truth':>10}{'mean':>10}{'sd':>9}{'z':>8}"
+               f"{'shrink':>9}")
+    for r in bad:
+        out.append(f"  {r.name[:26]:<28}{r.truth:>10.3f}{r.mean:>10.3f}"
+                   f"{r.sd:>9.3f}{r.z:>+8.2f}{r.shrink:>9.2f}")
     return out
+
+
+def _frac(rows: Sequence[RecoveryRow]) -> str:
+    if not rows:
+        return "-"
+    return f"{sum(r.covered for r in rows) / len(rows):.0%}"

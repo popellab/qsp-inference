@@ -195,12 +195,15 @@ def hard_rows_fn(
     return rows_fn
 
 
-def tau_row(spec: RowSpec, cloud_sorted, w, design=None, mass=None):
+def tau_row(spec: RowSpec, cloud_sorted, w, design=None, mass=None,
+            uniform: bool = True):
     """The model's prediction of the printed number: its expectation over ``n_c``.
 
     ``design`` is the frozen bootstrap design, needed only by the moment rows.
     ``mass`` is a Beta weight vector from :func:`statistics.quantile_mass`, reused
-    across rows that share ``(w, p, n, convention)``.
+    across rows that share ``(w, p, n, convention)``. ``uniform`` says no
+    eligibility weights are in force, which a logged width row needs to know and
+    cannot learn from ``w`` under tracing.
     """
     from qsp_inference.vpop import statistics as st
 
@@ -213,7 +216,8 @@ def tau_row(spec: RowSpec, cloud_sorted, w, design=None, mass=None):
         out = st.mean_row(cloud_sorted, w)
     elif spec.stat == "iqr":
         return st.iqr_row(cloud_sorted, w, spec.n, spec.convention, log=spec.log,
-                          u=_need(design, spec) if spec.log else None)
+                          u=_need(design, spec) if spec.log else None,
+                          uniform=uniform)
     elif spec.stat == "sd":
         return st.sd_row(cloud_sorted, w, _need(design, spec), log=spec.log)
     elif spec.stat == "se":
