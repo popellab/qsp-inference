@@ -1,9 +1,16 @@
-"""MAP recovery from a known ``phi*``: the wiring test for eq:post.
+"""Recovery from a known ``phi*``: does the fit return the truth it was given?
 
-Data drawn at ``phi*`` are recoverable in principle, because ``z`` is frozen and
-shared between the draw and the fit, so ``tau``'s Monte Carlo displacement
-cancels. What comes back tells you which directions the corpus determines and
-which return to the prior.
+The synthetic cohorts must be drawn on THEIR OWN ``z``, not the fit's. Sharing it
+would cancel ``tau``'s Monte Carlo displacement between the draw and the fit, and
+a recovery that passes only because the two clouds are the same patients has not
+tested the thing it looks like it tested. Data are cohort draws off a truth cloud
+pushed through the simulator, so the emulator's error, the order-statistic
+kernel's ``n``-correction and ``E_B`` all sit between ``phi*`` and the rows, which
+is where they sit in the real fit.
+
+What comes back tells you which directions the corpus determines and which return
+to the prior. A direction whose posterior sd equals its prior sd is reported as
+unidentified rather than as a failure.
 """
 
 from __future__ import annotations
