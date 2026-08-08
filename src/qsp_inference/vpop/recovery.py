@@ -157,10 +157,13 @@ def print_recovery(rows: Sequence[RecoveryRow], *, level: float = 0.9,
         got = [r for r in rows if r.block == block]
         ident = [r for r in got if r.identified]
         unid = [r for r in got if not r.identified]
-        z = np.abs([r.z for r in ident]) if ident else np.array([np.nan])
+        # Blank rather than nan where nothing is identified: |z| against a
+        # posterior that is still the prior is not a number worth printing.
+        z = np.abs([r.z for r in ident])
+        med = f"{np.median(z):.2f}" if ident else "-"
+        mx = f"{np.max(z):.2f}" if ident else "-"
         out.append(
-            f"{block:<10}{len(got):>4}{len(ident):>7}"
-            f"{np.median(z):>9.2f}{np.max(z):>9.2f}"
+            f"{block:<10}{len(got):>4}{len(ident):>7}{med:>9}{mx:>9}"
             f"{_frac(ident):>10}{_frac(unid):>10}"
             f"{np.median([r.shrink for r in got]):>12.2f}")
 
