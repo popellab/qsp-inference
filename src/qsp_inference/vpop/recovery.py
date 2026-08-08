@@ -85,9 +85,30 @@ class RecoveryRow:
     hi: float
 
     @property
+    def pinned(self) -> bool:
+        """The model held this at a value rather than sampling it.
+
+        Scoring it against the truth as if it were an estimate gives an infinite
+        z, which is not a huge error but the absence of one. A pinned component
+        is either pinned AT the truth or pinned away from it, and that distance
+        is the thing worth reporting.
+
+        Tested against the prior sd rather than against zero: a numpyro
+        deterministic site returns the same float every draw, and its sample sd
+        comes back at rounding rather than at exactly 0.
+        """
+        return not (self.sd > 1e-8 * self.prior_sd)
+
+    @property
     def z(self) -> float:
         """``(mean - truth)`` in posterior sd. Only meaningful where identified."""
-        return (self.mean - self.truth) / self.sd if self.sd > 0 else np.inf
+        return np.nan if self.pinned else (self.mean - self.truth) / self.sd
+
+    @property
+    def bias_in_prior_sd(self) -> float:
+        """``(mean - truth)`` in PRIOR sd. The reading a pinned component has."""
+        return ((self.mean - self.truth) / self.prior_sd
+                if self.prior_sd > 0 else np.nan)
 
     @property
     def shrink(self) -> float:
@@ -96,7 +117,8 @@ class RecoveryRow:
 
     @property
     def identified(self) -> bool:
-        return bool(self.shrink < IDENTIFIED_SHRINK)
+        """Determined by the data. A pinned component is decided, not determined."""
+        return bool(not self.pinned and self.shrink < IDENTIFIED_SHRINK)
 
     @property
     def covered(self) -> bool:
@@ -153,10 +175,14 @@ def print_recovery(rows: Sequence[RecoveryRow], *, level: float = 0.9,
     out = [f"recovery against phi*, {level:.0%} intervals",
            f"{'block':<10}{'n':>4}{'ident':>7}{'|z| med':>9}{'|z| max':>9}"
            f"{'cover id':>10}{'cover un':>10}{'shrink med':>12}"]
+    pinned_blocks = []
     for block in dict.fromkeys(r.block for r in rows):
         got = [r for r in rows if r.block == block]
+        if all(r.pinned for r in got):
+            pinned_blocks.append((block, got))
+            continue
         ident = [r for r in got if r.identified]
-        unid = [r for r in got if not r.identified]
+        unid = [r for r in got if not r.identified and not r.pinned]
         # Blank rather than nan where nothing is identified: |z| against a
         # posterior that is still the prior is not a number worth printing.
         z = np.abs([r.z for r in ident])
@@ -166,6 +192,15 @@ def print_recovery(rows: Sequence[RecoveryRow], *, level: float = 0.9,
             f"{block:<10}{len(got):>4}{len(ident):>7}{med:>9}{mx:>9}"
             f"{_frac(ident):>10}{_frac(unid):>10}"
             f"{np.median([r.shrink for r in got]):>12.2f}")
+
+    # Pinned blocks are a claim the fit made, not an estimate it produced, so
+    # they are reported by how far the pin sits from the truth in prior sd. Zero
+    # is a pin on the answer; anything else is a bias with no error bar on it.
+    for block, got in pinned_blocks:
+        off = np.abs([r.bias_in_prior_sd for r in got])
+        verdict = ("on the truth" if np.nanmax(off) < 1e-9
+                   else f"off it by up to {np.nanmax(off):.2f} prior sd")
+        out.append(f"{block:<10}{len(got):>4}   PINNED, {verdict}")
 
     bad = sorted((r for r in rows if r.identified and not r.covered),
                  key=lambda r: -abs(r.z))[:worst]

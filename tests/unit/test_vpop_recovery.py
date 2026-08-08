@@ -146,3 +146,31 @@ class TestDegeneraciesRefused:
         assert PopulationPrior(
             **self._kw(measured=(0,), tau_omega_measured=0.2)
         ).tau_omega_measured == 0.2
+
+
+class TestPinnedComponents:
+    """A pinned site is a claim the fit made, not an estimate it produced."""
+
+    def test_a_pinned_block_is_named_rather_than_scored(self):
+        rows = summarise_recovery({"a": np.zeros(2)},
+                                  {"a": np.zeros((100, 2))},
+                                  {"a": np.full(2, 0.5)})
+        assert all(r.pinned and not r.identified for r in rows)
+        assert np.isnan(rows[0].z)
+        line = next(x for x in print_recovery(rows) if x.startswith("a "))
+        assert "PINNED, on the truth" in line
+
+    def test_a_pin_away_from_the_truth_reports_the_distance(self):
+        rows = summarise_recovery({"x": np.array([1.0])},
+                                  {"x": np.full((100, 1), 0.5)},
+                                  {"x": np.array([0.25])})
+        line = next(x for x in print_recovery(rows) if x.startswith("x "))
+        assert "off it by up to 2.00 prior sd" in line
+
+    def test_rounding_in_a_deterministic_site_still_reads_as_pinned(self):
+        """numpyro returns the same float every draw; its sample sd is not 0."""
+        draws = np.full((500, 1), 0.6931471805599453)
+        rows = summarise_recovery({"x": np.array([0.9])}, {"x": draws},
+                                  {"x": np.array([0.4])})
+        assert rows[0].pinned
+        assert np.isfinite(rows[0].bias_in_prior_sd)
