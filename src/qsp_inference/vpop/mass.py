@@ -29,8 +29,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["laplace_blocks", "laplace_covariance", "laplace_inverse_mass",
-           "should_fix_mass"]
+__all__ = ["adaptation_window", "laplace_blocks", "laplace_covariance",
+           "laplace_inverse_mass", "should_fix_mass"]
 
 
 def _whiten(J: np.ndarray, V_chol, sizes: Sequence[int]) -> np.ndarray:
@@ -138,16 +138,34 @@ def laplace_inverse_mass(prior, problem, V_chol, **kw):
     return {tuple(names): jnp.asarray(0.5 * (G_inv + G_inv.T))}
 
 
+def adaptation_window(warmup: int) -> int:
+    """Draws numpyro's largest mass-matrix estimation window actually gets.
+
+    Not ``warmup``. The schedule spends an init buffer finding a step size and a
+    terminal buffer re-tuning it, and estimates the metric only in the expanding
+    windows between them, keeping the last estimate. At 1000 warmup draws the
+    largest of those windows is 500; at 200 it is 50, against a total that looks
+    four times larger.
+    """
+    from numpyro.infer.hmc_util import build_adaptation_schedule
+
+    schedule = build_adaptation_schedule(warmup)
+    return max((b - a + 1 for a, b in schedule[1:-1]), default=0)
+
+
 def should_fix_mass(dim: int, warmup: int, factor: int = 3) -> bool:
     """Whether to freeze the computed metric or let warmup re-estimate it.
 
-    numpyro's final adaptation window estimates the mass matrix from scratch, so
-    leaving adaptation on discards the Laplace metric and keeps only the benefit
-    of having explored well while getting there. That is the right trade when the
-    warmup has enough draws to estimate a ``dim x dim`` covariance and the wrong
-    one when it does not.
+    numpyro's adaptation estimates the mass matrix from scratch, so leaving it on
+    discards the Laplace metric and keeps only the benefit of having explored
+    well while getting there. That is the right trade when the schedule has
+    enough draws to estimate a ``dim x dim`` covariance and the wrong one when it
+    does not, so the rule is the one that decides which estimator is better
+    rather than a global switch: below about three draws per dimension, keep the
+    computed metric.
 
-    So the rule is the one that decides which estimator is better, not a global
-    switch: below about three draws per dimension, keep the computed metric.
+    The comparison is against :func:`adaptation_window`, not against ``warmup``.
+    Reading the total is what a caller would do by hand, and it overstates the
+    draws behind the estimate several-fold.
     """
-    return warmup < factor * dim
+    return adaptation_window(warmup) < factor * dim
