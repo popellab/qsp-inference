@@ -173,11 +173,14 @@ def print_recovery(rows: Sequence[RecoveryRow], *, level: float = 0.9,
         out.append("every identified component covers its truth")
         return out
     out.append(f"\nidentified components missing their truth ({len(bad)} shown):")
-    out.append(f"  {'name':<28}{'truth':>10}{'mean':>10}{'sd':>9}{'z':>8}"
+    # The block belongs in the label: one parameter appears in mu, in log_omega
+    # and in u, and without it three different quantities read as duplicates of
+    # one name with disagreeing truths.
+    out.append(f"  {'component':<34}{'truth':>10}{'mean':>10}{'sd':>9}{'z':>8}"
                f"{'shrink':>9}")
     for r in bad:
-        out.append(f"  {r.name[:26]:<28}{r.truth:>10.3f}{r.mean:>10.3f}"
-                   f"{r.sd:>9.3f}{r.z:>+8.2f}{r.shrink:>9.2f}")
+        out.append(f"  {f'{r.block}/{r.name}'[:32]:<34}{r.truth:>10.3f}"
+                   f"{r.mean:>10.3f}{r.sd:>9.3f}{r.z:>+8.2f}{r.shrink:>9.2f}")
     return out
 
 
