@@ -131,16 +131,62 @@ def mean_row(x_sorted, w):
     return jnp.sum(w * jnp.asarray(x_sorted)) / jnp.sum(w)
 
 
-def iqr_row(x_sorted, w, n: int, convention: str = "type7", log: bool = False):
-    """A reported interquartile range, exact by linearity of the expectation.
+def iqr_row(x_sorted, w, n: int, convention: str = "type7", log: bool = False,
+            u=None):
+    """A reported interquartile range: ``E[IQR]``, or ``E[log IQR]`` when logged.
 
-    ``log=True`` is not the expectation of the reported log: that needs the joint
-    law of two order statistics. Use it only where the row was printed as a log.
+    eq:obs's mean is the expectation of the number the source printed, and a
+    logged row printed a log, so the expectation has to be taken there. Taking it
+    outside instead reports ``log E[IQR]``, which is larger by the Jensen gap: an
+    IQR from ``n=9`` carries about a 30% sampling CV, worth ~0.045 log units on
+    the rows that are the only evidence about ``omega``.
+
+    ``E[IQR]`` is exact by linearity of the expectation over the two order
+    statistics. ``E[log IQR]`` is not, so it needs the frozen bootstrap design
+    ``u``, the same one the moment rows use.
     """
-    hi = expected_quantile(x_sorted, w, 0.75, n, convention)
-    lo = expected_quantile(x_sorted, w, 0.25, n, convention)
-    width = hi - lo
-    return jnp.log(jnp.clip(width, 1e-30, None)) if log else width
+    if not log:
+        return (expected_quantile(x_sorted, w, 0.75, n, convention)
+                - expected_quantile(x_sorted, w, 0.25, n, convention))
+    w_arr = jnp.asarray(w)
+    if w_arr.size and float(jnp.max(w_arr) - jnp.min(w_arr)) > 1e-12:
+        raise NotImplementedError(
+            "a logged iqr row under non-uniform eligibility weights needs a "
+            "weighted quantile inside the replicate, which is not implemented. "
+            "The unlogged row is exact either way.")
+    if u is None:
+        raise ValueError(
+            "a logged iqr row needs a bootstrap design: E[log IQR] has no closed "
+            "form, and log E[IQR] is a different quantity")
+
+    lo25, f25 = _position(0.25, n, convention)
+    lo75, f75 = _position(0.75, n, convention)
+
+    def _log_width(v, ww):
+        # A replicate IS the printed sample, so its quantiles are the ordinary
+        # ones. Eligibility would make them weighted; iqr_row refuses that above
+        # rather than quietly dropping the weights.
+        del ww
+        vs = jnp.sort(v)
+        width = (_interp(vs, lo75, f75, n) - _interp(vs, lo25, f25, n))
+        return jnp.log(jnp.clip(width, 1e-30, None))
+
+    return bootstrap_row(x_sorted, w, u, _log_width)
+
+
+def _position(p: float, n: int, convention: str):
+    """The convention's order-statistic position, split into index and fraction."""
+    h = QUANTILE_CONVENTIONS[convention](p, n)
+    h = min(max(h, 1.0), float(n))
+    lo = int(h // 1)
+    return lo, h - lo
+
+
+def _interp(v_sorted, lo: int, frac: float, n: int):
+    """The estimator between two order statistics of one replicate."""
+    a = v_sorted[lo - 1]
+    b = v_sorted[min(lo, n - 1)]
+    return (1.0 - frac) * a + frac * b if frac > 0 else a
 
 
 def bootstrap_design(key, n: int, n_boot: int = 400):
@@ -181,8 +227,12 @@ def sd_row(x_sorted, w, u, log: bool = False):
     No closed form: the correction depends on the shape of the pushforward, which
     is what ``phi`` controls, so it is neither distribution-free nor a fixed offset.
     """
-    s = bootstrap_row(x_sorted, w, u, _weighted_sd)
-    return jnp.log(jnp.clip(s, 1e-30, None)) if log else s
+    if not log:
+        return bootstrap_row(x_sorted, w, u, _weighted_sd)
+    # Inside the expectation, not outside: the row printed a log, so eq:obs's
+    # mean is E[log s] and log E[s] is larger by the Jensen gap.
+    return bootstrap_row(x_sorted, w, u, lambda v, ww:
+                         jnp.log(jnp.clip(_weighted_sd(v, ww), 1e-30, None)))
 
 
 def se_row(x_sorted, w, u, n: int, log: bool = False):
@@ -191,5 +241,8 @@ def se_row(x_sorted, w, u, n: int, log: bool = False):
     The expectation of the estimator the source printed, not the sampling spread
     itself. The two differ at ``O(1/n)`` and only the first is ``E[printed]``.
     """
-    s = bootstrap_row(x_sorted, w, u, _weighted_sd) / jnp.sqrt(float(n))
-    return jnp.log(jnp.clip(s, 1e-30, None)) if log else s
+    rt = jnp.sqrt(float(n))
+    if not log:
+        return bootstrap_row(x_sorted, w, u, _weighted_sd) / rt
+    return bootstrap_row(x_sorted, w, u, lambda v, ww:
+                         jnp.log(jnp.clip(_weighted_sd(v, ww) / rt, 1e-30, None)))

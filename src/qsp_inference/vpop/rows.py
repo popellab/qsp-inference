@@ -212,7 +212,8 @@ def tau_row(spec: RowSpec, cloud_sorted, w, design=None, mass=None):
     elif spec.stat == "mean":
         out = st.mean_row(cloud_sorted, w)
     elif spec.stat == "iqr":
-        return st.iqr_row(cloud_sorted, w, spec.n, spec.convention, log=spec.log)
+        return st.iqr_row(cloud_sorted, w, spec.n, spec.convention, log=spec.log,
+                          u=_need(design, spec) if spec.log else None)
     elif spec.stat == "sd":
         return st.sd_row(cloud_sorted, w, _need(design, spec), log=spec.log)
     elif spec.stat == "se":

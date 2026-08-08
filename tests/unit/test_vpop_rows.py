@@ -178,13 +178,19 @@ class TestTauRow:
             float(st.expected_quantile(x, w, 0.25, 9)))
         assert float(tau_row(specs["mean"], x, w)) == pytest.approx(float(st.mean_row(x, w)))
 
-    def test_iqr_is_logged_when_the_row_is(self, cloud):
+    def test_a_logged_iqr_row_is_E_log_iqr_and_needs_a_design(self, cloud):
+        """Not log E[IQR]: the row printed a log, so the expectation goes there."""
+        import jax
+
         x, w = cloud
         (spec,) = row_specs({"t": _target("c", [{"stat": "iqr", "value": 2.0},
                                                 {"stat": "quantile", "p": 0.5,
                                                  "value": 1.0}])}, {"c": 12})[:1]
-        assert float(tau_row(spec, x, w)) == pytest.approx(
-            float(np.log(st.iqr_row(x, w, 12))))
+        with pytest.raises(ValueError, match="needs a bootstrap design"):
+            tau_row(spec, x, w)
+        u = st.bootstrap_design(jax.random.PRNGKey(0), 12, n_boot=2_000)
+        got = float(tau_row(spec, x, w, design=u))
+        assert got < float(np.log(st.iqr_row(x, w, 12)))
 
     def test_moment_rows_need_a_design(self, cloud):
         x, w = cloud

@@ -210,12 +210,21 @@ class TestMomentRows:
             float(sd_row(cloud, ones, u)) / np.sqrt(11), rel=1e-9
         )
 
-    def test_log_forms_are_the_log_of_the_row(self, clouds, ones):
+    def test_log_forms_take_the_expectation_inside_the_log(self, clouds, ones):
+        """eq:obs's mean is E[log s], which sits BELOW log E[s] by the Jensen gap.
+
+        The row printed a log, so the expectation belongs there. Taking it
+        outside reports a larger number, and on the width rows that is the only
+        evidence about omega.
+        """
         u = bootstrap_design(jax.random.PRNGKey(3), 12, n_boot=2_000)
         cloud = clouds["normal"]
-        assert float(sd_row(cloud, ones, u, log=True)) == pytest.approx(
-            np.log(float(sd_row(cloud, ones, u))), rel=1e-9
-        )
+        inside = float(sd_row(cloud, ones, u, log=True))
+        outside = np.log(float(sd_row(cloud, ones, u)))
+        assert inside < outside
+        # Jensen's gap is second order in the sampling CV, so it is small and
+        # strictly positive rather than a different quantity altogether.
+        assert outside - inside == pytest.approx(0.0, abs=0.2)
 
     def test_design_is_frozen_across_calls(self, clouds, ones):
         """Same design, same answer: no Monte Carlo noise in the gradient."""
