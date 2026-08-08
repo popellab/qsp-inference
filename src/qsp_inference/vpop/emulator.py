@@ -13,32 +13,23 @@ one is silent, so :func:`check_against_torch` exists to close it.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["load_arm", "attach_gcorr", "arm_forward", "arm_status_logits",
+__all__ = ["load_arm", "arm_forward", "arm_status_logits",
            "arm_status_logprob", "build_g_fn", "build_extra_fn",
            "check_against_torch"]
 
-if TYPE_CHECKING:
-    from qsp_inference.vpop.gcorr import GCorr
-
-
-def load_arm(path: str | Path, gcorr: "str | Path | GCorr | None" = None) -> dict:
+def load_arm(path: str | Path) -> dict:
     """Read one ``emulator_<arm>.pt`` into plain numpy. Torch is import-only.
 
     The checkpoint is a shared trunk with two heads: ``species`` and ``status``.
     ``layers`` is trunk + species head, which is what :func:`arm_forward` walks;
     ``status_layers`` is trunk + status head.
 
-    ``gcorr`` attaches eq:gcorr's correction, which :func:`arm_forward` then
-    applies. Passed rather than found beside the checkpoint: a correction is
-    fitted at one ``phi_0`` and goes stale as ``mu`` moves, so which one is in use
-    is a decision the caller records and not something a directory listing
-    decides.
     """
     import torch
 
@@ -81,37 +72,10 @@ def load_arm(path: str | Path, gcorr: "str | Path | GCorr | None" = None) -> dic
         "transform": ck.get("transform", "asinh"),
         "status_codes": list(ck.get("status_codes", [])),
         "status_labels": list(ck.get("status_labels", [])),
-        "gcorr": None,
         **{k: np.asarray(ck[k], dtype=np.float64)
            for k in ("x_mu", "x_sd", "t_mu", "t_sd", "scale")},
     }
-    if gcorr is not None:
-        arm["gcorr"] = attach_gcorr(arm, gcorr)
     return arm
-
-
-def attach_gcorr(arm: Mapping, gcorr: "str | Path | GCorr") -> "GCorr":
-    """Check one correction against the arm it is meant for, and return it.
-
-    The two failures worth refusing are a correction fitted for another arm and
-    one whose parameter order differs from the checkpoint's. Both leave every
-    shape matching, so neither shows up downstream.
-    """
-    from qsp_inference.vpop.gcorr import GCorr, load_gcorr
-
-    g = gcorr if isinstance(gcorr, GCorr) else load_gcorr(gcorr)
-    if list(g.target_names) != list(arm["target_names"]):
-        raise ValueError(
-            f"the correction carries {len(g.target_names)} targets and this arm "
-            f"has {len(arm['target_names'])}; it was fitted for another arm"
-        )
-    if list(g.param_names) != list(arm["param_names"]):
-        raise ValueError(
-            "the correction's parameter order differs from the checkpoint's. "
-            "Gamma is indexed by parameter, so permuting one without the other "
-            "is silent; reorder both or neither."
-        )
-    return g
 
 
 def _mlp(layers, h: jnp.ndarray) -> jnp.ndarray:
@@ -160,17 +124,9 @@ def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
     read only for checkpoints trained before that was fixed, and ``sinh`` is
     unbounded below, so those emit negative cell counts.
 
-    eq:gcorr's correction, if the arm carries one, is applied to ``t``. That is
-    the transform it was fitted in, and it is upstream of the inverse, so the
-    correction stays affine where it was estimated and the positivity of ``exp``
-    survives it.
     """
     h = (log_theta - jnp.asarray(arm["x_mu"])) / jnp.asarray(arm["x_sd"])
     t = _mlp(arm["layers"], h) * jnp.asarray(arm["t_sd"]) + jnp.asarray(arm["t_mu"])
-    g = arm.get("gcorr")
-    if g is not None:
-        t = t - jnp.asarray(g.alpha) - (
-            log_theta - jnp.asarray(g.mu_0)) @ jnp.asarray(g.Gamma).T
     # Defaulting is not safe here: reading a checkpoint under the wrong inverse
     # returns plausible numbers and nothing downstream notices, so an unlabelled
     # one is assumed to predate the change rather than to match the current code.
@@ -264,8 +220,6 @@ def check_against_torch(path: str | Path, n: int = 64,
     share a trunk, so a trunk bug shows in both, but a head wired to the wrong
     output block shows in only one.
 
-    The uncorrected pass is what is compared. eq:gcorr has no torch side to
-    disagree with, and attaching it here would report its effect as a port bug.
     """
     import torch
 

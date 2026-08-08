@@ -15,7 +15,6 @@ from qsp_inference.vpop.emulator import (  # noqa: E402
     check_against_torch,
     load_arm,
 )
-from qsp_inference.vpop.gcorr import GCorr  # noqa: E402
 
 HIDDEN = (8, 8, 4)
 P, K, C = 5, 3, 4
@@ -110,59 +109,3 @@ def test_absent_status_code_raises(tmp_path):
     x = jnp.zeros((2, P))
     with pytest.raises(KeyError, match="absent from this arm"):
         arm_status_logprob(arm, x, code=5)
-
-
-def _gcorr(seed=0, params=None, targets=None):
-    rng = np.random.default_rng(seed)
-    return GCorr(alpha=rng.standard_normal(K), Gamma=rng.standard_normal((K, P)) * 0.1,
-                 mu_0=rng.standard_normal(P), lam=1.0, n_fit=100,
-                 x_sd=np.ones(P),
-                 param_names=tuple(params or [f"p{i}" for i in range(P)]),
-                 target_names=tuple(targets or [f"sp:S{i}@0" for i in range(K)]))
-
-
-def test_gcorr_enters_the_forward_pass_in_the_trained_transform(tmp_path):
-    """eq:gcorr is subtracted from psi, so it shows as a factor after exp."""
-    path = _checkpoint(tmp_path)
-    g = _gcorr()
-    x = jnp.asarray(np.random.default_rng(3).standard_normal((16, P)))
-    plain = np.asarray(arm_forward(load_arm(path), x))
-    corrected = np.asarray(arm_forward(load_arm(path, gcorr=g), x))
-    want = np.log(plain) - g.alpha - (np.asarray(x) - g.mu_0) @ g.Gamma.T
-    np.testing.assert_allclose(np.log(corrected), want, rtol=1e-5)
-
-
-def test_gcorr_leaves_the_status_head_alone(tmp_path):
-    """The correction is fitted on species; the screen is not a species."""
-    path = _checkpoint(tmp_path)
-    x = jnp.asarray(np.random.default_rng(4).standard_normal((8, P)))
-    np.testing.assert_array_equal(
-        np.asarray(arm_status_logits(load_arm(path), x)),
-        np.asarray(arm_status_logits(load_arm(path, gcorr=_gcorr()), x)))
-
-
-def test_gcorr_for_another_arm_is_refused(tmp_path):
-    path = _checkpoint(tmp_path)
-    with pytest.raises(ValueError, match="fitted for another arm"):
-        load_arm(path, gcorr=_gcorr(targets=[f"sp:S{i}@0" for i in range(K - 1)]))
-    with pytest.raises(ValueError, match="parameter order"):
-        load_arm(path, gcorr=_gcorr(params=[f"p{i}" for i in reversed(range(P))]))
-
-
-def test_single_head_checkpoint_is_refused(tmp_path):
-    """Silently loading a pre-two-head checkpoint would drop the status map."""
-    import torch.nn as nn
-
-    net = nn.Sequential(nn.Linear(P, 8), nn.SiLU(), nn.Linear(8, K))
-    path = tmp_path / "old.pt"
-    torch.save(
-        {"state_dict": net.state_dict(), "hidden": [8],
-         "param_names": [f"p{i}" for i in range(P)],
-         "target_names": [f"sp:S{i}@0" for i in range(K)],
-         "transform": "log",
-         **{k: np.ones(P if k.startswith("x") else K)
-            for k in ("x_mu", "x_sd", "t_mu", "t_sd", "scale")}},
-        path,
-    )
-    with pytest.raises(ValueError, match="two-head checkpoint"):
-        load_arm(path)

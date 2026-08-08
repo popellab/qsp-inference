@@ -462,39 +462,26 @@ tenth of that width, with $\bar d_B$ taking an increasing share of it. Reporting
 $E_B$ alone therefore understates $V_B$ by whatever $\bar d_B$ is, and nothing in
 the fit registers the difference.
 
-So $\bar d_B$ is removed rather than carried, by the correction of
-\eqref{eq:gcorr}. What survives the correction is what \eqref{eq:absorbfrac} then
-asks \eqref{eq:disc} to hold.
+So $\bar d_B$ would have to be removed rather than carried, if it were large.
+Measured against a training pool that covers the operating point, it is not.
 
-\paragraph{Correcting the emulator.} $\bar d_B$ is a property of where the cloud
-sits, so it is estimated there and removed there. Draw $n_g$ patients from the
-cloud at $\phi_0$, solve them, and fit an affine correction to the emulator's
-residual in the transform $\psi$ it was trained in:
-\begin{equation}
-\psi\big(\widehat g_{\mathrm{c}}(\vartheta)\big)
-\;=\;
-\psi\big(\widehat g(\vartheta)\big)
-\;-\; \alpha \;-\; \Gamma\,(\vartheta-\mu_0),
-\label{eq:gcorr}
-\end{equation}
-with $\alpha\in\mathbb{R}^{Q}$ and $\Gamma\in\mathbb{R}^{Q\times P}$ a ridge fit
-over the $n_g$ solved patients. $\alpha$ shifts every patient alike and so reaches
-a spread only through the curvature of $\psi^{-1}$; the statistics that report
-width need $\Gamma$, which is what varies across the cloud. $\widehat
-g_{\mathrm{c}}$ replaces $\widehat g$ throughout, including in \eqref{eq:Ec}, and
-the same $n_g$ solves supply both the fit and the $E_B$ that follows it. On this
-corpus $n_g=50$ recovers most of the location error and $n_g=200$ most of the
-scale error.
+\paragraph{Why there is no emulator correction.} An earlier draft specified an
+affine correction $\psi(\widehat g_{\mathrm{c}}) = \psi(\widehat g) - \alpha -
+\Gamma(\vartheta-\mu_0)$, fitted over $n_g$ solved patients drawn at $\phi_0$.
+It was built, and it is not needed: the whole of $\bar d_B$ it was meant to
+remove was an artifact of a design drawn where the fit does not read. Once the
+design is the mixture above, the uncorrected emulator agrees with the simulator
+to $0.4\%$ on readout IQR over the same patients, the correction buys $0.002$ in
+held-out readout correlation, and that gain is flat across four orders of
+magnitude in the ridge penalty --- so it is a constant offset, with no $\Gamma$
+worth fitting. Against $\sqrt{E_B}/\sqrt{V^{\text{boot}}_B}$ of $0.02$, there is
+nothing left to correct.
 
-The correction is affine, so it is free in the sampler: fitted once at $\phi_0$,
-frozen alongside $V_B$, and costing nothing per evaluation. Freezing $\alpha$ is
-not the same risk as freezing $V_B$, though. A stale $V_B$ gives a row the wrong
-width, which \eqref{eq:ratio} tests; a stale $\alpha$ moves $\tau$ itself and is
-paid for in $\mu$, which is the failure the correction exists to prevent. So the
-outer loop is governed by $\|\mu-\mu_0\|$ against the width the correction was
-fitted over, and $V_B$ is refreshed with it. $\Gamma$ meanwhile enters
-$\partial\tau/\partial\mu$, so it corrects the emulator's Jacobian and not only
-its level.
+The lesson is worth keeping even though the machinery is not. An emulator
+correction fitted at the wrong place is indistinguishable from one that is
+needed: both report a large residual and both reduce it. What decides between
+them is whether the design covers the evaluation measure, which is a property of
+the pool and not of the correction.
 
 The fallback is $E_B=\diag(\varepsilon^2)$, with $\varepsilon_r$ the held-out
 residual of readout $r$ repeated across its $K_{rc}$ statistics. It asserts that
@@ -951,7 +938,6 @@ $h_q,\ h_w$ & --- & Smoothing bandwidths: the quantile kernel \eqref{eq:smoothq}
 $\widehat g$ & --- & The emulator, and with it the design it was trained on. Fixes $E_B$ and $\bar d_B$. \\
 $V_{B}$ & --- & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One per block of \eqref{eq:obs}. \\
 $E_B$ & --- & Emulator error covariance on the statistics of block $B$, from \eqref{eq:Ec}. \\
-$\alpha,\ \Gamma$ & --- & Emulator correction of \eqref{eq:gcorr}, fitted at $\phi_0$ from $n_g$ solves and frozen with $V_B$. \\
 \bottomrule
 \end{tabularx}
 \end{center}
