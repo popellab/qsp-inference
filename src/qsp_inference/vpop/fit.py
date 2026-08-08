@@ -15,8 +15,8 @@ from typing import Mapping, Optional, Sequence, Tuple
 import jax.numpy as jnp
 import numpy as np
 
-__all__ = ["PopulationPrior", "Problem", "build_omega",
-           "population_model"]
+__all__ = ["PopulationPrior", "Problem", "build_omega", "site_spec",
+           "phi_from_sites", "population_model"]
 
 
 @dataclass(frozen=True)
@@ -110,6 +110,67 @@ def build_omega(s, u_raw, log_omega_measured, prior: PopulationPrior):
     return jnp.exp(log_omega)
 
 
+def site_spec(prior: "PopulationPrior", *, flat: bool = False):
+    """``[(name, zero-value, prior sd)]`` for every site the model samples.
+
+    The single statement of what the latent space IS. A mass matrix, a Laplace
+    metric and a conditioning report all need the site list, their shapes and
+    their prior widths, and each one derived separately would be a copy that can
+    disagree with the model without any symptom: numpyro accepts a mass matrix
+    whose blocks belong to different parameters than it thinks.
+
+    Order is declaration order, not numpyro's. Callers that need numpyro's own
+    packing sort by name themselves, where it is visible.
+    """
+    out = [("mu_raw", jnp.zeros(prior.n_params), 1.0)]
+    if not flat:
+        out.append(("s", jnp.zeros(()), prior.tau_s))
+        out.append(("u_raw", jnp.zeros(len(prior.assumed)), prior.tau_u))
+        if prior.measured:
+            idx = np.asarray(prior.measured)
+            out.append(("log_omega_measured",
+                        jnp.log(jnp.asarray(prior.omega_0)[idx]),
+                        prior.tau_omega_measured))
+    if not prior.pin_discrepancy:
+        out.append(("a", jnp.zeros(prior.dim_z), prior.sigma_a))
+        out.append(("b", jnp.zeros(prior.dim_z), prior.sigma_b))
+    if prior.n_beta:
+        out.append(("beta_raw", jnp.zeros(prior.n_beta), 1.0))
+    if prior.n_aux and not prior.pin_aux:
+        out.append(("log_R", jnp.asarray(prior.log_R_0),
+                    np.asarray(prior.sigma_R)))
+    return out
+
+
+def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior",
+                   *, flat: bool = False):
+    """``(mu, omega, a, b, beta_free, log_R)`` from the sampled sites.
+
+    The deterministic half of :func:`population_model`, which calls it. Anything
+    that has to differentiate the model's map without sampling it goes through
+    here rather than rebuilding the map, so the two cannot drift apart.
+    """
+    mu = jnp.asarray(prior.mu_0) + jnp.asarray(prior.L_sigma_1) @ sites["mu_raw"]
+    if flat:
+        omega = jnp.asarray(prior.omega_0)
+    else:
+        omega = build_omega(sites["s"], sites["u_raw"],
+                            sites.get("log_omega_measured", jnp.zeros(0)), prior)
+    if prior.pin_discrepancy:
+        a = b = jnp.zeros(prior.dim_z)
+    else:
+        a, b = sites["a"], sites["b"]
+    beta_free = (prior.tau_beta * (sites["beta_raw"] - jnp.mean(sites["beta_raw"]))
+                 if prior.n_beta else jnp.zeros(0))
+    if not prior.n_aux:
+        log_R = None
+    elif prior.pin_aux:
+        log_R = jnp.asarray(prior.log_R_0)
+    else:
+        log_R = sites["log_R"]
+    return mu, omega, a, b, beta_free, log_R
+
+
 @dataclass(frozen=True)
 class Problem:
     """The fixed side of the fit: everything ``tau_all`` needs that is not ``phi``."""
@@ -140,8 +201,10 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     from qsp_inference.vpop.predict import tau_all
 
     P = prior.n_params
-    mu_raw = numpyro.sample("mu_raw", dist.Normal(0.0, 1.0).expand([P]).to_event(1))
-    mu = numpyro.deterministic("mu", prior.mu_0 + prior.L_sigma_1 @ mu_raw)
+    sites = {"mu_raw": numpyro.sample(
+        "mu_raw", dist.Normal(0.0, 1.0).expand([P]).to_event(1))}
+    mu = numpyro.deterministic(
+        "mu", prior.mu_0 + prior.L_sigma_1 @ sites["mu_raw"])
 
     # eq:muprior is Gaussian on the log scale and so unbounded, but exp(mu_j) is a
     # population median and a parameter bounded on (0, 1) has a bounded median.
@@ -163,16 +226,11 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
             jnp.where(mu_out_of_bound(mu, logit_mask), -jnp.inf, 0.0),
         )
 
-    if flat:
-        # omega_0 and not zero: a point mass makes eq:V return zero, turns w^(c)
-        # into a switch on the whole cohort, and collapses every location
-        # functional onto one number.
-        omega = numpyro.deterministic("omega", jnp.asarray(prior.omega_0))
-    else:
+    if not flat:
         # s and b_1 are aliased in principle. Report the split; do not
         # reparameterise around it, and do not orthonormalise Z to avoid it:
         # iid on an orthonormal basis is a different prior from iid on a.
-        s = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
+        sites["s"] = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
         # u is one number per assumed width against however many scale rows the
         # corpus prints, so most of it is unidentified whatever tau_u is. The
         # prior is what decides between the two ways that can go wrong. Wide, and
@@ -196,46 +254,49 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
         # The unidentified components stay at tau_u, so the posterior spread of u
         # is not by itself evidence. Report the pooling factor, posterior sd of
         # u_j over tau_u: near 1 means the corpus said nothing about that width.
-        u_raw = numpyro.sample(
+        sites["u_raw"] = numpyro.sample(
             "u_raw",
             dist.Normal(0.0, prior.tau_u)
             .expand([len(prior.assumed)]).to_event(1))
         if prior.measured:
             idx = np.asarray(prior.measured)
-            log_omega_measured = numpyro.sample(
+            sites["log_omega_measured"] = numpyro.sample(
                 "log_omega_measured",
                 dist.Normal(jnp.log(jnp.asarray(prior.omega_0)[idx]),
                             prior.tau_omega_measured).to_event(1))
-        else:
-            log_omega_measured = jnp.zeros(0)
-        omega = numpyro.deterministic(
-            "omega", build_omega(s, u_raw, log_omega_measured, prior))
 
-    if prior.pin_discrepancy:
-        a = numpyro.deterministic("a", jnp.zeros(prior.dim_z))
-        b = numpyro.deterministic("b", jnp.zeros(prior.dim_z))
-    else:
-        a = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
-                           .expand([prior.dim_z]).to_event(1))
-        b = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
-                           .expand([prior.dim_z]).to_event(1))
+    if not prior.pin_discrepancy:
+        sites["a"] = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
+                                    .expand([prior.dim_z]).to_event(1))
+        sites["b"] = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
+                                    .expand([prior.dim_z]).to_event(1))
 
     if prior.n_beta:
-        beta_raw = numpyro.sample(
+        sites["beta_raw"] = numpyro.sample(
             "beta_raw", dist.Normal(0.0, 1.0).expand([prior.n_beta]).to_event(1))
-        beta_free = numpyro.deterministic(
-            "beta_free", prior.tau_beta * (beta_raw - jnp.mean(beta_raw)))
-    else:
-        beta_free = jnp.zeros(0)
 
-    if not prior.n_aux:
-        log_R = None
-    elif prior.pin_aux:
-        log_R = numpyro.deterministic("log_R", jnp.asarray(prior.log_R_0))
-    else:
-        log_R = numpyro.sample(
+    if prior.n_aux and not prior.pin_aux:
+        sites["log_R"] = numpyro.sample(
             "log_R", dist.Normal(jnp.asarray(prior.log_R_0),
                                  jnp.asarray(prior.sigma_R)).to_event(1))
+
+    # Every site is sampled above and nothing is derived from one there: the map
+    # from sites to phi is phi_from_sites, which the Laplace metric and the
+    # conditioning report differentiate. Two copies of it would let a mass matrix
+    # be built for a model that is not this one, with no symptom.
+    #
+    # omega under `flat` is omega_0 and not zero: a point mass makes eq:V return
+    # zero, turns w^(c) into a switch on the whole cohort, and collapses every
+    # location functional onto one number.
+    _, omega, a, b, beta_free, log_R = phi_from_sites(sites, prior, flat=flat)
+    numpyro.deterministic("omega", omega)
+    if prior.pin_discrepancy:
+        numpyro.deterministic("a", a)
+        numpyro.deterministic("b", b)
+    if prior.n_beta:
+        numpyro.deterministic("beta_free", beta_free)
+    if prior.n_aux and prior.pin_aux:
+        numpyro.deterministic("log_R", log_R)
 
     taus = tau_all(mu, omega, a, b, beta_free, problem.plans,
                    problem.specs_by_cohort, problem.refs, problem.mech,
