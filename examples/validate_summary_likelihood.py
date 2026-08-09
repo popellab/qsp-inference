@@ -1,6 +1,6 @@
 """Validate the Ch. 4b summary likelihood against a simulation cloud.
 
-The summary likelihood (``docs/population-inference-tractable.md``) asserts that a
+The summary likelihood asserts that a
 study's observed quantile anchors are Gaussian around the population quantiles with a
 covariance given by the copula formula
 

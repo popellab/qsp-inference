@@ -238,7 +238,7 @@ By the end you can:
 - Load that posterior into Stage 2, train an NPE
 - Know which diagnostics to trust
 
-<span class="small">Reference docs: <code>docs/submodel-inference-guide.md</code>, <code>docs/stage2-sbi-guide.md</code></span>
+<span class="small">Reference: <code>docs/model-draft.tex</code></span>
 
 ---
 

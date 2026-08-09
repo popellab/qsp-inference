@@ -21,7 +21,7 @@ qsp-inference imports `SubmodelTarget`, `SourceRelevanceAssessment`, and other P
 
 ## Read this first
 
-**[`docs/statistical-model.md`](docs/statistical-model.md)** states the probability model the package implements, and is the shared vocabulary for the rest of the docs. In short: one generative model (informative prior → QSP simulator → measurement noise) and two inference targets on it.
+**[`docs/model-draft.tex`](docs/model-draft.tex)** is the model spec, and the only one. Cite its `eq:` labels when referring to the model. In short: one generative model (informative prior → QSP simulator → measurement noise) and two inference targets on it.
 
 - **Flat inference** — the single-unit posterior `p(θ | x_obs)`; fixed-effects, the "median patient".
 - **Virtual population (VPop)** — the random-effects version: `θᵢ ~ F(θ | μ, ω)`, data are cohort (median, IQR), a virtual patient is a draw from the fitted `F`.
@@ -31,7 +31,7 @@ Two constraints drive most design decisions here, and are worth keeping in mind 
 1. **The likelihood is unavailable** — the mean map is an ODE solve, and the *default* observation noise (`inference/data_processing.py:add_observation_noise`) is an empirical bootstrap resampler, not a parametric density. Noise enters as augmentation on training pairs; nothing evaluates a likelihood. Do not describe the observation model as Gaussian — the parametric lognormal/Gaussian path is a per-observable *fallback* for targets with no bootstrap.
 2. **Only a handful of parameters are identified.** Along the rest the posterior equals the prior, so the prior carries the answer and must be built from external data (submodel targets, derived priors). Widening a prior is not a safe default — it over-disperses the population and masks mis-centering.
 
-`docs/README.md` indexes the docs as six chapters (model, priors, flat inference, population inference, model checking, experimental design).
+`docs/` holds `model-draft.tex` and its slides. The six-chapter guide set that used to sit beside it described a package layout that no longer exists and is deleted; do not reinstate it from git history as a reference.
 
 ## Installation
 

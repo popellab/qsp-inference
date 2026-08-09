@@ -14,7 +14,7 @@ Underneath everything here is one generative model — parameters drawn from an 
 
 Two facts shape every method here. The likelihood cannot be evaluated — the mean map is an ODE solve with no analytic form, and the default noise model is an empirical resampler rather than a density — so inference is simulation-based throughout. And only a handful of the parameters are identified by the clinical data; along the rest the posterior equals the prior. That is why the prior is *constructed* as a measurement model rather than asserted, and why a wide prior is not a safe default.
 
-**[The statistical model](docs/statistical-model.md)** ([typeset PDF](docs/statistical-model.pdf)) states all of this properly, and closes with a dictionary mapping each term to its Bayesian, pharmacometrics/NLME, and simulation-based-inference names. It is the page to read first.
+**[`docs/model-draft.tex`](docs/model-draft.tex)** states all of this properly and is the model spec. It is the page to read first, and its `eq:` labels are what the code's docstrings cite.
 
 ## How it works
 
@@ -26,13 +26,13 @@ Stage 1 partitions the parameter–target graph into independent inference chunk
 
 The joint posterior is parameterized as marginals plus a Gaussian copula and stamped with per-component content fingerprints in `submodel_priors.yaml` so consumers can detect when the posterior is stale.
 
-`qsp_inference.audit.report.run_audit()` runs the full Stage 1 pipeline plus a markdown diagnostic report: contraction, conflicts, MCMC health, and an extraction-priority ranking (which parameters most need more data). See the [Submodel Inference Guide](docs/submodel-inference-guide.md) for the full Stage 1 walkthrough.
+`qsp_inference.audit.report.run_audit()` runs the full Stage 1 pipeline plus a markdown diagnostic report: contraction, conflicts, MCMC health, and an extraction-priority ranking (which parameters most need more data).
 
 ### Stage 2: clinical data → final posterior
 
 Stage 2 inputs are *CalibrationTargets*: clinical observables (baseline immune cell densities, tumor volume trajectories, biomarker time courses, etc.) that need the full QSP simulator to evaluate. The Stage 1 posterior loads as a `torch.distributions` object and serves as the prior for neural posterior estimation via [`sbi`](https://sbi-dev.github.io/sbi/) — simulate many `(θ, x)` pairs, train a normalizing-flow conditional density estimator, and condition on the observed `x` to get the Stage 2 posterior.
 
-A `RestrictionClassifier` (sklearn boosted trees on log-θ) rejection-samples the prior to filter out biologically implausible parameter combinations before the simulator gets called, and survives prior changes (parameters added or retired) via projection helpers. Diagnostics cover recovery, calibration ECDF, posterior predictive coverage, Mahalanobis self-reference null and LOO predictive influence for misspecification, and clinical predictive uncertainty for optimal Bayesian experimental design (OBED). See the [Stage 2 SBI Guide](docs/stage2-sbi-guide.md) for the full walkthrough.
+A `RestrictionClassifier` (sklearn boosted trees on log-θ) rejection-samples the prior to filter out biologically implausible parameter combinations before the simulator gets called, and survives prior changes (parameters added or retired) via projection helpers. Diagnostics cover recovery, calibration ECDF, posterior predictive coverage, Mahalanobis self-reference null and LOO predictive influence for misspecification, and clinical predictive uncertainty for optimal Bayesian experimental design (OBED).
 
 ## Related projects
 
@@ -123,11 +123,12 @@ log_p = prior.log_prob(samples)   # evaluates joint density
 
 ## Documentation
 
-Start with the model, then the chapter you need — [`docs/`](docs/README.md) is the full index.
+- **[`docs/model-draft.tex`](docs/model-draft.tex)** — the model spec, and the only one. Its `eq:` labels are what the docstrings cite.
+- **[`docs/slides/`](docs/slides)** — the slides built from it.
 
-- **[The Statistical Model](docs/statistical-model.md)** — read first: the generative model, the two inference targets (single-unit vs. random-effects), why inference is likelihood-free, practical non-identifiability, the model-checking suite, and a three-way vocabulary dictionary. Also as a [typeset chapter](docs/statistical-model.pdf).
-- **[Submodel Inference Guide](docs/submodel-inference-guide.md)** — Stage 1: practical guide covering the Bayesian framework, SubmodelTarget YAML anatomy, maple workflows, the audit API, and diagnostics interpretation
-- **[Stage 2 SBI Guide](docs/stage2-sbi-guide.md)** — Stage 2: loading the Stage 1 posterior as an SBI prior, prior restriction with `RestrictionClassifier`, NPE data prep, the diagnostics suite, posterior predictive checks, OBED, and how Stage 2 outputs feed back into the audit report
+The guide set that used to sit here (statistical-model, submodel-inference-guide,
+stage2-sbi-guide, population-inference-guide, population-inference-tractable)
+described a package layout that no longer exists and has been deleted.
 
 ## Testing
 
