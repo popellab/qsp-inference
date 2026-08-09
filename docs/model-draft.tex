@@ -119,12 +119,18 @@ the log-midpoint $\sqrt{0.35\cdot0.70}$, so it privileges neither neighbour. A
 role says how wide and never on what scale: the log or logit margin of
 \eqref{eq:mu} is orthogonal to it, and four parameters carry the logit.
 
-The gaps are load-bearing and not only the values. $\tau_u$ of
-\eqref{eq:omegaassumed} is a quarter of the narrowest gap,
-$\log(0.70/0.50)=0.336$, leaving four standard deviations to the nearest role
-boundary, so the fitted pattern cannot move a parameter out of the role it was
-assigned: $\tau_u = 0.085$. Changing a value in the ladder changes that
-derivation.
+$\tau_u$ of \eqref{eq:omegaassumed} is the elicitation's own disagreement.
+Mapping each persona's vote through the ladder gives an across-persona standard
+deviation of $\log\omega$ with root mean square $0.293$ over the $271$
+parameters, $179$ of them unanimous: $\tau_u = 0.30$.
+
+An earlier draft derived it from the gaps instead, at a quarter of the narrowest
+one, $\log(0.70/0.50)=0.336$, so that the fitted pattern could not carry a
+parameter out of the role it was assigned: $\tau_u = 0.085$. That bound the term
+which moves a width least. A spread moves by $s + u_j$, and $\tau_s = 0.30$
+clears the same gap at $1.1$ standard deviations, so the boundary was never
+protected by $\tau_u$ alone. It also asserted the role assignments were known
+$3.4\times$ more precisely than the panel that made them.
 
 \paragraph{Loadings: what a parameter varies with.} A parameter loads on at most
 a few declared latent patient axes, with a magnitude and a sign:
@@ -650,9 +656,15 @@ a \;\sim\; \Ncal\big(0,\ \sigma_a^2 I\big),
 \qquad
 b \;\sim\; \Ncal\big(0,\ \sigma_b^2 I\big),
 \qquad
-\sigma_a=\sigma_b=0.5 .
+\sigma_a=\sigma_b=0.29 .
 \label{eq:abprior}
 \end{equation}
+These are per column of $Z$, and a row activates the intercept plus at most one
+quantity type and one assay modality, so the prior standard deviation of a row's
+discrepancy is $\sigma\sqrt{n_{\text{active}}}$ rather than $\sigma$. The value
+is set from the widest row. At $0.50$ that row sat at $0.87$, a $5.7\times$ fold
+change at two standard deviations, which is not a prior on a calibration
+coefficient.
 
 \paragraph{Mechanism discrepancy.} Tightly shrunk, because it competes with
 $\mu$:
@@ -915,8 +927,8 @@ $R$ & --- & Population correlation. Not identified by these data; built by \eqre
 \midrule
 \multicolumn{3}{@{}l}{\emph{Prior widths}}\\
 $\tau_s$ & $0.30$ & Global level of the spreads, \eqref{eq:omegaassumed}. \\
-$\tau_u$ & $0.085$ & Pattern across spreads. Derived, not chosen: a quarter of the ladder's narrowest gap. \\
-$\sigma_a,\ \sigma_b$ & $0.50$ & Measurement discrepancy per column of $Z$, \eqref{eq:abprior}. \\
+$\tau_u$ & $0.30$ & Pattern across spreads. Derived, not chosen: the elicitation panel's own across-persona spread. \\
+$\sigma_a,\ \sigma_b$ & $0.29$ & Measurement discrepancy per column of $Z$, \eqref{eq:abprior}. Set from the widest row, not per column. \\
 $\tau_\beta$ & $0.15$ & Mechanism discrepancy scale, fixed rather than estimated. \textbf{Off}: $|\mathcal{S}|=0$. \\
 $\tau_\eta$ & --- & Study effect scale, \eqref{eq:studyeff}. Fixed rather than estimated. \textbf{Off}: not set, so one study's $59$ of $138$ rows carry full weight. \\
 \midrule
@@ -983,17 +995,19 @@ written, not a shortage in the corpus: a readout could help only if the share of
 its across-patient variance coming from measured widths differed from the rest,
 and \eqref{eq:omegaassumed} leaves no width measured.
 
-So $\tau_s$ and $\sigma_b$ decide the split, and in proportion to their
-variances: $b_1$ takes $\sigma_b^2/(\tau_s^2+\sigma_b^2) = 73\%$ of any width
-excess and is discarded, $s$ takes the remaining $27\%$ and is what ships. At the
-values in the table that ratio is an accident of two numbers chosen separately.
-It is also directional, so the shipped population is narrower than the width rows
-indicate by roughly a factor of four in the excess. Report the joint posterior of
-the pair, and treat the pair of priors as the modelling decision it is.
+Left free, $\tau_s$ and $\sigma_b$ decide the split in proportion to their
+variances, and $b_1$ takes $\sigma_b^2/(\tau_s^2+\sigma_b^2)$ of any width excess
+and is discarded. At $\sigma_b = 0.50$ that was $73\%$, and it was an accident of
+two numbers chosen separately rather than a claim anyone had made. It is also
+directional: the shipped population comes out narrower than the width rows
+indicate, by roughly a factor of four in the excess.
 
-The cheapest resolution is an identification restriction rather than more data:
-pinning $b_1=0$ asserts that there is no global assay stretch and sends the whole
-excess to $s$, which is a statable claim and can be argued with.
+The resolution is an identification restriction rather than more data. \textbf{$b_1$
+is pinned to zero}, which asserts that there is no global assay stretch and sends
+the whole excess to $s$, where it ships. That is a statable claim and can be
+argued with, which the prior-variance split was not. The remaining columns of $b$
+stay free, so a per-modality stretch is still fitted; only the global one is
+given up.
 
 Measurement error is already carried here by $\kappa$, which matches an inflated
 spread without saying where it came from. Giving it its own term would load on
@@ -1006,7 +1020,7 @@ quantity type have no mechanistic twin, while species-level bias does, is an
 argument rather than a result. Projecting a column of $Z$ onto
 $\mathrm{col}\big(\partial\tau/\partial(\mu,\omega)\big)$ does not test it, for
 the reason \S\ref{sec:checks} gives. \eqref{eq:zcost} is the version that
-survives the dimensions, and it has not been run.
+survives the dimensions, and it is reported at every identification run.
 \end{itemize}
 
 \end{document}
