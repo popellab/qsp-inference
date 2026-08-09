@@ -21,7 +21,12 @@ LOGIT = jnp.array([False, True, False])
 # median 0.80 is Emax_Cy_Treg's: a fractional maximum effect, so >1 is more than
 # complete inhibition. index 2 is the same value left on the log scale, as the
 # control that shows the breach is the margin's doing and not the width's.
-MU = jnp.log(jnp.array([5.0, 0.80, 0.80]))
+MEDIAN = jnp.array([5.0, 0.80, 0.80])
+# mu is the LOGIT of the median on a logit margin and its log elsewhere, which is
+# what logit_median_coords produces from a marginal stated on the log scale.
+MU = jnp.array([jnp.log(5.0),
+                jnp.log(0.80) - jnp.log1p(-0.80),
+                jnp.log(0.80)])
 OMEGA = jnp.full(P, 0.35)
 
 
@@ -51,13 +56,14 @@ def test_the_log_margin_at_the_same_median_does_leave_it(cloud):
 
 def test_the_median_is_untouched(cloud):
     for j in range(P):
-        assert np.median(cloud[:, j]) == pytest.approx(float(jnp.exp(MU[j])), rel=0.01)
+        assert np.median(cloud[:, j]) == pytest.approx(float(MEDIAN[j]), rel=0.01)
 
 
-def test_mu_keeps_its_log_scale_meaning():
-    """At z = 0 the cloud is exp(mu) on every margin, so eq:muprior is unchanged."""
-    got = patient_cloud(MU, OMEGA, _mech(np.zeros((1, P))))[0]
-    assert np.allclose(np.asarray(got), np.asarray(MU))
+def test_mu_is_the_median_in_its_own_coordinate():
+    """At z = 0 the cloud is the median on every margin: log for a log margin,
+    logit for a logit one. That is the coordinate eq:muprior is Gaussian in."""
+    got = np.asarray(jnp.exp(patient_cloud(MU, OMEGA, _mech(np.zeros((1, P))))[0]))
+    assert np.allclose(got, np.asarray(MEDIAN))
 
 
 def test_gradients_stay_finite_through_the_discarded_branch():
@@ -85,11 +91,9 @@ def test_a_per_row_mu_composes_the_two_spreads():
     rng = np.random.default_rng(3)
     z = rng.standard_normal((n, P))
     mech = _mech(z)
-    # mu must stay inside the bound on the logit column: exp(mu) is that
-    # patient-set's median, and a median outside (0, 1) is not a width question.
-    # See the note on eq:muprior for bounded parameters.
+    # No sign constraint on the logit column any more: mu is the logit of that
+    # patient-set's median there, so every real value names a median in (0, 1).
     jitter = 0.2 * rng.standard_normal((n, P))
-    jitter[:, 1] = -np.abs(jitter[:, 1])
     mu_rows = jnp.asarray(MU[None, :] + jitter)
 
     per_row = patient_cloud(mu_rows, OMEGA, mech)
@@ -104,22 +108,46 @@ def test_a_per_row_mu_composes_the_two_spreads():
     assert theta[:, 1].max() < 1.0
 
 
-def test_an_out_of_bound_mu_is_finite_in_the_margin_and_flagged_for_rejection():
-    """Two halves of one mechanism. The margin must stay finite so the leapfrog
-    gradient survives; the flag is what actually rejects, via -inf on the density.
-    A margin returning -inf would give theta = 0, which the emulator would
-    cheerfully simulate."""
-    from qsp_inference.vpop.predict import apply_margins, mu_out_of_bound
+def test_no_mu_can_put_a_bounded_parameter_outside_its_bound():
+    """The bound is a property of the coordinate, so there is nothing to reject.
 
-    bad = jnp.asarray([jnp.log(5.0), 0.30, jnp.log(0.8)])   # index 1 above its bound
-    ok = jnp.asarray([jnp.log(5.0), -0.30, jnp.log(0.8)])
-
-    assert bool(mu_out_of_bound(bad, LOGIT))
-    assert not bool(mu_out_of_bound(ok, LOGIT))
-    assert not bool(mu_out_of_bound(bad, None))
+    mu for a logit-margin parameter is the logit of the median, so every real mu
+    gives a median in (0, 1). This is what replaced a -inf factor on exp(mu) >= 1:
+    the factor's gradient is zero, but a leapfrog step into the excluded region
+    gives infinite energy error and NUTS discards the trajectory as divergent.
+    """
+    from qsp_inference.vpop.predict import apply_margins
 
     zL = jnp.asarray(np.random.default_rng(4).standard_normal((32, P)))
-    got = apply_margins(bad, OMEGA, zL, LOGIT)
-    assert bool(jnp.all(jnp.isfinite(got))), "a rejected draw must not poison the gradient"
-    g = jax.grad(lambda m: apply_margins(m, OMEGA, zL, LOGIT).sum())(bad)
-    assert bool(jnp.all(jnp.isfinite(g)))
+    for mu_1 in (-8.0, -0.3, 0.0, 0.30, 8.0):
+        mu = jnp.asarray([jnp.log(5.0), mu_1, jnp.log(0.8)])
+        got = apply_margins(mu, OMEGA, zL, LOGIT)
+        theta = np.asarray(jnp.exp(got))
+        assert np.all(np.isfinite(theta))
+        assert theta[:, 1].max() < 1.0, f"bounded parameter left (0,1) at mu={mu_1}"
+        assert theta[:, 1].min() > 0.0
+        g = jax.grad(lambda m: apply_margins(m, OMEGA, zL, LOGIT).sum())(mu)
+        assert bool(jnp.all(jnp.isfinite(g)))
+
+
+def test_logit_median_coords_preserves_the_median_and_widens_near_the_bound():
+    from qsp_inference.vpop.predict import logit_median_coords
+
+    mu_0 = np.array([np.log(5.0), np.log(0.8), np.log(0.5)])
+    sd_1 = np.array([0.4, 0.2, 0.2])
+    mu_new, sd_new = logit_median_coords(mu_0, sd_1, np.asarray(LOGIT))
+
+    # index 1 is the only logit-margin entry: its median survives the move
+    assert 1.0 / (1.0 + np.exp(-mu_new[1])) == pytest.approx(0.8)
+    assert mu_new[0] == mu_0[0] and mu_new[2] == mu_0[2]
+    assert sd_new[0] == sd_1[0] and sd_new[2] == sd_1[2]
+    # d logit(m)/d log(m) = 1/(1 - m), so a median at 0.8 widens fivefold
+    assert sd_new[1] == pytest.approx(sd_1[1] / (1.0 - 0.8))
+
+
+def test_a_median_outside_the_bound_is_the_marginal_being_wrong():
+    from qsp_inference.vpop.predict import logit_median_coords
+
+    with pytest.raises(ValueError, match="not inside"):
+        logit_median_coords(np.array([0.0, np.log(1.5), 0.0]),
+                            np.ones(3), np.asarray(LOGIT))

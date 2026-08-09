@@ -206,26 +206,11 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     mu = numpyro.deterministic(
         "mu", prior.mu_0 + prior.L_sigma_1 @ sites["mu_raw"])
 
-    # eq:muprior is Gaussian on the log scale and so unbounded, but exp(mu_j) is a
-    # population median and a parameter bounded on (0, 1) has a bounded median.
-    # The stage-1 prior proposes one outside with real mass: 15% for phi_col_max,
-    # 10% for Emax_Cy_Treg. -inf on the density is what rejects it -- NUTS rejects
-    # on the log density, never on a parameter value, and a margin returning -inf
-    # would hand the emulator theta = 0 to simulate instead.
-    #
-    # This makes eq:muprior a TRUNCATED Gaussian for those parameters, not the
-    # Gaussian the draft states. The factor is piecewise constant, so its gradient
-    # is zero and the leapfrog is unharmed, but the prior it leaves behind is
-    # renormalised and the draft has to say so.
-    logit_mask = getattr(problem.mech, "logit", None)
-    if logit_mask is not None:
-        from qsp_inference.vpop.predict import mu_out_of_bound
-
-        numpyro.factor(
-            "mu_within_bound",
-            jnp.where(mu_out_of_bound(mu, logit_mask), -jnp.inf, 0.0),
-        )
-
+    # No bound factor here. eq:muprior is Gaussian in mu, and for a logit-margin
+    # parameter mu is the logit of the median, so exp of it is never the thing
+    # that has to stay under 1 and the prior is the Gaussian the draft states
+    # rather than a truncated one. build_prior moves those marginals into that
+    # coordinate with logit_median_coords.
     if not flat:
         # s and b_1 are aliased in principle. Report the split; do not
         # reparameterise around it, and do not orthonormalise Z to avoid it:
