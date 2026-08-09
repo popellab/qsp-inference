@@ -95,6 +95,28 @@ def load_arm(path: str | Path) -> dict:
     return arm
 
 
+#: How far above its own training range the surrogate may assert a species, in
+#: standard deviations of that species' log over the training set.
+#:
+#: This bounds the SURROGATE, not the population. It says what the net is allowed
+#: to claim, not which patients exist, so it moves no draw of eq:crn and changes
+#: nothing for a patient the net was fitted anywhere near.
+#:
+#: Unbounded, an extrapolating net returns species that are individually finite
+#: and jointly absurd, and the damage lands two steps later: the derived sums in
+#: the observables overflow, ``inf - inf`` gives NaN, and a whole block's rows
+#: lose their gradient while their VALUES stay finite and plausible. On the pdac
+#: corpus one tail patient drew ``V_T.CD8_TLA`` at 1e188, which is 138 sd above
+#: its training mean, and the five readouts sharing that denominator all read
+#: exactly 1.0 with a NaN tangent.
+#:
+#: 20 is far outside anything trained on and still caps the species at about
+#: 3e44, which no product downstream can overflow. The real remedies are
+#: eq:elig, which would decline such a patient, and a pool that supports the
+#: cloud; this only keeps the Jacobian finite until they land.
+SPECIES_CEIL_SD = 20.0
+
+
 def _mlp(layers, h: jnp.ndarray) -> jnp.ndarray:
     last = len(layers) - 1
     for k, (W, b) in enumerate(layers):
@@ -149,7 +171,15 @@ def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
     # one is assumed to predate the change rather than to match the current code.
     transform = arm.get("transform", "asinh")
     if transform == "log":
-        return jnp.exp(t)
+        # Continued by its tangent above the ceiling, not clipped. A clip has a
+        # zero derivative there, and a zero derivative under the ratios h_r takes
+        # is the 0 * inf that puts NaN in a Jacobian while leaving the forward
+        # pass finite. Same construction, and same reason, as _logit's upper
+        # bound in vpop.rows.
+        ceil = (jnp.asarray(arm["t_mu"])
+                + SPECIES_CEIL_SD * jnp.asarray(arm["t_sd"]))
+        safe = jnp.minimum(t, ceil)
+        return jnp.exp(safe) * (1.0 + (t - safe))
     if transform == "asinh":
         return jnp.asarray(arm["scale"]) * jnp.sinh(t)
     raise ValueError(f"unknown emulator transform {transform!r}")
