@@ -106,14 +106,14 @@ width or correlation traces back to the claim that produced it.
 \toprule
 \texttt{patient\_trait} & $0.70$ & $18$ & clinically observed to vary from patient to patient \\
 \texttt{lumped} & $0.50$ & $50$ & stands in for structure the model does not resolve, so its spread is the coarseness varying and not an observation \\
-\texttt{default} & $0.35$ & $3$ & a biological quantity with no reason to be special \\
+\texttt{default} & $0.35$ & $172$ & a biological quantity with no reason to be special \\
 \texttt{packing\_limit} & $0.15$ & $12$ & a geometric ceiling \\
 \texttt{material\_constant} & $0.10$ & $4$ & a property of matter, the same in every person \\
 \texttt{structural} & $0.05$ & $15$ & a numerical gate, not a physical quantity, so varying it across patients has no meaning \\
 \bottomrule
 \end{tabularx}
 \end{center}
-The third column is how the $102$ parameters currently fall. $0.35$ is a $36\%$
+The third column is how the $271$ parameters currently fall. $0.35$ is a $36\%$
 CV and is what a parameter gets when nothing more specific is known; $0.50$ is
 the log-midpoint $\sqrt{0.35\cdot0.70}$, so it privileges neither neighbour. A
 role says how wide and never on what scale: the log or logit margin of
@@ -407,10 +407,10 @@ So $\eta$ adds no coordinate to $\phi$, and the addition is free of $\phi$ and
 leaves $V_B$ frozen. A study reporting one row has that row's variance raised by
 $\tau_\eta^2$; a study reporting many keeps its within-study contrasts at full
 weight and discounts only their common level, which is the correction the corpus
-needs, since one study supplies $20$ of the $55$ rows.
+needs, since one study supplies $59$ of the $138$ rows.
 
 $\tau_\eta$ is fixed. A free $\eta_s$ is not available at this corpus: $22$
-studies against $55$ rows, $13$ of them reporting a single row that a free shift
+studies against $138$ rows, $3$ of them reporting a single row that a free shift
 would fit exactly, and $8$ directions of $\eta$ already spanned by $Z$.
 
 \paragraph{Sampling covariance.} $V_{B}$ is the covariance of the reported
@@ -583,14 +583,18 @@ the log scale. Recall that this is the stage 1- fitting in which we are specific
 
 Four parameters are bounded on $(0,1)$ and carry a logit rather than a lognormal
 margin in \eqref{eq:crn}, so that no $\omega$ can place a patient outside the
-bound. For those, \eqref{eq:mu} is truncated rather than Gaussian: $\exp(\mu_j)$ is
-a population median and is bounded whenever the parameter is, while $\Sigma_1$ is
-unbounded and puts real mass outside --- $15\%$ for \texttt{phi\_col\_max}, $13\%$
-for \texttt{p\_T\_kill\_per\_contact}, $10\%$ for \texttt{Emax\_Cy\_Treg}. Those draws
-are rejected, which renormalises the prior on that component. The truncation is a
-consequence of the bound and not a separate modelling choice, but it is a
-departure from \eqref{eq:mu} as written and the posterior on those four should be
-read against the truncated law.
+bound. For those $\mu_j$ is the logit of the population median rather than its
+log, so \eqref{eq:mu} is Gaussian as written and no draw can leave the bound. The
+stage-1 marginal is moved into that coordinate before the fit, preserving the
+median and carrying the spread by the delta method,
+$d\,\mathrm{logit}(m)/d\log m = 1/(1-m)$, so a median near the bound widens most.
+
+Keeping $\mu$ on the log scale and rejecting $\exp(\mu_j)\ge1$ instead does not
+work. The rejection factor is piecewise constant, so it reads as free, but its
+gradient is never consulted: a leapfrog step into the excluded region gives
+infinite energy error and the trajectory is discarded as divergent. The four put
+$33.7\%$ of the prior mass there jointly, and the chain diverged on $275$ of
+$300$ draws. A bound the coordinate cannot violate has no wall to hit.
 
 Note also that the role assigned to such a parameter no longer fixes its realised
 spread: at $\omega=0.35$ a log margin gives a CV of $0.36$ at any median, while a
@@ -961,12 +965,16 @@ the 54 targets from about ten patients per arm, and there
 $V^{\text{boot}}_B$ is singular and only $E_B$ makes $V_B$ invertible.
 
 \item \textbf{The study offset is shrunk, not free.} A free $\eta_s$ is aliased
-with the measurement discrepancy along $8$ directions, and saturates the $13$
-studies reporting a single row. Equation \eqref{eq:studyeff} fixes $\tau_\eta$
-instead, so how much of a between-study difference is called heterogeneity rather
-than signal is asserted. Only $7$ of the $17$ (quantity type, assay modality)
-cells are reported by more than one study, so the corpus constrains $\tau_\eta$
-weakly. Report the fit at more than one $\tau_\eta$.
+with the measurement discrepancy along $8$ directions. Equation
+\eqref{eq:studyeff} fixes $\tau_\eta$ instead, so how much of a between-study
+difference is called heterogeneity rather than signal is asserted. Only $7$ of
+the $16$ occupied (quantity type, assay modality) cells are reported by more than
+one study, so the corpus constrains $\tau_\eta$ weakly. Report the fit at more
+than one $\tau_\eta$.
+
+The single-row argument for fixing it has weakened: $3$ of the $22$ studies now
+report one row, against $13$ when this was written. The aliasing against $Z$ is
+what still carries the decision, and a free $\eta_s$ is worth re-testing.
 
 \item \textbf{$V$ frozen at $\phi_0$.} Equation \eqref{eq:post} is an estimating
 equation, not a likelihood. Letting $V$ move with $\phi$ would reintroduce a
