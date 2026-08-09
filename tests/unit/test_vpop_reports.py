@@ -120,7 +120,7 @@ class TestDegeneraciesRefused:
             tau_s=0.3, tau_u=0.3,
             sigma_a=0.5, sigma_b=0.5, tau_beta=0.15, n_beta=0, dim_z=1,
             log_R_0=jnp.zeros(0), sigma_R=jnp.zeros(0),
-            pin_discrepancy=False, pin_aux=False,
+            pin_discrepancy=False, pin_aux=False, pin_b_columns=(),
         )
         kw.update(over)
         return kw

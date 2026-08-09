@@ -13,7 +13,7 @@ it means writing the driver stage first.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence, Tuple
 
 import jax.numpy as jnp
 import numpy as np
@@ -70,9 +70,35 @@ class PopulationPrior:
     pin_discrepancy: bool           # a = b = 0
     pin_aux: bool                   # log R at its prior centre
 
+    # Columns of b held at zero while the rest of the measurement map stays free.
+    # The intercept is the one this exists for. b_1 and s load identically on
+    # every width row, so only their sum is identified, and the posterior splits
+    # it in proportion to prior variance. Whatever that ratio is, nothing in the
+    # data chose it, and b_1's share is discarded with the measurement map while
+    # s's reaches eq:vpop. The pdac rubric is sigma_b 0.29 against tau_s 0.30, so
+    # the split is near even at 48/52; it was 73/27 against s while sigma_b was
+    # 0.5, which is what made this flag worth having.
+    #
+    # Pinning the intercept asserts there is no GLOBAL assay stretch, so a
+    # measured width excess is population width. That is a claim a reader can
+    # argue with, in place of an accident of two numbers picked separately. The
+    # other columns stay free, so per-assay stretch is still absorbed: this
+    # removes the one direction of b that is degenerate with s, not the layer.
+    #
+    # There is no equivalent for a. It has no twin in the population block, so
+    # pinning a column of it would assert something the alias argument does not
+    # support.
+    pin_b_columns: Tuple[int, ...]
+
     @property
     def n_params(self) -> int:
         return int(jnp.asarray(self.omega_0).shape[0])
+
+    @property
+    def free_b_columns(self) -> Tuple[int, ...]:
+        """Columns of b the model samples. Declaration order, not the pinned set."""
+        pinned = set(self.pin_b_columns)
+        return tuple(j for j in range(self.dim_z) if j not in pinned)
 
     @property
     def n_aux(self) -> int:
@@ -81,6 +107,26 @@ class PopulationPrior:
     def __post_init__(self):
         if self.n_aux != int(jnp.asarray(self.sigma_R).shape[0]):
             raise ValueError("log_R_0 and sigma_R must have the same length")
+        bad = [j for j in self.pin_b_columns if not 0 <= j < self.dim_z]
+        if bad:
+            raise ValueError(
+                f"pin_b_columns {bad} are not columns of Z, which has "
+                f"{self.dim_z}"
+            )
+        if len(set(self.pin_b_columns)) != len(self.pin_b_columns):
+            raise ValueError("pin_b_columns repeats a column")
+        if self.pin_discrepancy and self.pin_b_columns:
+            raise ValueError(
+                "pin_discrepancy already holds every column of b at zero, so "
+                "pin_b_columns would assert the same thing twice. Pass one or "
+                "the other."
+            )
+        if len(self.pin_b_columns) == self.dim_z:
+            raise ValueError(
+                "every column of b is pinned, which is pin_discrepancy for b "
+                "written the long way. Say so with pin_discrepancy, or leave a "
+                "column free."
+            )
         if self.n_beta == 1:
             raise ValueError(
                 "eq:betaprior centres beta, so one free species gives beta = 0 "
@@ -111,7 +157,14 @@ def site_spec(prior: "PopulationPrior"):
            ("u_raw", jnp.zeros(prior.n_params), prior.tau_u)]
     if not prior.pin_discrepancy:
         out.append(("a", jnp.zeros(prior.dim_z), prior.sigma_a))
-        out.append(("b", jnp.zeros(prior.dim_z), prior.sigma_b))
+        # Renamed when a column is pinned, rather than kept as "b" at a smaller
+        # shape. A site whose length changes with configuration under one name is
+        # exactly what a mass matrix cannot notice.
+        if prior.pin_b_columns:
+            out.append(("b_free", jnp.zeros(len(prior.free_b_columns)),
+                        prior.sigma_b))
+        else:
+            out.append(("b", jnp.zeros(prior.dim_z), prior.sigma_b))
     if prior.n_beta:
         out.append(("beta_raw", jnp.zeros(prior.n_beta), 1.0))
     if prior.n_aux and not prior.pin_aux:
@@ -131,6 +184,10 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
     omega = build_omega(sites["s"], sites["u_raw"], prior)
     if prior.pin_discrepancy:
         a = b = jnp.zeros(prior.dim_z)
+    elif prior.pin_b_columns:
+        a = sites["a"]
+        b = jnp.zeros(prior.dim_z).at[
+            np.asarray(prior.free_b_columns)].set(sites["b_free"])
     else:
         a, b = sites["a"], sites["b"]
     beta_free = (prior.tau_beta * (sites["beta_raw"] - jnp.mean(sites["beta_raw"]))
@@ -192,11 +249,12 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     # either. Small and free is neither: the constrained directions are pulled
     # off zero, the rest stay near it, and no rank cutoff has to be defended.
     #
-    # tau_u is set from the omega_0 role table rather than chosen. u must not
-    # be able to carry a parameter across the gap between two roles, because
-    # the role is the only thing actually claimed about that parameter; a
-    # tau_u whose plausible excursion clears the narrowest gap has overruled
-    # it silently. The project derives the number and passes it.
+    # tau_u should be set from how well a parameter's role is known, not from
+    # the spacing of the role table. Spacing is a statement about the rubric;
+    # the prior needs a statement about the assignment, and the elicitation
+    # that made the assignments measures exactly that in its own disagreement.
+    # A tau_u below that disagreement claims the roles are known better than
+    # the panel knew them. The project derives the number and passes it.
     #
     # The prior is normal, so it shrinks uniformly and pulls on a constrained
     # direction too. That is the wrong trade if some width is expected to be
@@ -213,8 +271,13 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     if not prior.pin_discrepancy:
         sites["a"] = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
                                     .expand([prior.dim_z]).to_event(1))
-        sites["b"] = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
-                                    .expand([prior.dim_z]).to_event(1))
+        if prior.pin_b_columns:
+            sites["b_free"] = numpyro.sample(
+                "b_free", dist.Normal(0.0, prior.sigma_b)
+                .expand([len(prior.free_b_columns)]).to_event(1))
+        else:
+            sites["b"] = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
+                                        .expand([prior.dim_z]).to_event(1))
 
     if prior.n_beta:
         sites["beta_raw"] = numpyro.sample(
@@ -233,6 +296,10 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     numpyro.deterministic("omega", omega)
     if prior.pin_discrepancy:
         numpyro.deterministic("a", a)
+        numpyro.deterministic("b", b)
+    elif prior.pin_b_columns:
+        # The full-width b, so a posterior always carries one under that name
+        # whatever was pinned, with a zero sitting where the claim was made.
         numpyro.deterministic("b", b)
     if prior.n_beta:
         numpyro.deterministic("beta_free", beta_free)

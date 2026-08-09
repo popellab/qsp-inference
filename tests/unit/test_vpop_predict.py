@@ -216,7 +216,7 @@ class TestTauRows:
         assert float(out[0]) > float(out[1])          # median above lower quartile
 
     def test_a_moment_row_needs_its_design(self, mech):
-        spec = RowSpec(LEVEL, "c", "sd", 0.0, 9, log=True)
+        spec = RowSpec(LEVEL, "c", "sd", 0.0, 9, scale="log")
         with pytest.raises(ValueError, match="bootstrap design"):
             tau_rows([spec], self._column(mech), mech, column_of={LEVEL: 0})
         out = tau_rows([spec], self._column(mech), mech,
@@ -318,7 +318,7 @@ class TestTauAll:
     def test_differentiable_in_every_parameter(self, mech, plan):
         refs = reference_levels(MU, OMEGA, mech)
         specs = {k: list(v) for k, v in SPECS.items()}
-        sd = RowSpec(LEVEL, "c_pre", "sd", 0.0, 9, log=True)
+        sd = RowSpec(LEVEL, "c_pre", "sd", 0.0, 9, scale="log")
         specs["c_pre"].append(sd)
         designs = {sd.label: bootstrap_design(jax.random.PRNGKey(0), 9, 100)}
 

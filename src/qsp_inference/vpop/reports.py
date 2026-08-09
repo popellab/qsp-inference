@@ -72,6 +72,24 @@ def _row_sizes(problem) -> list[int]:
             for plan in problem.plans]
 
 
+def _jacfwd(fn, argnum: int):
+    """``jacfwd`` under ``jit``, which is the only reason this is not inline.
+
+    ``tau_all`` is an emulator pass over the cloud, a measurement map and 138 row
+    functionals, and none of it is jitted anywhere else: inside NUTS numpyro jits
+    the whole potential, and in a report nothing does. Eager mode dispatches that
+    graph one primitive at a time, per tangent, so the wrapper is what turns each
+    site's Jacobian into a single compiled kernel.
+
+    ``jit`` here also makes the persistent cache useful. A caller that sets
+    ``jax_compilation_cache_dir`` gets these back on the next process; without a
+    jit there is no whole-graph entry to store.
+
+    One compile per argnum, since the tangent argument is part of the trace.
+    """
+    return jax.jit(jax.jacfwd(fn, argnums=argnum))
+
+
 def laplace_blocks(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = None):
     """Whitened ``d tau / d site``, one array per site, in the model's coordinates.
 
@@ -105,7 +123,7 @@ def laplace_blocks(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = 
     n_row = sum(sizes)
     blocks, labels, dims = [], [], []
     for k, nm in enumerate(names):
-        J = np.asarray(jax.jacfwd(tau_of, argnums=k)(*init)).reshape(n_row, -1)
+        J = np.asarray(_jacfwd(tau_of, k)(*init)).reshape(n_row, -1)
         Jw = _whiten(J, V_chol, sizes)
         blocks.append(Jw)
         dims.append(Jw.shape[1])
@@ -215,7 +233,7 @@ def row_jacobians(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = N
     n_row = sum(sizes)
     out = {}
     for k, nm in enumerate(names):
-        J = np.asarray(jax.jacfwd(tau_of, argnums=k)(*args)).reshape(n_row, -1)
+        J = np.asarray(_jacfwd(tau_of, k)(*args)).reshape(n_row, -1)
         out[nm] = _whiten(J, V_chol, sizes)
     return out
 

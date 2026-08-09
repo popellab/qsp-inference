@@ -303,21 +303,44 @@ def assemble_V(
     v_boot: Sequence[np.ndarray],
     E: Optional[Sequence[np.ndarray]] = None,
     *,
-    ridge: float = 1e-10,
+    ridge: float = 1e-6,
 ) -> BlockCovariance:
     """eq:Vsplit, ``V_B = V^boot_B + E_B``.
 
     The ridge keeps the Cholesky well behaved when two of a block's readouts are
     nearly collinear, which a shared denominator makes likely.
+
+    It is applied in CORRELATION form, so it is dimensionless: scale to unit
+    diagonal, floor there, and carry the scale back through
+    ``chol(D C D) = D chol(C)``. An absolute ridge cannot regularise a block
+    whose rows are in different units, which every block here is: added to the
+    raw matrix it is overwhelming for the smallest row and invisible to the
+    largest, and the Cholesky then runs on a matrix whose diagonal spans the
+    same range. Forward substitution compounds that down the block, which is how
+    a 68-row block reached a condition number of 1e59. Read as a claim, the
+    ridge now says no two rows of a block are correlated beyond ``1 - ridge``;
+    the cost is inflating each row's sd by ``sqrt(1 + ridge)``, 5e-7 here.
     """
     Vs, chols = [], []
     for i, Vb in enumerate(v_boot):
         V = np.asarray(Vb, dtype=float).copy()
         if E is not None:
             V = V + np.asarray(E[i], dtype=float)
-        V = V + ridge * np.eye(V.shape[0])
-        Vs.append(V)
-        chols.append(np.linalg.cholesky(V))
+        d = np.sqrt(np.diag(V))
+        if not np.all(d > 0):
+            # A row with no sampling variance is the corpus claiming a number
+            # measured to infinite precision, and no ridge makes that true. It
+            # is also where a gradient dies, since sqrt has infinite slope at 0.
+            bad = np.flatnonzero(d <= 0)
+            raise ValueError(
+                f"block {'+'.join(plans[i].cohort_ids)}: rows {bad.tolist()} "
+                "have zero variance in V. Nothing is measured that precisely, "
+                "so this is a degenerate readout rather than a tight one."
+            )
+        C = V / np.outer(d, d)
+        C[np.diag_indices_from(C)] += ridge
+        Vs.append(d[:, None] * C * d[None, :])
+        chols.append(d[:, None] * np.linalg.cholesky(C))
     return BlockCovariance(
         V=Vs,
         chol=chols,

@@ -82,7 +82,7 @@ def prior():
         sigma_a=0.5, sigma_b=0.5,
         tau_beta=0.15, n_beta=0, dim_z=2,
         log_R_0=jnp.zeros(0), sigma_R=jnp.zeros(0),
-        pin_discrepancy=False, pin_aux=False,
+        pin_discrepancy=False, pin_aux=False, pin_b_columns=(),
     )
 
 
@@ -146,6 +146,87 @@ class TestSiteSpec:
         pinned = replace(prior, pin_discrepancy=True)
         assert {"a", "b"} & {nm for nm, _, _ in site_spec(pinned)} == set()
         assert {"a", "b"} <= {nm for nm, _, _ in site_spec(prior)}
+
+
+class TestPinnedBColumns:
+    """b_1 and s load identically on every width row, so only the sum is
+    identified. Pinning the intercept is the identification restriction that
+    sends the excess to s, which ships, instead of to b_1, which is discarded."""
+
+    def _pinned(self, prior):
+        from dataclasses import replace
+        return replace(prior, pin_b_columns=(0,))
+
+    def test_the_site_is_renamed_and_narrower(self, prior):
+        spec = dict((n, jnp.shape(v)) for n, v, _ in site_spec(self._pinned(prior)))
+        assert "b" not in spec and spec["b_free"] == (prior.dim_z - 1,)
+        assert dict((n, jnp.shape(v)) for n, v, _ in site_spec(prior))["b"] \
+            == (prior.dim_z,)
+
+    def test_the_pinned_column_is_exactly_zero(self, prior):
+        pinned = self._pinned(prior)
+        sites = {n: v for n, v, _ in site_spec(pinned)}
+        sites["b_free"] = jnp.array([3.0])          # anything
+        _, _, _, b, _, _ = phi_from_sites(sites, pinned)
+        assert b.shape == (pinned.dim_z,)
+        assert float(b[0]) == 0.0 and float(b[1]) == 3.0
+
+    def test_the_model_still_reports_a_full_width_b(self, prior, problem, V_chol):
+        import numpyro
+
+        pinned = self._pinned(prior)
+        with numpyro.handlers.seed(rng_seed=0):
+            trace = numpyro.handlers.trace(population_model).get_trace(
+                pinned, problem, V_chol)
+        assert trace["b"]["type"] == "deterministic"
+        assert jnp.shape(trace["b"]["value"]) == (prior.dim_z,)
+        assert float(trace["b"]["value"][0]) == 0.0
+
+    def test_site_spec_still_matches_what_the_model_samples(
+            self, prior, problem, V_chol):
+        import numpyro
+
+        pinned = self._pinned(prior)
+        with numpyro.handlers.seed(rng_seed=0):
+            trace = numpyro.handlers.trace(population_model).get_trace(
+                pinned, problem, V_chol)
+        sampled = {k for k, v in trace.items()
+                   if v["type"] == "sample" and not v.get("is_observed")
+                   and not k.startswith("T_")}
+        assert {nm for nm, _, _ in site_spec(pinned)} == sampled
+
+    def test_the_metric_follows_the_narrower_site(
+            self, prior, problem, V_chol):
+        pinned = self._pinned(prior)
+        (key,) = laplace_inverse_mass(pinned, problem, V_chol)
+        assert list(key) == sorted(nm for nm, _, _ in site_spec(pinned))
+        (M,) = laplace_inverse_mass(pinned, problem, V_chol).values()
+        dim = sum(int(jnp.size(v)) for _, v, _ in site_spec(pinned))
+        assert np.asarray(M).shape == (dim, dim)
+
+    def test_nuts_runs_with_a_pinned_column(
+            self, prior, problem, V_chol, observed):
+        from numpyro.infer import MCMC, NUTS
+
+        pinned = self._pinned(prior)
+        mcmc = MCMC(NUTS(population_model, max_tree_depth=4), num_warmup=10,
+                    num_samples=10, num_chains=1, progress_bar=False)
+        mcmc.run(jax.random.PRNGKey(0), pinned, problem, V_chol, observed)
+        d = mcmc.get_samples()
+        assert d["b_free"].shape == (10, prior.dim_z - 1)
+        assert np.all(np.asarray(d["b"])[:, 0] == 0.0)
+
+    def test_degeneracies_are_refused(self, prior):
+        from dataclasses import replace
+
+        with pytest.raises(ValueError, match="not columns of Z"):
+            replace(prior, pin_b_columns=(99,))
+        with pytest.raises(ValueError, match="repeats"):
+            replace(prior, pin_b_columns=(0, 0))
+        with pytest.raises(ValueError, match="assert the same thing twice"):
+            replace(prior, pin_discrepancy=True, pin_b_columns=(0,))
+        with pytest.raises(ValueError, match="written the long way"):
+            replace(prior, pin_b_columns=tuple(range(prior.dim_z)))
 
 
 class TestPhiFromSites:

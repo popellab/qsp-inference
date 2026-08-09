@@ -13,7 +13,22 @@ That covers quantile rows, and an interquartile range as the difference of two.
 
 Moments do not: ``E[s]/sigma`` runs from 0.77 to 0.96 at ``n=8`` depending on
 shape, and logging does not stabilise it. Those rows are bootstrapped at ``phi``
-on a frozen design instead.
+on a frozen design instead, and so is any location row whose scale is not raw,
+since ``E[g(T)] != g(E[T])`` unless ``T`` is an order statistic.
+
+Closed forms exist for those, as a check rather than a replacement. The
+second-order delta method gives ``E[g(T)] ~ g(mu_T) + g''(mu_T) var(T) / 2``, so
+a mean row is ``g(m) + g''(m) sigma^2 / (2n)`` to ``O(1/n^2)`` and a logged
+width row is ``log sigma - (kappa - 1 + 2/(n-1)) / (4n)``, with ``kappa`` the
+cloud's kurtosis; at ``kappa = 3`` the latter is ``-1/(2(n-1))``, which is the
+normal-theory answer, so it reproduces the exact case and carries the shape
+dependence the fixed offset could not. It is not used because its error is the
+term it drops: at ``kappa ~ 110``, which a lognormal pushforward at ``sigma = 1``
+reaches, the ``n = 9`` correction is 3 log units and the expansion has stopped
+meaning anything. The bootstrap assumes nothing, is one mechanism for all of
+these rows, and costs 400 replicates against an emulator pass over the cloud.
+The transforms above pull the pushforward toward normal, so the two should now
+agree wherever the expansion is valid, and where they disagree is a heavy tail.
 
 Scale rows are the schema's ``WIDTH_STATS | SAMPLING_WIDTH_STATS``. The draft's
 location half is their complement, which is not the schema's ``LOCATION_STATS``:
@@ -43,7 +58,8 @@ from maple.core.calibration.shared_models import SAMPLING_WIDTH_STATS, WIDTH_STA
 __all__ = [
     # the corpus side
     "SCALE_STATS", "SUPPORTED_STATS", "NUMPY_QUANTILE_METHOD", "RowSpec",
-    "row_specs", "by_cohort", "hard_row", "hard_rows_fn",
+    "SCALE_BY_KIND", "TRANSFORMS", "row_specs", "by_cohort", "hard_row",
+    "hard_rows_fn",
     # the model side
     "QUANTILE_CONVENTIONS", "order_statistic_mass", "quantile_mass",
     "expected_quantile", "extreme_row", "mean_row", "iqr_row",
@@ -59,6 +75,49 @@ SCALE_STATS = frozenset(s.value for s in (WIDTH_STATS | SAMPLING_WIDTH_STATS))
 #: printed range. They stay out of ``SCALE_STATS`` because one endpoint alone is
 #: not a width.
 SUPPORTED_STATS = frozenset({"quantile", "mean", "sd", "se", "iqr", "min", "max"})
+
+#: The scale eq:obs compares a row on.
+TRANSFORMS = ("raw", "log", "asinh", "logit")
+
+#: A location row's scale, from the target's declared ``quantity_kind``.
+#:
+#: eq:obs is a Gaussian on the row, so the scale is the claim about where the
+#: quantity can be. Raw units assert it can be anywhere on the line, which is
+#: false for every kind below and worst where the sampling spread approaches the
+#: level: a fold change is a ratio, and the raw-scale bootstrap of its upper
+#: quartile over a population cloud has no usable variance at all.
+#:
+#: Keyed on the KIND and not on the row, which is what stops this being a knob.
+#: ``quantity_kind`` is a property of the quantity, is declared when the target
+#: is written, and is the same field ``mechanism.build_Z`` reads for its ``kind:``
+#: columns. Choosing per row, or by which rows fit badly, would be the thing this
+#: is arranged to prevent.
+#:
+#: asinh rather than log for the unbounded kinds. It is log-like above
+#: ``scale_ref`` and linear below it, so it needs no ``clip`` fiction for a
+#: readout that is zero in some patients, and it is defined for negatives, which
+#: ``time`` needs: a tumour doubling time is negative when the tumour shrinks.
+#: The price is ``scale_ref``, the one number this introduces.
+#:
+#: fraction gets logit because log respects only its lower bound. Under log the
+#: model may predict a fraction above 1 and pay nothing, and this corpus has a
+#: cohort at 0.69/0.83/0.89 where that is not hypothetical.
+SCALE_BY_KIND = {
+    "foldchange": "asinh",
+    "ratio": "asinh",
+    "concentration": "asinh",
+    "density": "asinh",
+    "count": "asinh",
+    "time": "asinh",
+    "fraction": "logit",
+    "percentage": "logit",
+}
+
+#: Placeholder for a kind with no entry, used only to finish building the spec
+#: before :func:`row_specs` raises on it. Raw is the weakest claim rather than
+#: the safest one -- it says the quantity may sit anywhere on the line -- so it
+#: is not a fallback and nothing reaches a fit carrying it by default.
+DEFAULT_SCALE = "raw"
 
 #: Estimator convention -> numpy's name for it.
 NUMPY_QUANTILE_METHOD = {
@@ -99,17 +158,48 @@ class RowSpec:
     p: Optional[float] = None
     convention: str = "type7"
     convention_recorded: bool = False
-    log: bool = False             # whether the row enters the likelihood as its log
+
+    # The scale eq:obs compares this row on, one of TRANSFORMS. A width row is
+    # positive whatever its quantity is, and its sampling distribution is
+    # right-skewed, so it takes log; asinh would sit in its linear regime for a
+    # width, since scale_ref is the size of the LEVEL and not of the spread. A
+    # location row takes its quantity's scale, from SCALE_BY_KIND.
+    scale: str = "raw"
+    # asinh's unit, in the row's native units. Set from the target's own printed
+    # location values, so it is corpus-derived and frozen before any fit, and is
+    # shared by every row of a target: V's off-diagonals mix rows of one readout,
+    # so two of them on different scales would not be comparable.
+    scale_ref: float = 1.0
 
     @property
     def is_scale(self) -> bool:
         return self.stat in SCALE_STATS
 
     @property
+    def commutes(self) -> bool:
+        """Whether the transform can be applied after the expectation.
+
+        Order statistics are equivariant under a monotone map, so a quantile,
+        min or max row transforms exactly and for free. A mean does not:
+        ``E[g(mean)] != g(E[mean])``, so it needs the log-inside-the-expectation
+        treatment the moment rows already use.
+        """
+        return self.stat in ("quantile", "min", "max")
+
+    @property
     def label(self) -> str:
         return f"{self.target_id}/" + (
             f"q{self.p:g}" if self.stat == "quantile" else self.stat
         )
+
+
+def _readout_attr(target: Mapping[str, Any], name: str) -> Optional[str]:
+    """The same field ``mechanism.build_Z`` reads, duplicated to keep the import out.
+
+    ``rows`` is the corpus side and pulls in nothing heavy; ``mechanism`` loads
+    the emulator.
+    """
+    return ((target.get("observable") or {}).get("readout") or {}).get(name)
 
 
 def row_specs(
@@ -134,6 +224,7 @@ def row_specs(
     """
     out: List[RowSpec] = []
     unsupported: List[str] = []
+    unkinded: List[str] = []
     skip = {tuple(e) for e in exclude}
     unused = set(skip)
 
@@ -146,11 +237,31 @@ def row_specs(
             raise ValueError(f"{tid}: no n for cohort {cohort_id!r}")
 
         recorded = od.get("quantile_convention")
-        for entry in od.get("statistics") or []:
+        entries = [e for e in (od.get("statistics") or [])
+                   if (tid, e.get("stat")) not in skip]
+        for e in (od.get("statistics") or []):
+            if (tid, e.get("stat")) in skip:
+                unused.discard((tid, e.get("stat")))
+
+        kind = _readout_attr(targets[tid], "quantity_kind")
+        loc_scale = SCALE_BY_KIND.get(kind, DEFAULT_SCALE)
+        if kind is not None and kind not in SCALE_BY_KIND:
+            unkinded.append(f"{tid} ({kind})")
+        elif kind is None:
+            unkinded.append(f"{tid} (declares none)")
+
+        # asinh's unit: the size of the thing, from what the source printed about
+        # its LEVEL. Width rows are excluded because a width is not a level, and
+        # a scale set from one would put every location row in asinh's linear
+        # regime and undo the transform.
+        levels = [abs(float(e["value"])) for e in entries
+                  if e.get("stat") in SUPPORTED_STATS
+                  and e.get("stat") not in SCALE_STATS]
+        positive = [v for v in levels if v > 0]
+        scale_ref = float(np.median(positive)) if positive else 1.0
+
+        for entry in entries:
             stat = entry.get("stat")
-            if (tid, stat) in skip:
-                unused.discard((tid, stat))
-                continue
             if stat not in SUPPORTED_STATS:
                 unsupported.append(f"{tid}/{stat}")
                 continue
@@ -163,13 +274,27 @@ def row_specs(
                 p=entry.get("p"),
                 convention=recorded or default_convention,
                 convention_recorded=recorded is not None,
-                log=log_scale_rows and stat in SCALE_STATS,
+                scale=("log" if (log_scale_rows and stat in SCALE_STATS)
+                       else "raw" if stat in SCALE_STATS
+                       else loc_scale),
+                scale_ref=scale_ref,
             ))
 
     if unsupported:
         raise ValueError(
             f"{len(unsupported)} printed statistics have no evaluator: "
             + ", ".join(sorted(unsupported))
+        )
+    if unkinded:
+        # Raw is a claim, not an absence of one: it says the quantity may sit
+        # anywhere on the line. A target that never declared its kind has not
+        # made that claim, so falling back to it silently would assert on the
+        # corpus's behalf.
+        raise ValueError(
+            f"{len(unkinded)} targets have no scale, because SCALE_BY_KIND has "
+            "no entry for the quantity_kind they declare. Add the kind there, "
+            "or declare one on the target: "
+            + ", ".join(sorted(unkinded))
         )
     if unused:
         # An exclusion that matches nothing is a corpus edit the caller has not
@@ -180,6 +305,58 @@ def row_specs(
             + ", ".join(f"{t}/{s}" for t, s in sorted(unused))
         )
     return out
+
+
+def to_scale(out, spec: RowSpec, xp):
+    """eq:obs's coordinate for one row. ``xp`` is ``np`` or ``jnp``.
+
+    One function for both sides on purpose. ``hard_row`` and ``tau_row`` have to
+    land in the same coordinate or ``V`` describes a different quantity from the
+    residual it standardises, and that mismatch is silent.
+    """
+    if spec.scale == "raw":
+        return out
+    if spec.scale == "log":
+        return xp.log(xp.clip(out, 1e-30, None))
+    if spec.scale == "asinh":
+        return xp.arcsinh(out / spec.scale_ref)
+    if spec.scale == "logit":
+        return _logit(out, xp)
+    raise ValueError(f"{spec.label}: unknown scale {spec.scale!r}")
+
+
+#: Where logit hands over to its tangent. Only the UPPER bound is guarded: a
+#: readout is ``exp(h_r)`` and ``h_r`` returns logs, so ``x > 0`` is structural
+#: and 0 is unreachable except by underflow, while ``x >= 1`` is reachable and
+#: means the model is asserting a fraction above 100%. 1e-3 sits far above the
+#: largest fraction this corpus prints (0.886), so nothing real is extrapolated.
+LOGIT_MARGIN = 1e-3
+
+
+def _logit(x, xp):
+    """``log(x / (1-x))``, continued by its tangent at ``1 - LOGIT_MARGIN``.
+
+    Not a clip. A clip invents a value AND flattens the gradient, and a flat
+    gradient under a downstream ``sqrt`` or ``log`` is the ``0 * inf`` that puts
+    NaN in a Jacobian while leaving the forward pass finite. The tangent is C1,
+    monotone, and defined on all of R, so a fraction the model pushes past 1
+    stays differentiable and reports itself as a large residual instead of
+    killing the chain.
+
+    Extrapolating is not endorsing. A fraction above 1 contradicts the
+    ``quantity_kind`` its target declared, and the structural fix is upstream:
+    an emulator that predicts ``logit(fraction)`` rather than ``log(fraction)``
+    cannot leave the interval at all.
+    """
+    hi = 1.0 - LOGIT_MARGIN
+    slope = 1.0 / (hi * (1.0 - hi))
+    at_hi = math.log(hi) - math.log1p(-hi)
+    # minimum() keeps log1p inside its domain on BOTH branches. Evaluating the
+    # unsafe branch and selecting afterwards is what forward-mode differentiates
+    # through, so the guard has to be inside the expression, not around it.
+    safe = xp.minimum(x, hi)
+    inside = xp.log(safe) - xp.log1p(-safe)
+    return xp.where(x < hi, inside, at_hi + (x - hi) * slope)
 
 
 def by_cohort(specs: Sequence[RowSpec]) -> Dict[str, List[RowSpec]]:
@@ -218,7 +395,7 @@ def hard_row(spec: RowSpec, values: np.ndarray) -> float:
     else:  # pragma: no cover - row_specs rejects these
         raise ValueError(f"no evaluator for {spec.stat!r}")
 
-    return float(np.log(max(out, 1e-30)) if spec.log else out)
+    return float(to_scale(out, spec, np))
 
 
 def hard_rows_fn(
@@ -419,24 +596,40 @@ def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None):
     closed form. ``mass`` is a Beta weight vector from :func:`quantile_mass`,
     reused across rows that share ``(n_cloud, p, n, convention)``.
     """
-    if spec.stat == "quantile":
-        out = expected_quantile(cloud_sorted, spec.p, spec.n, spec.convention,
-                                mass=mass)
-    elif spec.stat in ("min", "max"):
-        out = extreme_row(cloud_sorted, spec.n, spec.stat == "max")
-    elif spec.stat == "mean":
-        out = mean_row(cloud_sorted)
-    elif spec.stat == "iqr":
-        return iqr_row(cloud_sorted, spec.n, spec.convention, log=spec.log,
-                       u=_need(design, spec) if spec.log else None)
-    elif spec.stat == "sd":
-        return sd_row(cloud_sorted, _need(design, spec), log=spec.log)
-    elif spec.stat == "se":
-        return se_row(cloud_sorted, _need(design, spec), spec.n, log=spec.log)
-    else:  # pragma: no cover - row_specs rejects these
-        raise ValueError(f"no evaluator for {spec.stat!r}")
+    log = spec.scale == "log"
+    if spec.commutes:
+        # Transform the cloud, THEN take the expectation. Every scale here is
+        # monotone increasing, so it preserves the sort and carries the quantile
+        # function of x to that of g(x): E[g(q_p)] = sum_i m_i g(x_(i)), the same
+        # Beta kernel read on the transformed cloud. Applying g to the result
+        # instead would give g(E[q_p]), short of this by the Jensen gap. The
+        # equivariance of an order statistic is pathwise, not in expectation,
+        # and only hard_row gets to use the pathwise form.
+        x = to_scale(cloud_sorted, spec, jnp)
+        if spec.stat == "quantile":
+            return expected_quantile(x, spec.p, spec.n, spec.convention, mass=mass)
+        return extreme_row(x, spec.n, spec.stat == "max")
 
-    return jnp.log(jnp.clip(out, 1e-30, None)) if spec.log else out
+    if spec.stat == "mean":
+        if spec.scale == "raw":
+            return mean_row(cloud_sorted)
+        else:
+            # E[g(mean)], not g(E[mean]). The Beta kernel gives the order
+            # statistics their expectation in closed form and a monotone g
+            # passes straight through it, but a mean is not an order statistic
+            # and g does not commute with it, so this row joins the moment rows
+            # on the frozen design.
+            return bootstrap_row(
+                cloud_sorted, _need(design, spec),
+                lambda v: to_scale(jnp.mean(v), spec, jnp))
+    elif spec.stat == "iqr":
+        return iqr_row(cloud_sorted, spec.n, spec.convention, log=log,
+                       u=_need(design, spec) if log else None)
+    elif spec.stat == "sd":
+        return sd_row(cloud_sorted, _need(design, spec), log=log)
+    elif spec.stat == "se":
+        return se_row(cloud_sorted, _need(design, spec), spec.n, log=log)
+    raise ValueError(f"no evaluator for {spec.stat!r}")  # row_specs rejects these
 
 
 def _need(design, spec: RowSpec):
