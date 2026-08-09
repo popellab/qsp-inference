@@ -1,9 +1,13 @@
-"""Virtual-population construction: plausible-patient cloud + prevalence weighting,
-plus the closed-form summary likelihood and its NUTS fit (docs ch. 4b).
+"""Virtual-population inference.
 
-The ch. 4b modules need torch (and pyro-ppl to sample), so they are imported
-under try/except like the rest of the package's optional-dep surface; import
-``qsp_inference.vpop.summary_likelihood`` directly for a clear ImportError.
+The fit lives in :mod:`qsp_inference.vpop.fit` and is driven by pdac-build's
+``workflows/vpop_fit.py``. Nothing on that path is re-exported here: it needs
+jax and numpyro, and a package-level import would make an optional dependency
+load on every ``import qsp_inference.vpop``. Import it directly.
+
+What this namespace still carries is the fixed-cloud route: prevalence weighting
+over a plausible-patient cloud, its reachability diagnostics, and the prior-metric
+eigenbasis the hierarchical NPE runner uses.
 """
 
 from qsp_inference.vpop.diagnostics import (
@@ -36,40 +40,7 @@ from qsp_inference.vpop.proposal import (
     reachable_accept_fn,
 )
 
-try:  # torch-only: the ch. 4b summary likelihood and its fit
-    from qsp_inference.vpop.summary_likelihood import (
-        StudyBlock,
-        SummaryLikelihood,
-        TargetAnchor,
-        anchor_covariance,
-        build_study_blocks,
-        bvn_cdf,
-        normal_score_correlation,
-    )
-    from qsp_inference.vpop.population_fit import (
-        PopulationFit,
-        PopulationPosterior,
-        PopulationPrior,
-        run_nuts,
-    )
-
-    _CH4B = [
-        "StudyBlock",
-        "SummaryLikelihood",
-        "TargetAnchor",
-        "anchor_covariance",
-        "build_study_blocks",
-        "bvn_cdf",
-        "normal_score_correlation",
-        "PopulationFit",
-        "PopulationPosterior",
-        "PopulationPrior",
-        "run_nuts",
-    ]
-except ImportError:  # pragma: no cover - torch is an optional extra
-    _CH4B = []
-
-__all__ = _CH4B + [
+__all__ = [
     "VPopResult",
     "build_quantile_constraints",
     "fit_prevalence_weights",

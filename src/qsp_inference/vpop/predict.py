@@ -1,6 +1,6 @@
 """``tau_B(phi)``: the model's prediction of every reported number. eq:crn to eq:stat.
 
-Ported from ``examples/toy_population_fit.py``, de-globalised. The chain is
+De-globalised from the original monolithic toy (now deleted). The chain is
 
     phi -> patients -> species -> readouts -> measurement map -> rows
 

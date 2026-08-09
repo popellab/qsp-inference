@@ -1,6 +1,6 @@
 """eq:pop through eq:post as one NumPyro model.
 
-De-globalised from ``examples/toy_population_fit.py:population_model``, which
+De-globalised from the original monolithic toy (now deleted), which
 holds the settled decisions this keeps: the ``s``/``b_1`` alias is reported and
 not reparameterised, ``Z`` is sampled in its own basis rather than orthonormalised
 (that changes the prior), and the flat fit pins ``omega = omega_0`` rather than
