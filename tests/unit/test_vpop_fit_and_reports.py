@@ -78,7 +78,6 @@ def prior():
         mu_0=jnp.array([1.5, 1.0, 0.2]),
         L_sigma_1=jnp.diag(jnp.array([0.4, 0.3, 0.5])),
         omega_0=jnp.array([0.5, 0.3, 0.4]),
-        measured=(),
         tau_s=0.3, tau_u=0.085,
         sigma_a=0.5, sigma_b=0.5,
         tau_beta=0.15, n_beta=0, dim_z=2,
@@ -160,8 +159,8 @@ class TestPhiFromSites:
 
     def test_u_is_centred_so_the_level_lives_in_s(self, prior):
         u = jnp.array([0.1, -0.3, 0.05])
-        a = build_omega(0.0, u, jnp.zeros(0), prior)
-        b = build_omega(0.0, u + 7.0, jnp.zeros(0), prior)
+        a = build_omega(0.0, u, prior)
+        b = build_omega(0.0, u + 7.0, prior)
         assert np.allclose(a, b)
 
 

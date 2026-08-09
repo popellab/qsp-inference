@@ -359,7 +359,7 @@ def z_cost(names: Sequence[str], blocks: Sequence[np.ndarray],
     return values, already standardised.
     """
     by_name = dict(zip(names, blocks))
-    mech = [n for n in ("mu_raw", "s", "u_raw", "log_omega_measured")
+    mech = [n for n in ("mu_raw", "s", "u_raw")
             if n in by_name]
     J_mech = np.hstack([by_name[n] for n in mech])
 

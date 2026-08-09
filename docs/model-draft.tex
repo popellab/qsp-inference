@@ -264,7 +264,12 @@ cohort $c$ reports, for a single patient:
 Built from $\tilde x$ and not $x$: $\beta$ enters inside $h_r$, so
 \eqref{eq:disc} does not factor through \eqref{eq:readout}.
 
-\paragraph{Cohort selection.} Where cohort $c$ reports an eligibility criterion,
+\paragraph{Cohort selection.} Specified, not implemented: no cohort in the
+corpus declares a criterion, so $w^{(c)}\equiv1$ throughout and the fit reads an
+unweighted cloud. What follows is the design a declared criterion would be read
+into, and it is the reason the row functionals are stated as weighted ones.
+
+Where cohort $c$ reports an eligibility criterion,
 $w^{(c)}_i\in[0,1]$ is a smooth indicator of whether patient $i$ meets it, and
 $w^{(c)}_i \equiv 1$ otherwise. A criterion stated as an interval
 $[\ell_1,\ell_2]$ on readout $r$ gives
@@ -538,8 +543,8 @@ the model rather than widening $V_B$, since widening hides what is being tested.
 error bar on its row or say something about population width. It cannot do both,
 since that counts one number twice. It always goes to width.
 
-The reason is scarcity. Numbers that speak to width are rare, and $\Mset$ is
-empty, so the width rows are all $\omega$ has. Sampling noise is abundant by
+The reason is scarcity. Numbers that speak to width are rare, and no source
+reports a between-patient spread, so the width rows are all $\omega$ has. Sampling noise is abundant by
 comparison, because \eqref{eq:V} supplies it on every row for nothing. So $U$
 leaves $V_B$ and becomes a row of $\widehat T_B$, and $D_B$ always comes from the
 bootstrap.
@@ -607,29 +612,8 @@ the width a reader infers from the role is wrong for these four.
 (\S\ref{sec:elicit}). A parameter may carry an explicit $\omega_{0j}$ in place of
 its role, which none currently does.
 
-Where a submodel target carries a population block, its sample spread $s_j$ over
-$n_j$ donors shrinks the role value rather than replacing it:
-\begin{equation}
-\log\omega_{0j}
-\;=\;
-\frac{2(n_j-1)\,\log s_j \;+\; \tau^{-2}\log\omega^{\mathrm{role}}_{j}}
-     {2(n_j-1) \;+\; \tau^{-2}},
-\qquad \tau = 0.5 ,
-\label{eq:omegashrink}
-\end{equation}
-the same precision weighting as \eqref{eq:omegameas}, since $\log s$ has sampling
-sd $1/\sqrt{2(n_j-1)}$. A sample spread from six donors is itself some $30\%$
-uncertain and should pull $\omega_0$ rather than pin it; at $\tau=0.5$ the
-crossover sits at $n\approx3$. No parameter currently carries a population block,
-so $\omega_0$ is the role ladder throughout.
-
-\paragraph{Spread.} Let $\Mset$ be the parameters whose between-patient spread a
-source has measured, with sample size $n_j$. For $j\in\Mset$,
-\begin{equation}
-\log\omega_j \;\sim\; \Ncal\!\left(\log\omega_{0j},\ \frac{1}{2(n_j-1)+\tau^{-2}}\right).
-\label{eq:omegameas}
-\end{equation}
-For $j\notin\Mset$,
+\paragraph{Spread.} Every width is assumed. No source in the corpus reports a
+between-patient spread, so
 \begin{equation}
 \log\omega_j \;=\; \log\omega_{0j} + s + u_j,
 \qquad
@@ -637,9 +621,15 @@ s\sim\Ncal(0,\tau_s^2),
 \qquad
 u_j\sim\Ncal(0,\tau_\omega^2),
 \qquad
-\sum_{j\notin\Mset} u_j = 0 .
+\sum_{j} u_j = 0 .
 \label{eq:omegaassumed}
 \end{equation}
+An earlier draft carved out a set $\Mset$ of measured widths, with its own
+precision-weighted prior and a shrinkage of $\omega_0$ toward the role value.
+Neither was ever exercised: $\Mset$ was empty on every corpus, the shrinkage was
+never implemented, and carrying them cost the last simplification below its
+sharpest statement. Their absence is what makes the $s$ / $b_1$ alias
+unconditional rather than merely unbroken.
 $s$ is how much wider or narrower the population is overall, and $u$ is the
 pattern across parameters. Without the constraint those two overlap exactly: add
 a constant to $s$, subtract it from every $u_j$, and $\omega$ is unchanged. The
@@ -709,12 +699,11 @@ may be free.
 
 \begin{equation}
 \phi \;=\;
-\big(\mu,\ s,\ u^{\text{raw}},\ \log\omega_{\Mset},\
+\big(\mu,\ s,\ u^{\text{raw}},\
 a,\ b,\ \beta^{\text{raw}}_{\mathcal{S}},\ \log R_{\mathcal{A}}\big).
 \end{equation}
 $\mu$ is sampled as $\mu = \mu_0 + L_1\mu^{\text{raw}}$ with
-$\Sigma_1 = L_1L_1\Tr$. Where $\Mset$ is empty the $\log\omega_{\Mset}$ block is
-absent, and \eqref{eq:omegameas} never applies.
+$\Sigma_1 = L_1L_1\Tr$.
 
 \begin{equation}
 p(\phi\mid\Dset)
@@ -909,7 +898,9 @@ priors decide the split.
 \section{Fixed inputs}
 
 Every number the model asserts is here. A dash means the input is a structure or
-a per-parameter table rather than a scalar.
+a per-parameter table rather than a scalar. \textbf{Off} marks a term that is
+specified but carries no free coordinate as the corpus stands, so a reader can
+tell what the fit is currently estimating from what it is merely prepared for.
 
 \begin{center}\small
 \begin{tabularx}{\textwidth}{@{}llX@{}}
@@ -917,7 +908,7 @@ a per-parameter table rather than a scalar.
 & \textbf{value} & \\
 \midrule
 \multicolumn{3}{@{}l}{\emph{Elicited} (\S\ref{sec:elicit})}\\
-$\omega_0$ & --- & Spread centre, per parameter. By role, shrunk by \eqref{eq:omegashrink} where a population block exists. \\
+$\omega_0$ & --- & Spread centre, per parameter, by role. \\
 $\Lambda,\ \psi$ & --- & Loadings and idiosyncratic scales of \eqref{eq:Rfactor}. Bins $0.8/0.5/0.3$ with a sign. \\
 & $0.81$ & Communality cap. Keeps $R$ strictly positive definite. \\
 $R$ & --- & Population correlation. Not identified by these data; built by \eqref{eq:Rfactor}. \\
@@ -925,20 +916,19 @@ $R$ & --- & Population correlation. Not identified by these data; built by \eqre
 \multicolumn{3}{@{}l}{\emph{Prior widths}}\\
 $\tau_s$ & $0.30$ & Global level of the spreads, \eqref{eq:omegaassumed}. \\
 $\tau_\omega$ & $0.085$ & Pattern across spreads. Derived, not chosen: a quarter of the ladder's narrowest gap. \\
-$\tau$ & $0.50$ & Trust in the role prior against a measured spread, \eqref{eq:omegameas} and \eqref{eq:omegashrink}. \\
 $\sigma_a,\ \sigma_b$ & $0.50$ & Measurement discrepancy per column of $Z$, \eqref{eq:abprior}. \\
-$\tau_\beta$ & $0.15$ & Mechanism discrepancy scale, fixed rather than estimated. \\
-$\tau_\eta$ & --- & Study effect scale, \eqref{eq:studyeff}. Fixed rather than estimated; not yet set. \\
+$\tau_\beta$ & $0.15$ & Mechanism discrepancy scale, fixed rather than estimated. \textbf{Off}: $|\mathcal{S}|=0$. \\
+$\tau_\eta$ & --- & Study effect scale, \eqref{eq:studyeff}. Fixed rather than estimated. \textbf{Off}: not set, so one study's $59$ of $138$ rows carry full weight. \\
 \midrule
 \multicolumn{3}{@{}l}{\emph{Structures}}\\
 $\mu_0,\ \Sigma_1$ & --- & Stage-1 composite prior, log scale. \\
 $h_r$ & --- & Readout composition, including unit conversions. Already in the target definitions. \\
 $Z$ & --- & Readout attributes for the measurement discrepancy: assay modality, quantity type. \\
 $c_{rc}$ & --- & Pivot of \eqref{eq:disc}: cohort $c$'s median of readout $r$ at $(\mu_0,\omega_0)$. Fixed once, not rebuilt with $V_B$. \\
-$\mathcal{S}$ & --- & Species allowed a mechanism discrepancy. Default: the shared denominators. \\
+$\mathcal{S}$ & --- & Species allowed a mechanism discrepancy. Default: the shared denominators. \textbf{Off}: empty, so $\beta=0$ throughout. \\
 $z_{1:N}$ & --- & The latent cloud, drawn once. \\
-$w^{(c)}$ & --- & Eligibility weights, read from each paper's criterion. \\
-$h_q,\ h_w$ & --- & Smoothing bandwidths: the quantile kernel \eqref{eq:smoothq} and the eligibility weight \eqref{eq:elig}. \\
+$w^{(c)}$ & --- & Eligibility weights, read from each paper's criterion. \textbf{Off}: no cohort declares a criterion, so $w^{(c)}\equiv1$ and \eqref{eq:elig} is not implemented. \\
+$h_q$ & --- & Smoothing bandwidth of the quantile kernel \eqref{eq:smoothq}. \\
 $\widehat g$ & --- & The emulator, and with it the design it was trained on. Fixes $E_B$ and $\bar d_B$. \\
 $V_{B}$ & --- & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One per block of \eqref{eq:obs}. \\
 $E_B$ & --- & Emulator error covariance on the statistics of block $B$, from \eqref{eq:Ec}. \\
@@ -987,12 +977,23 @@ stretched the readouts to compensate. Only $s$ reaches the virtual population,
 since $b_1$ is discarded with the rest of the measurement map, so the split
 changes what gets shipped.
 
-Let $\lambda_m$ be the share of readout $m$'s across-patient variance coming from
-parameters in $\Mset$. A width row loads on $s$ as $1-\lambda_m$ and on $b_1$ as
-$1$, so a readout helps only if its $\lambda_m$ differs from the rest. No
-parameter has a measured width as the model stands, so $\lambda_m=0$ everywhere
-and nothing separates them. $\tau_s$ and $\sigma_b$ decide the split. Report the
-joint posterior of the pair.
+Every width row loads on $s$ and on $b_1$ identically, so only their sum is
+identified and no row can separate them. This is a property of the model as
+written, not a shortage in the corpus: a readout could help only if the share of
+its across-patient variance coming from measured widths differed from the rest,
+and \eqref{eq:omegaassumed} leaves no width measured.
+
+So $\tau_s$ and $\sigma_b$ decide the split, and in proportion to their
+variances: $b_1$ takes $\sigma_b^2/(\tau_s^2+\sigma_b^2) = 73\%$ of any width
+excess and is discarded, $s$ takes the remaining $27\%$ and is what ships. At the
+values in the table that ratio is an accident of two numbers chosen separately.
+It is also directional, so the shipped population is narrower than the width rows
+indicate by roughly a factor of four in the excess. Report the joint posterior of
+the pair, and treat the pair of priors as the modelling decision it is.
+
+The cheapest resolution is an identification restriction rather than more data:
+pinning $b_1=0$ asserts that there is no global assay stretch and sends the whole
+excess to $s$, which is a statable claim and can be argued with.
 
 Measurement error is already carried here by $\kappa$, which matches an inflated
 spread without saying where it came from. Giving it its own term would load on

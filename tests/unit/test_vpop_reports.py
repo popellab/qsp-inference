@@ -8,7 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from qsp_inference.vpop.fit import PopulationPrior
+from qsp_inference.vpop.fit import PopulationPrior, site_spec
 from qsp_inference.vpop.reports import (
     map_estimate,
     print_recovery,
@@ -117,7 +117,7 @@ class TestDegeneraciesRefused:
         # the whole claim set the same way a project does.
         kw = dict(
             mu_0=jnp.zeros(3), L_sigma_1=jnp.eye(3), omega_0=jnp.full(3, 0.4),
-            measured=(), tau_s=0.3, tau_u=0.3,
+            tau_s=0.3, tau_u=0.3,
             sigma_a=0.5, sigma_b=0.5, tau_beta=0.15, n_beta=0, dim_z=1,
             log_R_0=jnp.zeros(0), sigma_R=jnp.zeros(0),
             pin_discrepancy=False, pin_aux=False,
@@ -134,18 +134,17 @@ class TestDegeneraciesRefused:
         for n in (0, 2):
             assert PopulationPrior(**self._kw(n_beta=n)).n_beta == n
 
-    def test_every_width_measured_is_refused(self):
-        with pytest.raises(ValueError, match="nothing to do"):
-            PopulationPrior(**self._kw(measured=(0, 1, 2),
-                                       tau_omega_measured=0.2))
+    def test_every_width_moves_together_or_by_pattern(self):
+        """eq:omegameas is gone, so u covers every parameter and s is the level.
 
-    def test_a_measured_width_needs_its_own_prior_width(self):
-        """eq:omegameas' sigma is a claim, so it cannot ride on a default."""
-        with pytest.raises(ValueError, match="tau_omega_measured"):
-            PopulationPrior(**self._kw(measured=(0,)))
-        assert PopulationPrior(
-            **self._kw(measured=(0,), tau_omega_measured=0.2)
-        ).tau_omega_measured == 0.2
+        There is no measured-width set to carve out, which is what makes the
+        s / b_1 alias unconditional: a measured width was the only thing that
+        would have given a readout a loading on s different from its loading
+        on b_1.
+        """
+        prior = PopulationPrior(**self._kw())
+        assert dict((n, jnp.shape(v)) for n, v, _ in site_spec(prior))["u_raw"] \
+            == (prior.n_params,)
 
 
 class TestPinnedComponents:
