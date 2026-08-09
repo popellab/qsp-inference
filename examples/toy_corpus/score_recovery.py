@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-from qsp_inference.vpop.recovery import print_recovery, summarise_recovery
+from qsp_inference.vpop.reports import print_recovery, summarise_recovery
 
 
 def _centre(u, axis=-1):

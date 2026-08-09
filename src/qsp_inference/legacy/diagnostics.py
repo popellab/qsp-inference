@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import rankdata
 
-from qsp_inference.vpop.weighting import fit_prevalence_weights
+from qsp_inference.legacy.weighting import fit_prevalence_weights
 
 __all__ = [
     "CoreResult",

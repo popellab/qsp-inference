@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from qsp_inference.vpop import build_quantile_constraints, fit_prevalence_weights
+from qsp_inference.legacy import build_quantile_constraints, fit_prevalence_weights
 
 
 def _weighted_quantile(x, w, q):

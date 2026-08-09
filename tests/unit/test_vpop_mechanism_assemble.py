@@ -2,7 +2,7 @@
 import numpy as np
 import pytest
 
-from qsp_inference.vpop.assemble import ScenarioTable, scenario_table
+from qsp_inference.vpop.mechanism import ScenarioTable, scenario_table
 
 pytest.importorskip("jax")
 
@@ -85,7 +85,7 @@ class TestScenarioTable:
 
 class TestPriorCholesky:
     def test_it_refuses_a_prior_with_no_correlation(self):
-        from qsp_inference.vpop.assemble import prior_cholesky
+        from qsp_inference.vpop.mechanism import prior_cholesky
 
         class NoR:
             pass
@@ -106,7 +106,7 @@ class TestPriorCholesky:
 
     def test_it_refuses_a_reordered_param_list(self):
         """L_R is indexed by parameter; a permutation silently rotates the cloud."""
-        from qsp_inference.vpop.assemble import prior_cholesky
+        from qsp_inference.vpop.mechanism import prior_cholesky
 
         class Pair:
             prior = type("P", (), {"_R": np.eye(3)})()

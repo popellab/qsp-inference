@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from qsp_inference.vpop.fit import PopulationPrior
-from qsp_inference.vpop.recovery import (
+from qsp_inference.vpop.reports import (
     map_estimate,
     print_recovery,
     summarise_recovery,

@@ -92,34 +92,35 @@ src/qsp_inference/
 │   ├── posterior_predictive.py  # Prior/posterior predictive checks
 │   ├── trajectory_eval.py       # Trajectory-level scoring
 │   └── obed.py                  # Optimal Bayesian experimental design (+ LOO retraining)
-├── vpop/                        # Population inference. THE LIVE FIT is fit.py +
-│   │                            #   predict.py, driven by pdac-build's
-│   │                            #   workflows/vpop_fit.py. Nothing on that path is
+├── vpop/                        # docs/model-draft.tex and nothing else, driven by
+│   │                            #   pdac-build's workflows/vpop_fit.py. Six modules,
+│   │                            #   in the order the chain runs. Nothing is
 │   │                            #   re-exported from vpop/__init__ (it needs
 │   │                            #   jax/numpyro); import the modules directly.
-│   ├── fit.py                   # eq:pop to eq:post as a numpyro model.
-│   │                            #   site_spec is the single statement of what the
-│   │                            #   latent space is; the mass matrix and every
-│   │                            #   diagnostic read it rather than re-deriving it
+│   ├── mechanism.py             # the corpus and the surrogate to a Mechanism: the
+│   │                            #   emulator arms, h_r, Z, the scenario table, L_R
 │   ├── predict.py               # tau_B(phi): phi -> patients -> species ->
 │   │                            #   readouts -> measurement map -> rows. Carries
 │   │                            #   apply_margins and logit_median_coords, both
 │   │                            #   shared with the pool so the two cannot drift
-│   ├── mass.py                  # the Laplace metric as NUTS's mass matrix, computed
-│   │                            #   rather than adapted. Adapting a 543x543 metric
-│   │                            #   from a few hundred warmup draws cannot work
-│   ├── rows.py, statistics.py   # a row functional (median, IQR, sd, fraction) over
-│   │                            #   the cloud, with the frozen bootstrap designs
-│   ├── resampling.py            # block plans: which cohorts share a draw
-│   ├── emulator.py              # the surrogate, and the guards that refuse one
-│   │                            #   trained on a different parameter set
-│   ├── covariance.py, design.py, assemble.py, readouts.py   # V, Z, L_R, readouts
-│   ├── recovery.py              # MAP, and recovery against a known phi*
-│   ├── identifiability.py       # conditioning, row budget, z cost, pivot offsets
-│   ├── width.py                 # the omega-versus-discrepancy reports
-│   ├── weighting.py             # fixed-cloud route: prevalence weighting (Allen 2016)
-│   ├── diagnostics.py           # fixed-cloud route: joint-reachability scoring
-│   └── eigenbasis.py, proposal.py  # prior-metric eigenbasis, hierarchical NPE
+│   ├── rows.py                  # what a source printed (hard_row) and the model's
+│   │                            #   expectation of it (tau_row), eq:smoothq, with
+│   │                            #   the frozen bootstrap designs
+│   ├── blocks.py                # who is drawn with whom, and V_B: eq:V, eq:Ec,
+│   │                            #   eq:Vsplit
+│   ├── fit.py                   # eq:pop to eq:post as a numpyro model.
+│   │                            #   site_spec is the single statement of what the
+│   │                            #   latent space is; the metric and every report
+│   │                            #   read it rather than re-deriving it
+│   └── reports.py               # the Laplace metric (computed, not adapted), the
+│                                #   conditioning report, z cost, pivot offsets,
+│                                #   the width gate, dbar absorption, MAP, recovery
+├── legacy/                      # the fixed-cloud route, not in the draft:
+│                                #   prevalence weighting (Allen 2016), its
+│                                #   reachability diagnostics, and the prior-metric
+│                                #   eigenbasis the hierarchical NPE runner uses.
+│                                #   Lived under vpop/ and was moved out so that
+│                                #   namespace is the draft's fit alone.
 ├── auxiliary/                   # Auxiliary-parameter discovery and priors
 ├── data/                        # Data aggregation
 │   ├── test_stat_functions.py   # Test statistics from QSP outputs

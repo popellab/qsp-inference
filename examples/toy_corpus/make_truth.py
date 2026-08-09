@@ -83,9 +83,9 @@ def main() -> None:
     from omega_prior import build_omega_center, build_omega_corr
 
     from qsp_inference.priors.inference_prior import PriorSpec, build_prior_pair
-    from qsp_inference.vpop.assemble import prior_cholesky, scenario_table
+    from qsp_inference.vpop.mechanism import prior_cholesky, scenario_table
     from qsp_inference.vpop.predict import apply_margins
-    from qsp_inference.vpop.readouts import build_h_fn
+    from qsp_inference.vpop.mechanism import build_h_fn
     from qsp_inference.vpop.rows import hard_row
 
     root = args.root

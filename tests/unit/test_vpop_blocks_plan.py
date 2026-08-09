@@ -1,4 +1,4 @@
-"""Unit tests for the block resampling plan (qsp_inference.vpop.resampling).
+"""Unit tests for the block resampling plan (qsp_inference.vpop.blocks).
 
 Cohorts joined by a shared row draw independently; cohorts that share people draw
 once from the block's patient set. These check that the plan splits a component
@@ -9,7 +9,7 @@ import pytest
 
 from maple.core.calibration.cohort import Cohort, CohortRegistry, PatientBlock, Stratum
 
-from qsp_inference.vpop.resampling import (block_draw_plan, draw_block_indices,
+from qsp_inference.vpop.blocks import (block_draw_plan, draw_block_indices,
                                            restrict_plans)
 
 
@@ -162,16 +162,9 @@ class TestDraw:
         r = np.corrcoef(idx["a"].mean(1), idx["b"].mean(1))[0, 1]
         assert abs(r) < 0.06
 
-    def test_eligibility_weights_bias_the_draw(self):
+    def test_the_draw_is_uniform_over_the_cloud(self):
+        """eq:elig is not implemented, so no cohort weights its own draw."""
         reg = CohortRegistry(cohorts=[_cohort("a", 30)])
         (plan,) = block_draw_plan(reg, {"t": _target("a")})
-        w = np.zeros(100)
-        w[:10] = 1.0
-        idx = draw_block_indices(plan, np.random.default_rng(2), 100, 100, {"a": w})
-        assert idx["a"].max() < 10
-
-    def test_joint_members_must_agree_on_eligibility(self):
-        (plan,) = block_draw_plan(_li_registry(), {"t": _target("base")})
-        probs = {"base": np.ones(100), "arm_a": np.arange(100.0), "arm_b": np.ones(100)}
-        with pytest.raises(ValueError, match="share a draw but declare different"):
-            draw_block_indices(plan, np.random.default_rng(3), 10, 100, probs)
+        idx = draw_block_indices(plan, np.random.default_rng(2), 2_000, 100)
+        assert idx["a"].min() < 5 and idx["a"].max() > 94

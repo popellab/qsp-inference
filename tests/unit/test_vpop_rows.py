@@ -7,7 +7,7 @@ import jax
 import numpy as np
 import pytest
 
-from qsp_inference.vpop import statistics as st
+from qsp_inference.vpop import rows as st
 from qsp_inference.vpop.rows import (
     SCALE_STATS,
     by_cohort,
@@ -167,46 +167,46 @@ class TestHardRowsFn:
 class TestTauRow:
     @pytest.fixture
     def cloud(self):
-        return np.sort(np.random.default_rng(1).normal(0, 1, 50_000)), np.ones(50_000)
+        return np.sort(np.random.default_rng(1).normal(0, 1, 50_000))
 
     def test_quantile_and_mean_dispatch(self, cloud):
-        x, w = cloud
+        x = cloud
         specs = {s.stat: s for s in row_specs(
             {"t": _target("c", [{"stat": "quantile", "p": 0.25, "value": 1.0},
                                 {"stat": "mean", "value": 1.0}])}, {"c": 9})}
-        assert float(tau_row(specs["quantile"], x, w)) == pytest.approx(
-            float(st.expected_quantile(x, w, 0.25, 9)))
-        assert float(tau_row(specs["mean"], x, w)) == pytest.approx(float(st.mean_row(x, w)))
+        assert float(tau_row(specs["quantile"], x)) == pytest.approx(
+            float(st.expected_quantile(x, 0.25, 9)))
+        assert float(tau_row(specs["mean"], x)) == pytest.approx(float(st.mean_row(x)))
 
     def test_a_logged_iqr_row_is_E_log_iqr_and_needs_a_design(self, cloud):
         """Not log E[IQR]: the row printed a log, so the expectation goes there."""
         import jax
 
-        x, w = cloud
+        x = cloud
         (spec,) = row_specs({"t": _target("c", [{"stat": "iqr", "value": 2.0},
                                                 {"stat": "quantile", "p": 0.5,
                                                  "value": 1.0}])}, {"c": 12})[:1]
         with pytest.raises(ValueError, match="needs a bootstrap design"):
-            tau_row(spec, x, w)
+            tau_row(spec, x)
         u = st.bootstrap_design(jax.random.PRNGKey(0), 12, n_boot=2_000)
-        got = float(tau_row(spec, x, w, design=u))
-        assert got < float(np.log(st.iqr_row(x, w, 12)))
+        got = float(tau_row(spec, x, design=u))
+        assert got < float(np.log(st.iqr_row(x, 12)))
 
     def test_moment_rows_need_a_design(self, cloud):
-        x, w = cloud
+        x = cloud
         (spec,) = [s for s in row_specs({"t": _target("c", MEAN_SD)}, {"c": 20})
                    if s.stat == "sd"]
         with pytest.raises(ValueError, match="needs a bootstrap design"):
-            tau_row(spec, x, w)
+            tau_row(spec, x)
         u = st.bootstrap_design(jax.random.PRNGKey(0), 20, n_boot=200)
-        assert np.isfinite(float(tau_row(spec, x, w, u)))
+        assert np.isfinite(float(tau_row(spec, x, u)))
 
     def test_tau_predicts_what_hard_row_computes(self, cloud):
         """The two evaluators must agree in expectation; that is the whole claim."""
-        x, w = cloud
+        x = cloud
         (spec,) = row_specs({"t": _target("c", [{"stat": "quantile", "p": 0.25,
                                                  "value": 1.0}])}, {"c": 9})
         rng = np.random.default_rng(2)
         draws = np.asarray(x)[rng.integers(0, len(x), size=(20_000, 9))]
         want = np.array([hard_row(spec, d) for d in draws]).mean()
-        assert float(tau_row(spec, x, w)) == pytest.approx(want, abs=0.02)
+        assert float(tau_row(spec, x)) == pytest.approx(want, abs=0.02)

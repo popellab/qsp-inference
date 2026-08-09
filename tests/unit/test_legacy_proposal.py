@@ -7,7 +7,7 @@ import pytest
 # [sbi] extra.
 pytest.importorskip("torch")
 
-from qsp_inference.vpop import (
+from qsp_inference.legacy import (
     EigenbasisPopulation,
     widen_on_identified,
     reachable_accept_fn,

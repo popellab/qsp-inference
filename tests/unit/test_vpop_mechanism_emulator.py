@@ -8,7 +8,7 @@ torch = pytest.importorskip("torch")
 
 import jax.numpy as jnp  # noqa: E402
 
-from qsp_inference.vpop.emulator import (  # noqa: E402
+from qsp_inference.vpop.mechanism import (  # noqa: E402
     arm_forward,
     arm_status_logits,
     arm_status_logprob,

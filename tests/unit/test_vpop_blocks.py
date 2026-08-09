@@ -1,4 +1,4 @@
-"""Unit tests for V_B per block (qsp_inference.vpop.covariance).
+"""Unit tests for V_B per block (qsp_inference.vpop.blocks).
 
 The point of a joint draw is the off-diagonal: cohorts sharing patients must come
 out correlated, and by more when they share more.
@@ -8,14 +8,13 @@ import pytest
 
 from maple.core.calibration.cohort import Cohort, CohortRegistry, PatientBlock, Stratum
 
-from qsp_inference.vpop.covariance import (
+from qsp_inference.vpop.blocks import (
     assemble_V,
     bootstrap_V,
     emulator_E,
     row_offsets,
-    subset_V,
 )
-from qsp_inference.vpop.resampling import block_draw_plan
+from qsp_inference.vpop.blocks import block_draw_plan
 
 N_CLOUD = 4_000
 N_BOOT = 3_000
@@ -121,13 +120,6 @@ class TestAssemble:
         plans = block_draw_plan(reg, {})
         cov = assemble_V(plans, [np.eye(2)])
         assert cov.unhonoured == ("trial",)
-
-    def test_subset_keeps_the_caveat(self):
-        plans = block_draw_plan(CohortRegistry(cohorts=[_cohort("a", 5)]), {})
-        cov = assemble_V(plans, [np.diag([1.0, 2.0, 3.0])])
-        sub = subset_V(cov, [np.array([True, False, True])])
-        assert np.allclose(sub.V[0], np.diag([1.0, 3.0]))
-        assert sub.unhonoured == cov.unhonoured
 
 
 class TestEmulatorE:

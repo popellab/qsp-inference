@@ -12,7 +12,6 @@ import pytest
 from qsp_inference.vpop.predict import (
     Mechanism,
     apply_map,
-    block_weights,
     cohort_cloud,
     cohort_columns,
     patient_cloud,
@@ -22,9 +21,9 @@ from qsp_inference.vpop.predict import (
     tau_all,
     tau_rows,
 )
-from qsp_inference.vpop.resampling import BlockPlan, DrawGroup
+from qsp_inference.vpop.blocks import BlockPlan, DrawGroup
 from qsp_inference.vpop.rows import RowSpec, tau_row
-from qsp_inference.vpop.statistics import bootstrap_design
+from qsp_inference.vpop.rows import bootstrap_design
 
 N = 40_000
 LEVEL, RATIO = "t_level", "t_ratio"
@@ -200,54 +199,18 @@ class TestCohortColumns:
         assert np.allclose(cut[:, 0], full[:, 1], rtol=1e-12)
 
 
-class TestBlockWeights:
-    def _x_of(self, plan):
-        return {c: jnp.asarray(np.random.default_rng(i).standard_normal((100, 2)))
-                for i, c in enumerate(plan.cohort_ids)}
-
-    def _elig(self, seen):
-        def f(x, cohort):
-            seen.append(cohort)
-            return jax.nn.sigmoid(x[:, 0])
-        return f
-
-    def test_no_criterion_gives_unit_weights(self, plan):
-        assert all(np.allclose(v, 1.0)
-                   for v in block_weights(self._x_of(plan), plan).values())
-
-    def test_a_joint_group_without_a_nomination_raises(self, plan):
-        with pytest.raises(ValueError, match="share a draw"):
-            block_weights(self._x_of(plan), plan, self._elig([]))
-
-    def test_a_nomination_outside_the_group_raises(self, plan):
-        with pytest.raises(ValueError, match="not a member"):
-            block_weights(self._x_of(plan), plan, self._elig([]),
-                          {"trial": "somewhere_else"})
-
-    def test_a_joint_group_shares_one_vector_read_off_the_nominee(self, plan):
-        seen = []
-        w = block_weights(self._x_of(plan), plan, self._elig(seen), {"trial": "c_pre"})
-        assert seen == ["c_pre"] and w["c_pre"] is w["c_post"]
-
-    def test_a_lone_cohort_reads_itself(self):
-        lone = BlockPlan(("solo",),
-                         (DrawGroup(("solo",), 7, {"solo": tuple(range(7))}),))
-        seen = []
-        w = block_weights(self._x_of(lone), lone, self._elig(seen))
-        assert seen == ["solo"] and w["solo"].shape == (100,)
-
-
 class TestTauRows:
     ROWS = [RowSpec(LEVEL, "c", "quantile", 0.0, 9, p=0.5),
             RowSpec(LEVEL, "c", "quantile", 0.0, 9, p=0.25),
             RowSpec(LEVEL, "c", "mean", 0.0, 9)]
 
     def _column(self, mech):
-        return readout_cloud(MU, OMEGA, ZERO2, mech)[:, :1]
+        """Sorted up the patient axis, which is what tau_from_readouts hands on."""
+        return jnp.sort(readout_cloud(MU, OMEGA, ZERO2, mech)[:, :1], axis=0)
 
     def test_rows_come_back_in_the_order_the_source_printed_them(self, mech):
         col = self._column(mech)
-        out = tau_rows(self.ROWS, col, jnp.ones(N), mech, column_of={LEVEL: 0})
+        out = tau_rows(self.ROWS, col, mech, column_of={LEVEL: 0})
         assert out.shape == (3,)
         assert float(out[2]) == pytest.approx(float(col[:, 0].mean()), abs=1e-6)
         assert float(out[0]) > float(out[1])          # median above lower quartile
@@ -255,47 +218,33 @@ class TestTauRows:
     def test_a_moment_row_needs_its_design(self, mech):
         spec = RowSpec(LEVEL, "c", "sd", 0.0, 9, log=True)
         with pytest.raises(ValueError, match="bootstrap design"):
-            tau_rows([spec], self._column(mech), jnp.ones(N), mech,
-                     column_of={LEVEL: 0})
-        out = tau_rows([spec], self._column(mech), jnp.ones(N), mech,
+            tau_rows([spec], self._column(mech), mech, column_of={LEVEL: 0})
+        out = tau_rows([spec], self._column(mech), mech,
                        {spec.label: bootstrap_design(jax.random.PRNGKey(0), 9, 200)},
                        column_of={LEVEL: 0})
         assert float(out[0]) < float(jnp.log(OMEGA[0]))   # E[log s] below log sigma
 
-    def test_the_batched_sort_matches_a_per_readout_sort(self, mech):
-        got = tau_rows(self.ROWS, self._column(mech), jnp.ones(N), mech,
-                       column_of={LEVEL: 0})
-        col = jnp.sort(self._column(mech)[:, 0])
+    def test_a_row_matches_the_functional_called_on_its_own_column(self, mech):
+        got = tau_rows(self.ROWS, self._column(mech), mech, column_of={LEVEL: 0})
+        col = self._column(mech)[:, 0]
         for k, spec in enumerate(self.ROWS):
-            assert float(got[k]) == pytest.approx(
-                float(tau_row(spec, col, jnp.ones(N))), rel=1e-12)
+            assert float(got[k]) == pytest.approx(float(tau_row(spec, col)),
+                                                  rel=1e-12)
 
 
 class TestSharedQuantileMass:
-    """Rows sharing (p, n, convention) share one Beta mass when w is uniform."""
+    """Rows sharing (p, n, convention) share one Beta mass."""
 
     ROWS = [RowSpec(LEVEL, "c", "quantile", 0.0, 9, p=p) for p in (0.25, 0.5, 0.75)]
     ROWS += [RowSpec(LEVEL, "c", "mean", 0.0, 9)]
 
-    def test_sharing_the_mass_changes_no_number(self, mech):
-        x = readout_cloud(MU, OMEGA, ZERO2, mech)[:, :1]
-        args = (self.ROWS, x, jnp.ones(N), mech)
-        assert np.array_equal(tau_rows(*args, uniform=True, column_of={LEVEL: 0}),
-                              tau_rows(*args, uniform=False, column_of={LEVEL: 0}))
-
-    def test_a_non_uniform_weight_is_not_shared(self, mech):
-        """Two readouts sort w into different orders, so the mass genuinely differs.
-
-        One readout could not show this: with a single column there is only one
-        ordering and the two paths agree whatever ``w`` is.
-        """
-        x = readout_cloud(MU, OMEGA, ZERO2, mech)
-        rows = [RowSpec(r, "c", "quantile", 0.0, 9, p=0.5) for r in (LEVEL, RATIO)]
-        w = jax.nn.sigmoid(x[:, 0] - float(MU[0]))
-        args = (rows, x, w, mech)
-        cols = {LEVEL: 0, RATIO: 1}
-        assert not np.allclose(tau_rows(*args, uniform=True, column_of=cols),
-                               tau_rows(*args, uniform=False, column_of=cols))
+    def test_a_supplied_table_changes_no_number(self, mech):
+        x = jnp.sort(readout_cloud(MU, OMEGA, ZERO2, mech)[:, :1], axis=0)
+        args = (self.ROWS, x, mech)
+        table = quantile_mass_table({"c": self.ROWS}, N)
+        assert np.array_equal(tau_rows(*args, column_of={LEVEL: 0}),
+                              tau_rows(*args, mass_table=table,
+                                       column_of={LEVEL: 0}))
 
     def test_the_table_covers_only_quantile_rows(self):
         assert set(quantile_mass_table(SPECS, 1000)) == {
@@ -350,13 +299,21 @@ class TestTauAll:
                               tau_all(*args,
                                       mass_table=quantile_mass_table(SPECS, N))[0])
 
-    def test_eligibility_takes_the_unsorted_path_to_the_same_answer(self, mech, plan):
-        args = (MU, OMEGA, ZERO2, ZERO2, ZERO2, [plan], SPECS,
-                reference_levels(MU, OMEGA, mech), mech)
-        assert np.allclose(
-            tau_all(*args)[0],
-            tau_all(*args, elig_fn=lambda x, c: jnp.ones(x.shape[0]),
-                    elig_at={"trial": "c_pre"})[0], rtol=1e-10)
+    def test_the_map_preserves_the_sort_it_was_handed(self, mech, plan):
+        """Why tau_from_readouts sorts once, before eq:disc rather than after it.
+
+        exp and the affine map are both increasing, so sorting the readout cloud
+        and then mapping it gives the same order as mapping and then sorting.
+        Every row functional downstream reads a sorted column, so this is what
+        lets the sort be hoisted out of the per-cohort loop.
+        """
+        x = readout_cloud(MU, OMEGA, ZERO2, mech)
+        refs = reference_levels(MU, OMEGA, mech)
+        a = jnp.asarray([0.3, -0.2]) if mech.Z.shape[1] == 2 else jnp.zeros(mech.Z.shape[1])
+        b = 0.4 * jnp.ones(mech.Z.shape[1])
+        mapped_then_sorted = jnp.sort(cohort_cloud(x, (0,), a, b, refs, mech), axis=0)
+        sorted_then_mapped = cohort_cloud(jnp.sort(x, axis=0), (0,), a, b, refs, mech)
+        assert np.allclose(mapped_then_sorted, sorted_then_mapped, rtol=1e-12)
 
     def test_differentiable_in_every_parameter(self, mech, plan):
         refs = reference_levels(MU, OMEGA, mech)

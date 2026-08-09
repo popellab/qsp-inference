@@ -61,7 +61,7 @@ class EigenbasisPopulation:
     Attributes:
         mu: ``(P,)`` log-space center.
         draw_matrix: ``(P, P)`` ``W`` from
-            :class:`~qsp_inference.vpop.eigenbasis.PriorMetricEigenbasis`.
+            :class:`~qsp_inference.legacy.eigenbasis.PriorMetricEigenbasis`.
         sigma_u: ``(P,)`` per-direction spread (top-K inferred/widened, rest anchored).
         param_names: ``P`` names, so the importance reweight can check alignment.
     """

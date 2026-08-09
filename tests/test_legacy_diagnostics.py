@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from qsp_inference.vpop import (
+from qsp_inference.legacy import (
     conflict_ranking,
     duplicate_observables,
     ess_scaling,

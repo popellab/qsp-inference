@@ -11,7 +11,7 @@ Gamma (active subspace / LIS). The properties that must hold:
 import numpy as np
 import pytest
 
-from qsp_inference.vpop.eigenbasis import (
+from qsp_inference.legacy.eigenbasis import (
     fit_local_jacobian,
     whiten_sensitivity_rows,
     sensitivity_gram,

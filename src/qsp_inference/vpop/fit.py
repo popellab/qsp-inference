@@ -1,10 +1,13 @@
 """eq:pop through eq:post as one NumPyro model.
 
-De-globalised from the original monolithic toy (now deleted), which
-holds the settled decisions this keeps: the ``s``/``b_1`` alias is reported and
-not reparameterised, ``Z`` is sampled in its own basis rather than orthonormalised
-(that changes the prior), and the flat fit pins ``omega = omega_0`` rather than
-zero.
+Two settled decisions this keeps: the ``s``/``b_1`` alias is reported and not
+reparameterised, and ``Z`` is sampled in its own basis rather than
+orthonormalised, because iid on an orthonormal basis is a different prior.
+
+eq:phiflat, the flat fit, is not here. It was carried as a ``flat=True`` branch
+through this model, the metric and the conditioning report, plus row masks and a
+``subset_V`` to hold the width rows out, and no driver ever ran it. Reinstating
+it means writing the driver stage first.
 """
 
 from __future__ import annotations
@@ -110,7 +113,7 @@ def build_omega(s, u_raw, log_omega_measured, prior: PopulationPrior):
     return jnp.exp(log_omega)
 
 
-def site_spec(prior: "PopulationPrior", *, flat: bool = False):
+def site_spec(prior: "PopulationPrior"):
     """``[(name, zero-value, prior sd)]`` for every site the model samples.
 
     The single statement of what the latent space IS. A mass matrix, a Laplace
@@ -122,15 +125,14 @@ def site_spec(prior: "PopulationPrior", *, flat: bool = False):
     Order is declaration order, not numpyro's. Callers that need numpyro's own
     packing sort by name themselves, where it is visible.
     """
-    out = [("mu_raw", jnp.zeros(prior.n_params), 1.0)]
-    if not flat:
-        out.append(("s", jnp.zeros(()), prior.tau_s))
-        out.append(("u_raw", jnp.zeros(len(prior.assumed)), prior.tau_u))
-        if prior.measured:
-            idx = np.asarray(prior.measured)
-            out.append(("log_omega_measured",
-                        jnp.log(jnp.asarray(prior.omega_0)[idx]),
-                        prior.tau_omega_measured))
+    out = [("mu_raw", jnp.zeros(prior.n_params), 1.0),
+           ("s", jnp.zeros(()), prior.tau_s),
+           ("u_raw", jnp.zeros(len(prior.assumed)), prior.tau_u)]
+    if prior.measured:
+        idx = np.asarray(prior.measured)
+        out.append(("log_omega_measured",
+                    jnp.log(jnp.asarray(prior.omega_0)[idx]),
+                    prior.tau_omega_measured))
     if not prior.pin_discrepancy:
         out.append(("a", jnp.zeros(prior.dim_z), prior.sigma_a))
         out.append(("b", jnp.zeros(prior.dim_z), prior.sigma_b))
@@ -142,8 +144,7 @@ def site_spec(prior: "PopulationPrior", *, flat: bool = False):
     return out
 
 
-def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior",
-                   *, flat: bool = False):
+def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
     """``(mu, omega, a, b, beta_free, log_R)`` from the sampled sites.
 
     The deterministic half of :func:`population_model`, which calls it. Anything
@@ -151,11 +152,8 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior",
     here rather than rebuilding the map, so the two cannot drift apart.
     """
     mu = jnp.asarray(prior.mu_0) + jnp.asarray(prior.L_sigma_1) @ sites["mu_raw"]
-    if flat:
-        omega = jnp.asarray(prior.omega_0)
-    else:
-        omega = build_omega(sites["s"], sites["u_raw"],
-                            sites.get("log_omega_measured", jnp.zeros(0)), prior)
+    omega = build_omega(sites["s"], sites["u_raw"],
+                        sites.get("log_omega_measured", jnp.zeros(0)), prior)
     if prior.pin_discrepancy:
         a = b = jnp.zeros(prior.dim_z)
     else:
@@ -176,12 +174,10 @@ class Problem:
     """The fixed side of the fit: everything ``tau_all`` needs that is not ``phi``."""
 
     mech: object                              # vpop.predict.Mechanism
-    plans: Sequence[object]                   # vpop.resampling.BlockPlan
+    plans: Sequence[object]                   # vpop.blocks.BlockPlan
     specs_by_cohort: Mapping[str, Sequence[object]]
     refs: jnp.ndarray                         # c_r, one level per readout
     designs: Optional[Mapping[str, jnp.ndarray]] = None
-    elig_fn: Optional[object] = None
-    elig_at: Optional[Mapping[str, str]] = None
     mass_table: Optional[Mapping] = None
 
     def block_name(self, plan) -> str:
@@ -189,12 +185,8 @@ class Problem:
 
 
 def population_model(prior: PopulationPrior, problem: Problem, V_chol,
-                     observed=None, *, flat: bool = False, row_masks=None):
-    """eq:pop through eq:post. ``observed=None`` draws from the prior predictive.
-
-    ``flat`` is eq:phiflat: pin ``omega = omega_0`` and drop the spread terms.
-    ``row_masks`` selects rows per block, which is how the width rows are held out.
-    """
+                     observed=None):
+    """eq:pop through eq:post. ``observed=None`` draws from the prior predictive."""
     import numpyro
     import numpyro.distributions as dist
 
@@ -211,44 +203,44 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     # that has to stay under 1 and the prior is the Gaussian the draft states
     # rather than a truncated one. build_prior moves those marginals into that
     # coordinate with logit_median_coords.
-    if not flat:
-        # s and b_1 are aliased in principle. Report the split; do not
-        # reparameterise around it, and do not orthonormalise Z to avoid it:
-        # iid on an orthonormal basis is a different prior from iid on a.
-        sites["s"] = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
-        # u is one number per assumed width against however many scale rows the
-        # corpus prints, so most of it is unidentified whatever tau_u is. The
-        # prior is what decides between the two ways that can go wrong. Wide, and
-        # the unidentified components sit at the prior and print a width profile
-        # that looks individuated when the individuation is a prior draw. Pinned
-        # to zero, and a direction the scale rows genuinely constrain cannot move
-        # either. Small and free is neither: the constrained directions are pulled
-        # off zero, the rest stay near it, and no rank cutoff has to be defended.
-        #
-        # tau_u is set from the omega_0 role table rather than chosen. u must not
-        # be able to carry a parameter across the gap between two roles, because
-        # the role is the only thing actually claimed about that parameter; a
-        # tau_u whose plausible excursion clears the narrowest gap has overruled
-        # it silently. The project derives the number and passes it.
-        #
-        # The prior is normal, so it shrinks uniformly and pulls on a constrained
-        # direction too. That is the wrong trade if some width is expected to be
-        # strongly identified, and a heavy tail would be the tool. None is, here,
-        # so the sampling cost is not worth taking. It is a choice, not a default.
-        #
-        # The unidentified components stay at tau_u, so the posterior spread of u
-        # is not by itself evidence. Report the pooling factor, posterior sd of
-        # u_j over tau_u: near 1 means the corpus said nothing about that width.
-        sites["u_raw"] = numpyro.sample(
-            "u_raw",
-            dist.Normal(0.0, prior.tau_u)
-            .expand([len(prior.assumed)]).to_event(1))
-        if prior.measured:
-            idx = np.asarray(prior.measured)
-            sites["log_omega_measured"] = numpyro.sample(
-                "log_omega_measured",
-                dist.Normal(jnp.log(jnp.asarray(prior.omega_0)[idx]),
-                            prior.tau_omega_measured).to_event(1))
+
+    # s and b_1 are aliased in principle. Report the split; do not
+    # reparameterise around it, and do not orthonormalise Z to avoid it:
+    # iid on an orthonormal basis is a different prior from iid on a.
+    sites["s"] = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
+    # u is one number per assumed width against however many scale rows the
+    # corpus prints, so most of it is unidentified whatever tau_u is. The
+    # prior is what decides between the two ways that can go wrong. Wide, and
+    # the unidentified components sit at the prior and print a width profile
+    # that looks individuated when the individuation is a prior draw. Pinned
+    # to zero, and a direction the scale rows genuinely constrain cannot move
+    # either. Small and free is neither: the constrained directions are pulled
+    # off zero, the rest stay near it, and no rank cutoff has to be defended.
+    #
+    # tau_u is set from the omega_0 role table rather than chosen. u must not
+    # be able to carry a parameter across the gap between two roles, because
+    # the role is the only thing actually claimed about that parameter; a
+    # tau_u whose plausible excursion clears the narrowest gap has overruled
+    # it silently. The project derives the number and passes it.
+    #
+    # The prior is normal, so it shrinks uniformly and pulls on a constrained
+    # direction too. That is the wrong trade if some width is expected to be
+    # strongly identified, and a heavy tail would be the tool. None is, here,
+    # so the sampling cost is not worth taking. It is a choice, not a default.
+    #
+    # The unidentified components stay at tau_u, so the posterior spread of u
+    # is not by itself evidence. Report the pooling factor, posterior sd of
+    # u_j over tau_u: near 1 means the corpus said nothing about that width.
+    sites["u_raw"] = numpyro.sample(
+        "u_raw",
+        dist.Normal(0.0, prior.tau_u)
+        .expand([len(prior.assumed)]).to_event(1))
+    if prior.measured:
+        idx = np.asarray(prior.measured)
+        sites["log_omega_measured"] = numpyro.sample(
+            "log_omega_measured",
+            dist.Normal(jnp.log(jnp.asarray(prior.omega_0)[idx]),
+                        prior.tau_omega_measured).to_event(1))
 
     if not prior.pin_discrepancy:
         sites["a"] = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
@@ -269,11 +261,7 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     # from sites to phi is phi_from_sites, which the Laplace metric and the
     # conditioning report differentiate. Two copies of it would let a mass matrix
     # be built for a model that is not this one, with no symptom.
-    #
-    # omega under `flat` is omega_0 and not zero: a point mass makes eq:V return
-    # zero, turns w^(c) into a switch on the whole cohort, and collapses every
-    # location functional onto one number.
-    _, omega, a, b, beta_free, log_R = phi_from_sites(sites, prior, flat=flat)
+    _, omega, a, b, beta_free, log_R = phi_from_sites(sites, prior)
     numpyro.deterministic("omega", omega)
     if prior.pin_discrepancy:
         numpyro.deterministic("a", a)
@@ -286,12 +274,9 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     taus = tau_all(mu, omega, a, b, beta_free, problem.plans,
                    problem.specs_by_cohort, problem.refs, problem.mech,
                    log_R=log_R, designs=problem.designs,
-                   mass_table=problem.mass_table,
-                   elig_fn=problem.elig_fn, elig_at=problem.elig_at)
+                   mass_table=problem.mass_table)
 
     for i, (plan, tau_B) in enumerate(zip(problem.plans, taus)):
-        if row_masks is not None:
-            tau_B = tau_B[np.asarray(row_masks[i])]
         numpyro.sample(
             f"T_{problem.block_name(plan)}",
             dist.MultivariateNormal(tau_B, scale_tril=V_chol[i]),

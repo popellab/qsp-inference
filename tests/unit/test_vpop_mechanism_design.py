@@ -1,4 +1,4 @@
-"""Unit tests for Z_r (qsp_inference.vpop.design).
+"""Unit tests for Z_r (qsp_inference.vpop.mechanism).
 
 Z decides which readouts pool their measurement correction. The properties that
 matter are checkable without a fit: every column carried by at least two
@@ -7,7 +7,7 @@ readouts, rank well below M, and no two columns the same vector.
 import numpy as np
 import pytest
 
-from qsp_inference.vpop.design import build_Z, z_conditioning
+from qsp_inference.vpop.mechanism import build_Z, z_conditioning
 
 
 def _t(kind, modality):

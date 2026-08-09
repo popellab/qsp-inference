@@ -1,4 +1,4 @@
-"""Unit tests for h_r (qsp_inference.vpop.readouts).
+"""Unit tests for h_r (qsp_inference.vpop.mechanism).
 
 The corpus bodies are written against numpy and run here on JAX arrays, so the
 checks are that the shim reproduces numpy's answer, that a masked division has a
@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from qsp_inference.vpop.readouts import (
+from qsp_inference.vpop.mechanism import (
     NEEDS_TRAJECTORY,
     NotPerPatient,
     UntraceableReadout,
