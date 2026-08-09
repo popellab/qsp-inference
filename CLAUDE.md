@@ -33,6 +33,8 @@ Two constraints drive most design decisions here, and are worth keeping in mind 
 
 `docs/` holds `model-draft.tex` and its slides. The six-chapter guide set that used to sit beside it described a package layout that no longer exists and is deleted; do not reinstate it from git history as a reference.
 
+**To actually run a population fit**, the corpus lives in the consuming project, so the operational guide does too: `pdac-build/workflows/campaign/README.md` covers all five stages (draw the pool, simulate, reduce, train the emulator, fit) with the arguments that have to agree between them and how to read the output. Read stage 5 before running `vpop_fit.py`.
+
 ## Installation
 
 ```bash
