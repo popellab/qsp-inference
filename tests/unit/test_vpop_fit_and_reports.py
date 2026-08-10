@@ -10,6 +10,8 @@ sites than the model samples is accepted by numpyro without a symptom, so
 The mechanism is two species and two readouts, one a bare level and one a ratio,
 so every claim below has a closed form.
 """
+import dataclasses
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -363,3 +365,57 @@ class TestReports:
         assert np.isfinite(neg_lp)
         assert set(hat) >= {"mu", "omega", "s"}
         assert np.asarray(hat["mu"]).shape == (P,)
+
+
+class TestHeldCentres:
+    """``fix_mu``: a gate is an input to the population, not a thing inferred."""
+
+    def _held(self, prior, j=1):
+        return dataclasses.replace(prior, fix_mu=(j,))
+
+    def test_site_is_renamed_and_shorter(self, prior):
+        held = self._held(prior)
+        names = dict((n, np.shape(v)) for n, v, _ in site_spec(held))
+        assert "mu_raw" not in names
+        assert names["mu_free"] == (P - 1,)
+
+    def test_held_centre_comes_back_at_mu_0(self, prior):
+        held = self._held(prior, j=1)
+        rng = np.random.default_rng(0)
+        sites = {n: jnp.asarray(rng.standard_normal(np.shape(v)))
+                 for n, v, _ in site_spec(held)}
+        mu = phi_from_sites(sites, held)[0]
+        assert float(mu[1]) == pytest.approx(float(held.mu_0[1]), abs=1e-12)
+        # and the free ones still move
+        assert not np.allclose(np.asarray(mu)[[0, 2]],
+                               np.asarray(held.mu_0)[[0, 2]])
+
+    def test_free_mu_complements_fix_mu(self, prior):
+        assert self._held(prior, j=1).free_mu == (0, 2)
+
+    def test_rejects_an_index_that_is_not_a_parameter(self, prior):
+        with pytest.raises(ValueError, match="not parameters"):
+            dataclasses.replace(prior, fix_mu=(P,))
+
+    def test_rejects_holding_every_centre(self, prior):
+        with pytest.raises(ValueError, match="every centre"):
+            dataclasses.replace(prior, fix_mu=tuple(range(P)))
+
+    def test_rejects_a_held_centre_that_sigma_1_correlates(self, prior):
+        # Dropping mu_raw[j] equals conditioning only when the row is diagonal.
+        L = np.asarray(prior.L_sigma_1).copy()
+        L[2, 1] = 0.5 * L[2, 2]
+        with pytest.raises(ValueError, match="correlates it with others"):
+            dataclasses.replace(prior, L_sigma_1=jnp.asarray(L), fix_mu=(1,))
+
+    def test_model_samples_the_shorter_site(self, prior, problem, V_chol):
+        import numpyro
+        from numpyro.infer.util import initialize_model
+
+        held = self._held(prior)
+        init = initialize_model(jax.random.PRNGKey(0), population_model,
+                                model_args=(held, problem, V_chol, None),
+                                init_strategy=numpyro.infer.init_to_median)
+        assert "mu_free" in init[0].z
+        assert "mu_raw" not in init[0].z
+        assert np.asarray(init[0].z["mu_free"]).shape == (P - 1,)

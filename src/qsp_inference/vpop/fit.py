@@ -111,6 +111,32 @@ class PopulationPrior:
     # and see whether the width stays put.
     fix_omega: Tuple[int, ...] = ()
 
+    # Parameters whose centre is held at mu_0 exactly: outside mu_raw entirely.
+    #
+    # The companion to fix_omega, and for the same parameter, for a reason that
+    # is stronger on mu than on omega. initial_tumour_diameter is the gate: it
+    # is the stopping rule, so it is a statement about WHEN a patient was
+    # observed, and a cohort that reports its readouts has already been measured
+    # at whatever size it presented at. The distribution of that size is
+    # clinical epidemiology, an input to the virtual population, not a quantity
+    # the immune corpus is entitled to relitigate. Held here, it exists only to
+    # spread virtual patients over disease duration, which is its job.
+    #
+    # Left free it is the corpus's cheapest absorber, because it is the one
+    # parameter that moves every readout at once: it sets each patient's readout
+    # time, so it has maximum leverage and no observable anchors it. Nothing in
+    # the pdac corpus measures tumour size. An unpinned fit made it the 4th most
+    # identified parameter of 271, pulling the centre from 3.2cm to 2.0cm with a
+    # 95% interval excluding the prior centre, on evidence that is entirely
+    # indirect.
+    #
+    # Holding mu at mu_0 is conditioning Sigma_1 on that coordinate, not just
+    # dropping it, and the two agree only when the held row of Sigma_1 has no
+    # off-diagonal. __post_init__ checks that rather than assuming it: the pdac
+    # copula leaves this parameter uncorrelated with all 270 others, and a
+    # corpus where that stops being true should fail loudly.
+    fix_mu: Tuple[int, ...] = ()
+
     @property
     def n_params(self) -> int:
         return int(jnp.asarray(self.omega_0).shape[0])
@@ -119,6 +145,12 @@ class PopulationPrior:
     def free_omega(self) -> Tuple[int, ...]:
         """Parameters whose width the model samples. Declaration order."""
         fixed = set(self.fix_omega)
+        return tuple(j for j in range(self.n_params) if j not in fixed)
+
+    @property
+    def free_mu(self) -> Tuple[int, ...]:
+        """Parameters whose centre the model samples. Declaration order."""
+        fixed = set(self.fix_mu)
         return tuple(j for j in range(self.n_params) if j not in fixed)
 
     @property
@@ -155,6 +187,34 @@ class PopulationPrior:
                 "nothing to act on. Hold the ones that are not population "
                 "widths, not all of them."
             )
+        bad = [j for j in self.fix_mu if not 0 <= j < self.n_params]
+        if bad:
+            raise ValueError(
+                f"fix_mu {bad} are not parameters; there are {self.n_params}"
+            )
+        if len(set(self.fix_mu)) != len(self.fix_mu):
+            raise ValueError("fix_mu repeats a parameter")
+        if len(self.fix_mu) == self.n_params:
+            raise ValueError(
+                "every centre is held at mu_0, which leaves nothing for the "
+                "corpus to move. Hold the parameters that are not population "
+                "centres, not all of them."
+            )
+        if self.fix_mu:
+            # Dropping mu_raw[j] equals conditioning mu on mu_j = mu_0[j] only
+            # when Sigma_1's row j is diagonal. See the field.
+            L = np.asarray(self.L_sigma_1)
+            C = L @ L.T
+            for j in self.fix_mu:
+                off = np.abs(np.delete(C[j], j))
+                if off.max(initial=0.0) > 1e-10 * abs(C[j, j]):
+                    raise ValueError(
+                        f"fix_mu holds parameter {j} at mu_0, but Sigma_1 "
+                        f"correlates it with others (largest off-diagonal "
+                        f"{off.max():.3g} against variance {C[j, j]:.3g}). "
+                        "Holding it would silently discard that correlation "
+                        "rather than condition on it."
+                    )
         if self.pin_discrepancy and self.pin_b_columns:
             raise ValueError(
                 "pin_discrepancy already holds every column of b at zero, so "
@@ -206,8 +266,12 @@ def site_spec(prior: "PopulationPrior"):
     Order is declaration order, not numpyro's. Callers that need numpyro's own
     packing sort by name themselves, where it is visible.
     """
-    out = [("mu_raw", jnp.zeros(prior.n_params), 1.0),
-           ("s", jnp.zeros(()), prior.tau_s)]
+    # Renamed when a centre is held, for the same reason u_free is.
+    if prior.fix_mu:
+        out = [("mu_free", jnp.zeros(len(prior.free_mu)), 1.0)]
+    else:
+        out = [("mu_raw", jnp.zeros(prior.n_params), 1.0)]
+    out.append(("s", jnp.zeros(()), prior.tau_s))
     # Renamed when a width is held, for the reason pin_b_columns is: a site whose
     # length changes with configuration under one name is what a mass matrix
     # cannot notice.
@@ -240,7 +304,12 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
     that has to differentiate the model's map without sampling it goes through
     here rather than rebuilding the map, so the two cannot drift apart.
     """
-    mu = jnp.asarray(prior.mu_0) + jnp.asarray(prior.L_sigma_1) @ sites["mu_raw"]
+    if prior.fix_mu:
+        mu_raw = jnp.zeros(prior.n_params).at[
+            np.asarray(prior.free_mu)].set(sites["mu_free"])
+    else:
+        mu_raw = sites["mu_raw"]
+    mu = jnp.asarray(prior.mu_0) + jnp.asarray(prior.L_sigma_1) @ mu_raw
     if prior.fix_omega:
         u_raw = jnp.zeros(prior.n_params).at[
             np.asarray(prior.free_omega)].set(sites["u_free"])
@@ -290,10 +359,17 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     from qsp_inference.vpop.predict import tau_all
 
     P = prior.n_params
-    sites = {"mu_raw": numpyro.sample(
-        "mu_raw", dist.Normal(0.0, 1.0).expand([P]).to_event(1))}
-    mu = numpyro.deterministic(
-        "mu", prior.mu_0 + prior.L_sigma_1 @ sites["mu_raw"])
+    if prior.fix_mu:
+        sites = {"mu_free": numpyro.sample(
+            "mu_free",
+            dist.Normal(0.0, 1.0).expand([len(prior.free_mu)]).to_event(1))}
+        mu_raw = jnp.zeros(P).at[np.asarray(prior.free_mu)].set(
+            sites["mu_free"])
+    else:
+        sites = {"mu_raw": numpyro.sample(
+            "mu_raw", dist.Normal(0.0, 1.0).expand([P]).to_event(1))}
+        mu_raw = sites["mu_raw"]
+    mu = numpyro.deterministic("mu", prior.mu_0 + prior.L_sigma_1 @ mu_raw)
 
     # No bound factor here. eq:muprior is Gaussian in mu, and for a logit-margin
     # parameter mu is the logit of the median, so exp of it is never the thing
