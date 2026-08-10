@@ -292,9 +292,17 @@ The criterion is one function of $\theta$ rather than one per cohort: the gate
 runs before the arms split, so the rejection counts are identical across arms.
 Cohorts drawn together therefore share $w$ by construction.
 
-Two costs. The weighted order-statistic masses read $\phi$, so they are built
-inside the gradient rather than once; and the effective cloud size falls, with
-$\mathrm{ESS}/N = 0.42$ on 2026-08d.
+Order-statistic rows take the weights through the Beta kernel, where a member's
+slice of $[0,1]$ is its own share rather than $1/N$. The rows with no closed form
+take them through the frozen design, by interpolating the weighted quantile
+function rather than looking a member up in it: a lookup is a step function of
+the weights, so the replicate jumps as a member's cumulative weight crosses a
+frozen $u$ and the row is piecewise constant in $\phi$. The uniforms stay frozen
+either way.
+
+Two costs. The weighted masses read $\phi$, so they are built inside the gradient
+rather than once; and the effective cloud size falls, with $\mathrm{ESS}/N = 0.42$
+on 2026-08d.
 
 $w$ counts solver failures as ineligible. Those are numerical, not clinical, and
 conditioning them out is unavailable: a $\theta$ the solver failed on has no

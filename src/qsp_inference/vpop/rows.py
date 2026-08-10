@@ -451,10 +451,21 @@ def order_statistic_mass(n_cloud: int, kappa: int, n: int):
 
 def weighted_edges(w_sorted):
     """Cumulative weight boundaries on [0, 1], for a cloud sorted by the row's own
-    readout. ``w_sorted`` must carry that row's permutation."""
+    readout. ``w_sorted`` must carry that row's permutation.
+
+    The outer two are literals, not ``0/total`` and ``total/total``. They are 0
+    and 1 for any weights, and ``betainc`` is 0 and 1 there for any ``(a, b)``, so
+    they say nothing about ``w`` -- but computed as divisions they carry a
+    gradient to a point where ``d betainc/dx`` is ``exp((a-1) log x + ...)``, and
+    at ``x = 0`` with ``a = 1`` that is ``0 * inf``. NaN, and only for kappa = 1
+    and kappa = n, which are exactly the min and max rows. The unweighted path
+    never sees it because its edges are constants.
+    """
     w = jnp.asarray(w_sorted)
     c = jnp.cumsum(w)
-    return jnp.concatenate([jnp.zeros(1, dtype=c.dtype), c]) / c[-1]
+    return jnp.concatenate([jnp.zeros(1, dtype=c.dtype),
+                            c[:-1] / c[-1],
+                            jnp.ones(1, dtype=c.dtype)])
 
 
 def order_statistic_mass_w(w_sorted, kappa: int, n: int):
@@ -608,13 +619,22 @@ def bootstrap_row(x_sorted, u, fn, w_sorted=None):
     if w_sorted is None:
         idx = jnp.minimum((u * x_sorted.shape[0]).astype(jnp.int32),
                           x_sorted.shape[0] - 1)
-    else:
-        # side="right" so a member owning [c_{i-1}, c_i] receives every u in it;
-        # clipped because u = 1 would index one past the end.
-        cdf = weighted_edges(w_sorted)[1:]
-        idx = jnp.clip(jnp.searchsorted(cdf, u, side="left"),
-                       0, x_sorted.shape[0] - 1)
-    return jnp.mean(jax.vmap(fn)(x_sorted[idx]))
+        return jnp.mean(jax.vmap(fn)(x_sorted[idx]))
+    # Weighted, by interpolating the weighted quantile function rather than
+    # looking a member up in it. An index lookup is a step function of the
+    # weights: the replicate jumps when a member's cumulative weight crosses a
+    # frozen u, so the row is piecewise constant in phi with zero gradient
+    # between jumps, which is a potential HMC cannot integrate. Interpolating
+    # moves the replicate continuously as the weights move.
+    #
+    # Member i owns (c_{i-1}, c_i], so its knot is that interval's midpoint. The
+    # unweighted path keeps its own lookup above: at equal weights this agrees
+    # with it only to the O(1/N) the discretisation is worth, and the
+    # interpolated form is the better answer rather than the compatible one.
+    w = jnp.asarray(w_sorted)
+    c = jnp.cumsum(w)
+    knots = (c - 0.5 * w) / c[-1]
+    return jnp.mean(jax.vmap(fn)(jnp.interp(u, knots, x_sorted)))
 
 
 def _sample_sd(v):
