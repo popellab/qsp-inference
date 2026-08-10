@@ -270,37 +270,36 @@ cohort $c$ reports, for a single patient:
 Built from $\tilde x$ and not $x$: $\beta$ enters inside $h_r$, so
 \eqref{eq:disc} does not factor through \eqref{eq:readout}.
 
-\paragraph{Cohort selection.} Specified, not implemented: no cohort in the
-corpus declares a criterion, so $w^{(c)}\equiv1$ throughout and the fit reads an
-unweighted cloud. What follows is the design a declared criterion would be read
-into, and it is the reason the row functionals are stated as weighted ones.
-
-Where cohort $c$ reports an eligibility criterion,
-$w^{(c)}_i\in[0,1]$ is a smooth indicator of whether patient $i$ meets it, and
-$w^{(c)}_i \equiv 1$ otherwise. A criterion stated as an interval
-$[\ell_1,\ell_2]$ on readout $r$ gives
+\paragraph{Cohort selection.} The corpus is diagnosed PDAC, and the design
+enforces that: a patient is simulated to the diameter at which they present, and
+one that never reaches it produces no state to read. So the training set is
+conditioned on an event that \eqref{eq:pop} does not represent. The weight
 \begin{equation}
-w^{(c)}_i \;=\;
-\sigma\!\big((\tilde x_{irc}-\ell_1)/h_w\big)\;
-\sigma\!\big((\ell_2-\tilde x_{irc})/h_w\big),
+w_i \;=\; \mathbb{P}(\text{diagnosed}\mid\theta_i),
 \label{eq:elig}
 \end{equation}
-with $\sigma$ the logistic and $h_w$ a fixed bandwidth. Write $\tilde F_{c}$ for
-the $w^{(c)}$-weighted empirical distribution of $\{\tilde x_{ic}\}_{i=1}^N$ on
-$\mathbb{R}^{|\Rset_c|}$, and $\tilde F_{rc}$ for its $r$-th marginal.
+is the status head's estimate of that event, and $\tilde F_{c}$ is the
+$w$-weighted empirical distribution of $\{\tilde x_{ic}\}_{i=1}^N$, with
+$\tilde F_{rc}$ its $r$-th marginal. On the 2026-08d scoring block the head is
+calibrated to an expected calibration error of $0.021$.
 
-The criterion is stated in reported units, so it reads $\tilde x$ rather than
-$x$. Eligibility therefore depends on $a$, $b$ and $\beta$, and is not fixed
-in $\phi$.
+No normalising constant appears. Every row is an expectation over the population,
+so $\mathbb{P}(\text{diagnosed}\mid\mu,\omega)$ divides the numerator and the
+denominator of one average and cancels. It would survive only if a source
+reported how many patients it screened to enrol its cohort, and none does.
 
-Cohorts drawn together must share $w^{(c)}$: one draw serves them all, so
-criteria that select differently leave it undefined. The unit is the joint draw
-and not the block, since cohorts joined only by a shared row are disjoint people
-and each reads its own. Evaluating a shared criterion once per cohort would not
-do: $\tilde x_{irc}$ differs across cohorts through the scenario and through
-$c_{rc}$, so the same rule would select different patients. It is evaluated once,
-on the cohort the criterion enrolled. In practice these are arms and timepoints
-of one trial and that is the baseline.
+The criterion is one function of $\theta$ rather than one per cohort: the gate
+runs before the arms split, so the rejection counts are identical across arms.
+Cohorts drawn together therefore share $w$ by construction.
+
+Two costs. The weighted order-statistic masses read $\phi$, so they are built
+inside the gradient rather than once; and the effective cloud size falls, with
+$\mathrm{ESS}/N = 0.42$ on 2026-08d.
+
+$w$ counts solver failures as ineligible. Those are numerical, not clinical, and
+conditioning them out is unavailable: a $\theta$ the solver failed on has no
+species for the surrogate to have been trained on. At 14\% of draws this biases
+$\omega$ downward.
 
 \paragraph{Statistics.} Cohort $c$ reports statistics $T_{rc1},\dots,T_{rcK_{rc}}$
 for readout $r$, each a functional of a sample of $n_c$ patients. The model
@@ -648,6 +647,15 @@ below is about.
 In practice $u$ is drawn iid and its mean subtracted, which is the same
 distribution as conditioning on the constraint.
 
+A parameter may be held at $\omega_{0j}$, outside both $s$ and $u$, and the
+centring then runs over the free entries alone. This is not a second opinion on
+how far a width may move, which $\tau_u$ already answers. It is for a parameter
+that is not a population width: the initial tumour diameter is the diameter each
+patient is evolved to before anything is read, so it sets when a patient is
+observed and it modulates its own censoring through the gate. Left free it
+absorbs the misfit \eqref{eq:elig} corrects, widening by a factor of $3.6$ while
+every other width contracts to $0.43$--$0.50$.
+
 \paragraph{Measurement discrepancy.} Free, because it has no parameter twin.
 $Z$ has an intercept, so $a_1$ and $b_1$ are the global location and width
 corrections.
@@ -939,7 +947,7 @@ $Z$ & --- & Readout attributes for the measurement discrepancy: assay modality, 
 $c_{rc}$ & --- & Pivot of \eqref{eq:disc}: cohort $c$'s median of readout $r$ at $(\mu_0,\omega_0)$. Fixed once, not rebuilt with $V_B$. \\
 $\mathcal{S}$ & --- & Species allowed a mechanism discrepancy. Default: the shared denominators. \textbf{Off}: empty, so $\beta=0$ throughout. \\
 $z_{1:N}$ & --- & The latent cloud, drawn once. \\
-$w^{(c)}$ & --- & Eligibility weights, read from each paper's criterion. \textbf{Off}: no cohort declares a criterion, so $w^{(c)}\equiv1$ and \eqref{eq:elig} is not implemented. \\
+$w$ & --- & Eligibility weights \eqref{eq:elig}, from the status head. \textbf{Off} by default: $w\equiv1$ and the cloud is unweighted. \\
 $h_q$ & --- & Smoothing bandwidth of the quantile kernel \eqref{eq:smoothq}. \\
 $\widehat g$ & --- & The emulator, and with it the design it was trained on. Fixes $E_B$ and $\bar d_B$. \\
 $V_{B}$ & --- & Assembled by \eqref{eq:Vsplit} at $\phi_0$, then frozen. One per block of \eqref{eq:obs}. \\
