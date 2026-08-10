@@ -64,9 +64,6 @@ class PopulationPrior:
     # does not ship. False is not the neutral choice it looks like: it turns the
     # discrepancy layer on, which is a modelling decision, so it is stated too.
     #
-    # There is no pin for u. How far the width pattern may move is a continuous
-    # question that tau_u already answers, and a flag on top of it would let a
-    # caller assert the answer twice.
     pin_discrepancy: bool           # a = b = 0
     pin_aux: bool                   # log R at its prior centre
 
@@ -90,9 +87,39 @@ class PopulationPrior:
     # support.
     pin_b_columns: Tuple[int, ...]
 
+    # Parameters whose width is held at omega_0 exactly: outside s, outside u.
+    #
+    # How far a width may move is a continuous question tau_u already answers,
+    # so this is NOT a second opinion on that. It is for a parameter that is not
+    # a population width in the first place. initial_tumour_diameter is the one
+    # this exists for: it is the stopping rule, the diameter evolve_to_diagnosis
+    # integrates each patient to before anything is read out, so it sets WHEN a
+    # patient is observed rather than how they behave. It also modulates its own
+    # censoring, since a larger diameter takes longer to reach and is likelier to
+    # be rejected as too slow.
+    #
+    # eq:pop carries no truncation term, so the fit is handed a pool conditioned
+    # on surviving that gate and is not told. The cheapest way to recover the
+    # spread the censoring removed is to widen the parameter that moves every
+    # patient's readout time, which is what an unpinned fit does: x3.55 on its own
+    # width while every other parameter contracts to x0.43-0.50.
+    #
+    # Pinning does not fix that. It denies the misfit its cheapest absorber and
+    # makes it surface somewhere else, which is the point -- the artifact becomes
+    # visible instead of being quietly priced into a width. The fix is eq:elig's
+    # log Z(mu, omega), and when that lands this pin is what tests it: release it
+    # and see whether the width stays put.
+    fix_omega: Tuple[int, ...] = ()
+
     @property
     def n_params(self) -> int:
         return int(jnp.asarray(self.omega_0).shape[0])
+
+    @property
+    def free_omega(self) -> Tuple[int, ...]:
+        """Parameters whose width the model samples. Declaration order."""
+        fixed = set(self.fix_omega)
+        return tuple(j for j in range(self.n_params) if j not in fixed)
 
     @property
     def free_b_columns(self) -> Tuple[int, ...]:
@@ -115,6 +142,19 @@ class PopulationPrior:
             )
         if len(set(self.pin_b_columns)) != len(self.pin_b_columns):
             raise ValueError("pin_b_columns repeats a column")
+        bad = [j for j in self.fix_omega if not 0 <= j < self.n_params]
+        if bad:
+            raise ValueError(
+                f"fix_omega {bad} are not parameters; there are {self.n_params}"
+            )
+        if len(set(self.fix_omega)) != len(self.fix_omega):
+            raise ValueError("fix_omega repeats a parameter")
+        if len(self.fix_omega) == self.n_params:
+            raise ValueError(
+                "every width is held at omega_0, which leaves s and u with "
+                "nothing to act on. Hold the ones that are not population "
+                "widths, not all of them."
+            )
         if self.pin_discrepancy and self.pin_b_columns:
             raise ValueError(
                 "pin_discrepancy already holds every column of b at zero, so "
@@ -136,8 +176,22 @@ class PopulationPrior:
 
 
 def build_omega(s, u_raw, prior: PopulationPrior):
-    """eq:omegaassumed. ``u`` is centred, so the global level lives in ``s`` alone."""
-    return jnp.asarray(prior.omega_0) * jnp.exp(s + (u_raw - jnp.mean(u_raw)))
+    """eq:omegaassumed. ``u`` is centred, so the global level lives in ``s`` alone.
+
+    ``fix_omega`` parameters come back at ``omega_0``: they are held out of the
+    centring as well as out of ``s``, so neither the level nor the pattern is
+    estimated from a width that is not a population width. See the field.
+    """
+    omega_0 = jnp.asarray(prior.omega_0)
+    if not prior.fix_omega:
+        return omega_0 * jnp.exp(s + (u_raw - jnp.mean(u_raw)))
+    free = np.zeros(prior.n_params, dtype=bool)
+    free[np.asarray(prior.free_omega)] = True
+    free = jnp.asarray(free)
+    # Centre over the free entries only. Averaging in the held ones would put
+    # their zeros into the mean and move the level s carries.
+    centred = u_raw - jnp.sum(jnp.where(free, u_raw, 0.0)) / jnp.sum(free)
+    return jnp.where(free, omega_0 * jnp.exp(s + centred), omega_0)
 
 
 def site_spec(prior: "PopulationPrior"):
@@ -153,8 +207,14 @@ def site_spec(prior: "PopulationPrior"):
     packing sort by name themselves, where it is visible.
     """
     out = [("mu_raw", jnp.zeros(prior.n_params), 1.0),
-           ("s", jnp.zeros(()), prior.tau_s),
-           ("u_raw", jnp.zeros(prior.n_params), prior.tau_u)]
+           ("s", jnp.zeros(()), prior.tau_s)]
+    # Renamed when a width is held, for the reason pin_b_columns is: a site whose
+    # length changes with configuration under one name is what a mass matrix
+    # cannot notice.
+    if prior.fix_omega:
+        out.append(("u_free", jnp.zeros(len(prior.free_omega)), prior.tau_u))
+    else:
+        out.append(("u_raw", jnp.zeros(prior.n_params), prior.tau_u))
     if not prior.pin_discrepancy:
         out.append(("a", jnp.zeros(prior.dim_z), prior.sigma_a))
         # Renamed when a column is pinned, rather than kept as "b" at a smaller
@@ -181,7 +241,12 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
     here rather than rebuilding the map, so the two cannot drift apart.
     """
     mu = jnp.asarray(prior.mu_0) + jnp.asarray(prior.L_sigma_1) @ sites["mu_raw"]
-    omega = build_omega(sites["s"], sites["u_raw"], prior)
+    if prior.fix_omega:
+        u_raw = jnp.zeros(prior.n_params).at[
+            np.asarray(prior.free_omega)].set(sites["u_free"])
+    else:
+        u_raw = sites["u_raw"]
+    omega = build_omega(sites["s"], u_raw, prior)
     if prior.pin_discrepancy:
         a = b = jnp.zeros(prior.dim_z)
     elif prior.pin_b_columns:
@@ -264,9 +329,15 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     # The unidentified components stay at tau_u, so the posterior spread of u
     # is not by itself evidence. Report the pooling factor, posterior sd of
     # u_j over tau_u: near 1 means the corpus said nothing about that width.
-    sites["u_raw"] = numpyro.sample(
-        "u_raw",
-        dist.Normal(0.0, prior.tau_u).expand([P]).to_event(1))
+    if prior.fix_omega:
+        sites["u_free"] = numpyro.sample(
+            "u_free",
+            dist.Normal(0.0, prior.tau_u)
+            .expand([len(prior.free_omega)]).to_event(1))
+    else:
+        sites["u_raw"] = numpyro.sample(
+            "u_raw",
+            dist.Normal(0.0, prior.tau_u).expand([P]).to_event(1))
 
     if not prior.pin_discrepancy:
         sites["a"] = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
