@@ -6,13 +6,22 @@ The chain is
 
 and only the species step needs the emulator, which arrives as ``g_fn``.
 
-eq:elig is not implemented. A cohort declaring an eligibility criterion would
-weight the cloud it reports on, which makes every row functional weighted, makes
-the Beta masses depend on ``phi``, and gives cohorts drawn together a criterion
-they have to agree on. No calibration target in any corpus this drives declares
-one, so the cloud is unweighted throughout and the patient axis is sorted once,
-before eq:disc rather than after it per cohort: the map is monotone in ``x``, so
-``sort(map(x))`` and ``map(sort(x))`` are the same array.
+eq:elig is ``Mechanism.w_fn``, off unless a fit passes one. It weights each cloud
+member by P(ok), the status head's estimate that the patient reaches diagnosis at
+all, which is what the design conditioned on and eq:pop did not.
+
+No ``Z``: the rows are expectations over the population, so the normaliser divides
+the numerator and the denominator of the same average and cancels. It would only
+survive if a source printed how many patients it screened to enrol its cohort,
+and none does.
+
+The criterion is one function of theta, not one per cohort: evolve_to_diagnosis
+runs before the arms split, so the rejection codes are identical across arms. That
+retires the worry that cohorts drawn together need a criterion they agree on.
+
+Weighted, the patient axis is sorted by argsort rather than sort, because the
+weights have to take each column's permutation with them. Unweighted the two are
+the same array and the old path is unchanged.
 """
 
 from __future__ import annotations
@@ -60,6 +69,9 @@ class Mechanism:
     # (P,) bool, or None for all-lognormal. True where the margin is bounded on
     # (0, 1) and omega is a log-odds sd. See patient_cloud.
     logit: Optional[jnp.ndarray] = None
+    # eq:elig. ``w_fn(vartheta) -> (N,)`` is P(ok) from the status head; None
+    # leaves the cloud unweighted, which is bit-for-bit the old path.
+    w_fn: Optional[Callable] = None
 
     @property
     def n_readouts(self) -> int:
@@ -236,7 +248,7 @@ def quantile_mass_table(specs_by_cohort, n_cloud: int) -> Dict[Tuple, jnp.ndarra
 
 
 def tau_rows(specs, x_cohort, mech: Mechanism, designs=None, mass_table=None,
-             column_of=None) -> jnp.ndarray:
+             column_of=None, w_cohort=None) -> jnp.ndarray:
     """One cohort's rows, ``(K_c,)``, in the order the source printed them.
 
     ``x_cohort`` is already sorted up the patient axis, which eq:disc allows
@@ -249,19 +261,29 @@ def tau_rows(specs, x_cohort, mech: Mechanism, designs=None, mass_table=None,
 
     out = []
     for spec in specs:
+        col = index_of[spec.target_id]
+        # eq:elig weights are per readout: the cloud is sorted by each row's own
+        # column, so the weight vector carries that column's permutation too. A
+        # weight left in cloud order would pair the wrong probability with each
+        # value, which is arithmetic that stays finite and is simply wrong.
+        w_col = None if w_cohort is None else w_cohort[:, col]
         mass = None
         if spec.stat == "quantile":
-            key = (spec.p, spec.n, spec.convention)
-            if key not in masses:
-                masses[key] = quantile_mass(n_cloud, *key)
-            mass = masses[key]
-        out.append(tau_row(spec, x_cohort[:, index_of[spec.target_id]],
-                           (designs or {}).get(spec.label), mass))
+            if w_col is None:
+                key = (spec.p, spec.n, spec.convention)
+                if key not in masses:
+                    masses[key] = quantile_mass(n_cloud, *key)
+                mass = masses[key]
+            # weighted: the mass reads phi, so tau_row builds it per row rather
+            # than looking it up. mass_table is for the unweighted path only.
+        out.append(tau_row(spec, x_cohort[:, col],
+                           (designs or {}).get(spec.label), mass,
+                           w_sorted=w_col))
     return jnp.stack(out)
 
 
 def tau_block(x, plan, specs_by_cohort, a, b, refs, mech: Mechanism, cols_of,
-              *, designs=None, mass_table=None) -> jnp.ndarray:
+              *, designs=None, mass_table=None, w=None) -> jnp.ndarray:
     """``tau_B``. Cohorts concatenate in ``plan.cohort_ids`` order, matching ``V_B``."""
     out = []
     for c in plan.cohort_ids:
@@ -273,31 +295,45 @@ def tau_block(x, plan, specs_by_cohort, a, b, refs, mech: Mechanism, cols_of,
         # commute, so only the moment and width rows depend on this being here
         # rather than applied to tau afterwards.
         x_c = jnp.exp(cohort_cloud(x, cols, a, b, refs, mech))
+        w_c = None if w is None else w[:, jnp.asarray(cols)]
         column_of = {mech.readouts[col]: k for k, col in enumerate(cols)}
         out.append(tau_rows(specs_by_cohort[c], x_c, mech, designs,
-                            mass_table=mass_table, column_of=column_of))
+                            mass_table=mass_table, column_of=column_of,
+                            w_cohort=w_c))
     return jnp.concatenate(out)
 
 
 def tau_from_readouts(x, a, b, plans, specs_by_cohort, refs, mech: Mechanism, *,
-                      designs=None, mass_table=None) -> Sequence[jnp.ndarray]:
+                      designs=None, mass_table=None, w=None) -> Sequence[jnp.ndarray]:
     """Every block's rows from an already-computed readout cloud, ``(N, M)``.
 
     Split out from :func:`tau_all` because ``E_B`` needs the same rows computed
     from a cloud the simulator produced, where there is no ``phi`` to push through
     the emulator at all.
     """
-    x = jnp.sort(x, axis=0)
+    if w is None:
+        x = jnp.sort(x, axis=0)
+        w_sorted = None
+    else:
+        # argsort rather than sort: each column has its own permutation and the
+        # weights have to take it too. take_along_axis reproduces jnp.sort here.
+        order = jnp.argsort(x, axis=0)
+        x = jnp.take_along_axis(x, order, axis=0)
+        w_sorted = jnp.asarray(w)[order]
     cols_of = cohort_columns(specs_by_cohort, mech.readouts)
     return [tau_block(x, plan, specs_by_cohort, a, b, refs, mech, cols_of,
-                      designs=designs, mass_table=mass_table)
+                      designs=designs, mass_table=mass_table, w=w_sorted)
             for plan in plans]
 
 
 def tau_all(mu, omega, a, b, beta_free, plans, specs_by_cohort, refs,
             mech: Mechanism, *, log_R=None, designs=None,
-            mass_table=None) -> Sequence[jnp.ndarray]:
+            mass_table=None, w=None) -> Sequence[jnp.ndarray]:
     """Every block's prediction from one ``phi``, on one pass through the emulator."""
+    if w is None and mech.w_fn is not None:
+        # The same vartheta the emulator reads, so the weight and the readouts
+        # describe one patient each rather than two draws that happen to align.
+        w = mech.w_fn(patient_cloud(mu, omega, mech))
     return tau_from_readouts(
         readout_cloud(mu, omega, beta_free, mech, log_R), a, b, plans,
-        specs_by_cohort, refs, mech, designs=designs, mass_table=mass_table)
+        specs_by_cohort, refs, mech, designs=designs, mass_table=mass_table, w=w)

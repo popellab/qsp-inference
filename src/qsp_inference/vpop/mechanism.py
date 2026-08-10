@@ -27,6 +27,7 @@ __all__ = [
     # the surrogate
     "load_arm", "arm_forward", "arm_status_logits", "arm_status_logprob",
     "build_g_fn", "build_extra_fn", "check_against_torch",
+    "arm_p_ok", "build_elig_fn",
     # h_r
     "SHIM_NAMES", "NEEDS_TRAJECTORY", "shim_module", "compile_observable",
     "target_constants", "declared_reference", "build_h_fn",
@@ -183,6 +184,58 @@ def arm_forward(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
     if transform == "asinh":
         return jnp.asarray(arm["scale"]) * jnp.sinh(t)
     raise ValueError(f"unknown emulator transform {transform!r}")
+
+
+def arm_p_ok(arm: Mapping, log_theta: jnp.ndarray) -> jnp.ndarray:
+    """``(N, P)`` log-parameters -> ``(N,)`` P(status == ok). eq:elig's weight.
+
+    The status head is trained on every draw, including the ones that produced no
+    species, so it is the only part of the surrogate that knows about the patients
+    the design threw away. Softmax over the recorded ``status_codes``, of which
+    code 0 is ``ok``.
+
+    A probability and not a label: the row functionals weight by it, so what has
+    to be right is the number, not the argmax. Measured on 2026-08d's independent
+    scoring block the head is calibrated to ECE 0.021, with both tails exact and
+    the middle mildly underconfident.
+
+    This is P(ok), not P(ok | we could integrate it). solver_failed is our
+    numerical failure rather than a statement about the patient, and at 14% of
+    draws it is counted here as an exclusion. Conditioning it out is the correct
+    weight and is not available: a theta the solver failed on has no species for
+    the species head to have been trained on, so declaring it eligible leaves
+    nothing to say about its readouts. The residual is a downward bias on omega.
+    """
+    codes = list(arm.get("status_codes", []))
+    if not codes:
+        raise ValueError(
+            "this checkpoint records no status_codes, so it carries no "
+            "eligibility map. Retrain with the current train_emulator.py."
+        )
+    if 0 not in codes:
+        raise ValueError(f"status_codes {codes} has no 0 (ok) class")
+    h = (log_theta - jnp.asarray(arm["x_mu"])) / jnp.asarray(arm["x_sd"])
+    logits = _mlp(arm["status_layers"], h)
+    return jax.nn.softmax(logits, axis=-1)[:, codes.index(0)]
+
+
+def build_elig_fn(arms: Mapping[str, Mapping], scenarios: Sequence[tuple[str, float]]):
+    """``w_fn(vartheta) -> (N,)``, the eligibility weight eq:elig applies.
+
+    One vector for the whole cloud, not one per scenario: evolve_to_diagnosis runs
+    once per theta BEFORE the arms split, so the rejection codes are identical
+    integers across arms in the pool -- 4018 degenerate, 44369 too fast, 100391
+    too slow on 2026-08d, in every arm. Only solver_failed varies by arm, and that
+    is our failure rather than the patient's. The first arm is therefore read and
+    the rest are not consulted.
+    """
+    arm_name = scenarios[0][0]
+    arm = arms[arm_name]
+
+    def w_fn(vartheta: jnp.ndarray) -> jnp.ndarray:
+        return arm_p_ok(arm, vartheta)
+
+    return w_fn
 
 
 def build_g_fn(

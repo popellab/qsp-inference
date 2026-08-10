@@ -34,8 +34,12 @@ Scale rows are the schema's ``WIDTH_STATS | SAMPLING_WIDTH_STATS``. The draft's
 location half is their complement, which is not the schema's ``LOCATION_STATS``:
 that one excludes quantiles because it answers a different question.
 
-Every functional here reads an unweighted cloud. eq:elig would make the cloud
-weighted per cohort, and no corpus declares a criterion; see ``predict``.
+Every functional takes an optional ``w_sorted``, eq:elig's per-patient weight
+carrying that row's own sort. Without it the cloud is unweighted and the masses
+are built once outside the gradient; with it each member's slice of [0, 1] is its
+own share rather than 1/N, so the mass reads ``phi`` and is built per row. The
+weights self-normalise, which is why no ``Z`` appears: it divides the numerator
+and the denominator of one expectation. See ``predict``.
 
 Requires ``jax_enable_x64``. The Beta kernel differences a CDF across cloud
 members, so at ``N`` in the hundreds of thousands each mass is order ``1e-5`` and
@@ -62,6 +66,7 @@ __all__ = [
     "hard_rows_fn",
     # the model side
     "QUANTILE_CONVENTIONS", "order_statistic_mass", "quantile_mass",
+    "order_statistic_mass_w", "quantile_mass_w", "weighted_edges",
     "expected_quantile", "extreme_row", "mean_row", "iqr_row",
     "bootstrap_design", "bootstrap_row", "sd_row", "se_row", "tau_row",
 ]
@@ -444,6 +449,41 @@ def order_statistic_mass(n_cloud: int, kappa: int, n: int):
     return jnp.diff(betainc(float(kappa), float(n - kappa + 1), edges))
 
 
+def weighted_edges(w_sorted):
+    """Cumulative weight boundaries on [0, 1], for a cloud sorted by the row's own
+    readout. ``w_sorted`` must carry that row's permutation."""
+    w = jnp.asarray(w_sorted)
+    c = jnp.cumsum(w)
+    return jnp.concatenate([jnp.zeros(1, dtype=c.dtype), c]) / c[-1]
+
+
+def order_statistic_mass_w(w_sorted, kappa: int, n: int):
+    """eq:elig's :func:`order_statistic_mass`: the slice is the member's weight.
+
+    Unweighted, member ``i`` spans ``[i/N, (i+1)/N]``. Weighted, it spans its own
+    share of the total, so an ineligible member's slice closes to nothing and it
+    leaves the row without being removed from the cloud. Self-normalising, which
+    is why no ``Z`` appears: it divides the numerator and the denominator of the
+    same expectation.
+
+    Unlike the unweighted form this reads ``phi``, so it cannot be built once
+    outside the gradient the way ``mass_table`` is.
+    """
+    _require_x64()
+    return jnp.diff(betainc(float(kappa), float(n - kappa + 1),
+                            weighted_edges(w_sorted)))
+
+
+def quantile_mass_w(w_sorted, p: float, n: int, convention: str = "type7"):
+    """:func:`quantile_mass` on a weighted cloud. Same interpolation, same
+    convention; only the slice widths change."""
+    lo, frac = _position(p, n, convention)
+    mass = (1.0 - frac) * order_statistic_mass_w(w_sorted, lo, n)
+    if frac > 0:
+        mass = mass + frac * order_statistic_mass_w(w_sorted, min(lo + 1, n), n)
+    return mass
+
+
 def quantile_mass(n_cloud: int, p: float, n: int, convention: str = "type7"):
     """The Beta weights ``E[q_p]`` applies to the sorted cloud.
 
@@ -497,7 +537,7 @@ def mean_row(x_sorted):
 
 
 def iqr_row(x_sorted, n: int, convention: str = "type7", log: bool = False,
-            u=None):
+            u=None, w_sorted=None):
     """A reported interquartile range: ``E[IQR]``, or ``E[log IQR]`` when logged.
 
     eq:obs's mean is the expectation of the number the source printed, and a
@@ -511,6 +551,9 @@ def iqr_row(x_sorted, n: int, convention: str = "type7", log: bool = False,
     ``u``, the same one the moment rows use.
     """
     if not log:
+        if w_sorted is not None:
+            return (x_sorted @ quantile_mass_w(w_sorted, 0.75, n, convention)
+                    - x_sorted @ quantile_mass_w(w_sorted, 0.25, n, convention))
         return (expected_quantile(x_sorted, 0.75, n, convention)
                 - expected_quantile(x_sorted, 0.25, n, convention))
     if u is None:
@@ -528,7 +571,7 @@ def iqr_row(x_sorted, n: int, convention: str = "type7", log: bool = False,
         width = _interp(vs, lo75, f75, n) - _interp(vs, lo25, f25, n)
         return jnp.log(jnp.clip(width, 1e-30, None))
 
-    return bootstrap_row(x_sorted, u, _log_width)
+    return bootstrap_row(x_sorted, u, _log_width, w_sorted=w_sorted)
 
 
 def _interp(v_sorted, lo: int, frac: float, n: int):
@@ -548,12 +591,29 @@ def bootstrap_design(key, n: int, n_boot: int = 400):
     return jax.random.uniform(key, (n_boot, n))
 
 
-def bootstrap_row(x_sorted, u, fn):
-    """``E*[fn]`` over the frozen design. ``fn(values)`` is the statistic."""
+def bootstrap_row(x_sorted, u, fn, w_sorted=None):
+    """``E*[fn]`` over the frozen design. ``fn(values)`` is the statistic.
+
+    ``u`` is frozen, and stays frozen under eq:elig: the weights change which
+    member a given ``u`` lands on, not which uniforms are drawn. Unweighted that
+    map is ``floor(u N)``, the inverse CDF of a uniform draw over members;
+    weighted it is the inverse CDF of the cumulative weight, which is the same
+    statement about a population whose members carry unequal mass.
+
+    A weighted resample cannot be written as a reindex of the unweighted one,
+    which is why this takes the weights rather than a permutation.
+    """
     _require_x64()
     x_sorted = jnp.asarray(x_sorted)
-    idx = jnp.minimum((u * x_sorted.shape[0]).astype(jnp.int32),
-                      x_sorted.shape[0] - 1)
+    if w_sorted is None:
+        idx = jnp.minimum((u * x_sorted.shape[0]).astype(jnp.int32),
+                          x_sorted.shape[0] - 1)
+    else:
+        # side="right" so a member owning [c_{i-1}, c_i] receives every u in it;
+        # clipped because u = 1 would index one past the end.
+        cdf = weighted_edges(w_sorted)[1:]
+        idx = jnp.clip(jnp.searchsorted(cdf, u, side="left"),
+                       0, x_sorted.shape[0] - 1)
     return jnp.mean(jax.vmap(fn)(x_sorted[idx]))
 
 
@@ -562,21 +622,22 @@ def _sample_sd(v):
     return jnp.std(v, ddof=1)
 
 
-def sd_row(x_sorted, u, log: bool = False):
+def sd_row(x_sorted, u, log: bool = False, w_sorted=None):
     """A reported standard deviation, as ``E*[s]`` over the frozen design.
 
     No closed form: the correction depends on the shape of the pushforward, which
     is what ``phi`` controls, so it is neither distribution-free nor a fixed offset.
     """
     if not log:
-        return bootstrap_row(x_sorted, u, _sample_sd)
+        return bootstrap_row(x_sorted, u, _sample_sd, w_sorted=w_sorted)
     # Inside the expectation, not outside: the row printed a log, so eq:obs's
     # mean is E[log s] and log E[s] is larger by the Jensen gap.
     return bootstrap_row(x_sorted, u,
-                         lambda v: jnp.log(jnp.clip(_sample_sd(v), 1e-30, None)))
+                         lambda v: jnp.log(jnp.clip(_sample_sd(v), 1e-30, None)),
+                         w_sorted=w_sorted)
 
 
-def se_row(x_sorted, u, n: int, log: bool = False):
+def se_row(x_sorted, u, n: int, log: bool = False, w_sorted=None):
     """A reported standard error of a mean, as ``E*[s/sqrt(n)]``.
 
     The expectation of the estimator the source printed, not the sampling spread
@@ -584,12 +645,13 @@ def se_row(x_sorted, u, n: int, log: bool = False):
     """
     rt = jnp.sqrt(float(n))
     if not log:
-        return bootstrap_row(x_sorted, u, _sample_sd) / rt
+        return bootstrap_row(x_sorted, u, _sample_sd, w_sorted=w_sorted) / rt
     return bootstrap_row(x_sorted, u,
-                         lambda v: jnp.log(jnp.clip(_sample_sd(v) / rt, 1e-30, None)))
+                         lambda v: jnp.log(jnp.clip(_sample_sd(v) / rt, 1e-30, None)),
+                         w_sorted=w_sorted)
 
 
-def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None):
+def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None, w_sorted=None):
     """The model's prediction of the printed number: its expectation over ``n_c``.
 
     ``design`` is the frozen bootstrap design, needed only by the rows with no
@@ -607,7 +669,12 @@ def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None):
         # and only hard_row gets to use the pathwise form.
         x = to_scale(cloud_sorted, spec, jnp)
         if spec.stat == "quantile":
+            if w_sorted is not None:
+                mass = quantile_mass_w(w_sorted, spec.p, spec.n, spec.convention)
             return expected_quantile(x, spec.p, spec.n, spec.convention, mass=mass)
+        if w_sorted is not None:
+            kappa = spec.n if spec.stat == "max" else 1
+            return x @ order_statistic_mass_w(w_sorted, kappa, spec.n)
         return extreme_row(x, spec.n, spec.stat == "max")
 
     if spec.stat == "mean":
@@ -621,14 +688,16 @@ def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None):
             # on the frozen design.
             return bootstrap_row(
                 cloud_sorted, _need(design, spec),
-                lambda v: to_scale(jnp.mean(v), spec, jnp))
+                lambda v: to_scale(jnp.mean(v), spec, jnp), w_sorted=w_sorted)
     elif spec.stat == "iqr":
         return iqr_row(cloud_sorted, spec.n, spec.convention, log=log,
-                       u=_need(design, spec) if log else None)
+                       u=_need(design, spec) if log else None, w_sorted=w_sorted)
     elif spec.stat == "sd":
-        return sd_row(cloud_sorted, _need(design, spec), log=log)
+        return sd_row(cloud_sorted, _need(design, spec), log=log,
+                      w_sorted=w_sorted)
     elif spec.stat == "se":
-        return se_row(cloud_sorted, _need(design, spec), spec.n, log=log)
+        return se_row(cloud_sorted, _need(design, spec), spec.n, log=log,
+                      w_sorted=w_sorted)
     raise ValueError(f"no evaluator for {spec.stat!r}")  # row_specs rejects these
 
 
