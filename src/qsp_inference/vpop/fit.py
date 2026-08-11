@@ -112,6 +112,14 @@ class PopulationPrior:
     # and see whether the width stays put.
     fix_omega: Tuple[int, ...] = ()
 
+    # Hold the global width level at omega_0, so eq:omegaassumed carries only the
+    # pattern. Linearised at the prior with u and b free, the widths' preferred s
+    # is -0.003 at a one-prior-sd step and -0.014 unpenalised, while u reaches
+    # 1.04 and b 0.95: the level is doing nothing the pattern is not already
+    # doing. What the pin costs is that omega's global level is then asserted by
+    # omega_0 rather than fitted, which TAU_S existed to avoid.
+    fix_s: bool = False
+
     # Parameters whose centre is held at mu_0 exactly: outside mu_raw entirely.
     #
     # The companion to fix_omega, and for the same parameter, for a reason that
@@ -272,7 +280,8 @@ def site_spec(prior: "PopulationPrior"):
         out = [("mu_free", jnp.zeros(len(prior.free_mu)), 1.0)]
     else:
         out = [("mu_raw", jnp.zeros(prior.n_params), 1.0)]
-    out.append(("s", jnp.zeros(()), prior.tau_s))
+    if not prior.fix_s:
+        out.append(("s", jnp.zeros(()), prior.tau_s))
     # Renamed when a width is held, for the reason pin_b_columns is: a site whose
     # length changes with configuration under one name is what a mass matrix
     # cannot notice.
@@ -316,7 +325,8 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
             np.asarray(prior.free_omega)].set(sites["u_free"])
     else:
         u_raw = sites["u_raw"]
-    omega = build_omega(sites["s"], u_raw, prior)
+    s = jnp.zeros(()) if prior.fix_s else sites["s"]
+    omega = build_omega(s, u_raw, prior)
     if prior.pin_discrepancy:
         a = jnp.zeros(prior.dim_a)
         b = jnp.zeros(prior.dim_b)
@@ -382,7 +392,8 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
     # s and b_1 are aliased in principle. Report the split; do not
     # reparameterise around it, and do not orthonormalise Z to avoid it:
     # iid on an orthonormal basis is a different prior from iid on a.
-    sites["s"] = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
+    if not prior.fix_s:
+        sites["s"] = numpyro.sample("s", dist.Normal(0.0, prior.tau_s))
     # u is one number per parameter against however many scale rows the
     # corpus prints, so most of it is unidentified whatever tau_u is. The
     # prior is what decides between the two ways that can go wrong. Wide, and
