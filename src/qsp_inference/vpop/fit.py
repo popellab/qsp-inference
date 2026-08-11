@@ -52,7 +52,8 @@ class PopulationPrior:
     sigma_b: float
     tau_beta: float              # eq:betaprior, fixed rather than estimated
     n_beta: int                  # |S|, the declared subset carrying a free beta
-    dim_z: int                   # columns of Z
+    dim_a: int                   # columns of Z_a, eq:disc's offset
+    dim_b: int                   # columns of Z_b, eq:disc's spread
 
     log_R_0: jnp.ndarray         # eq:auxprior; zeros(0) declares no auxiliaries
     sigma_R: jnp.ndarray
@@ -157,7 +158,7 @@ class PopulationPrior:
     def free_b_columns(self) -> Tuple[int, ...]:
         """Columns of b the model samples. Declaration order, not the pinned set."""
         pinned = set(self.pin_b_columns)
-        return tuple(j for j in range(self.dim_z) if j not in pinned)
+        return tuple(j for j in range(self.dim_b) if j not in pinned)
 
     @property
     def n_aux(self) -> int:
@@ -166,11 +167,11 @@ class PopulationPrior:
     def __post_init__(self):
         if self.n_aux != int(jnp.asarray(self.sigma_R).shape[0]):
             raise ValueError("log_R_0 and sigma_R must have the same length")
-        bad = [j for j in self.pin_b_columns if not 0 <= j < self.dim_z]
+        bad = [j for j in self.pin_b_columns if not 0 <= j < self.dim_b]
         if bad:
             raise ValueError(
                 f"pin_b_columns {bad} are not columns of Z, which has "
-                f"{self.dim_z}"
+                f"{self.dim_b}"
             )
         if len(set(self.pin_b_columns)) != len(self.pin_b_columns):
             raise ValueError("pin_b_columns repeats a column")
@@ -221,7 +222,7 @@ class PopulationPrior:
                 "pin_b_columns would assert the same thing twice. Pass one or "
                 "the other."
             )
-        if len(self.pin_b_columns) == self.dim_z:
+        if len(self.pin_b_columns) == self.dim_b:
             raise ValueError(
                 "every column of b is pinned, which is pin_discrepancy for b "
                 "written the long way. Say so with pin_discrepancy, or leave a "
@@ -280,7 +281,7 @@ def site_spec(prior: "PopulationPrior"):
     else:
         out.append(("u_raw", jnp.zeros(prior.n_params), prior.tau_u))
     if not prior.pin_discrepancy:
-        out.append(("a", jnp.zeros(prior.dim_z), prior.sigma_a))
+        out.append(("a", jnp.zeros(prior.dim_a), prior.sigma_a))
         # Renamed when a column is pinned, rather than kept as "b" at a smaller
         # shape. A site whose length changes with configuration under one name is
         # exactly what a mass matrix cannot notice.
@@ -288,7 +289,7 @@ def site_spec(prior: "PopulationPrior"):
             out.append(("b_free", jnp.zeros(len(prior.free_b_columns)),
                         prior.sigma_b))
         else:
-            out.append(("b", jnp.zeros(prior.dim_z), prior.sigma_b))
+            out.append(("b", jnp.zeros(prior.dim_b), prior.sigma_b))
     if prior.n_beta:
         out.append(("beta_raw", jnp.zeros(prior.n_beta), 1.0))
     if prior.n_aux and not prior.pin_aux:
@@ -317,10 +318,11 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
         u_raw = sites["u_raw"]
     omega = build_omega(sites["s"], u_raw, prior)
     if prior.pin_discrepancy:
-        a = b = jnp.zeros(prior.dim_z)
+        a = jnp.zeros(prior.dim_a)
+        b = jnp.zeros(prior.dim_b)
     elif prior.pin_b_columns:
         a = sites["a"]
-        b = jnp.zeros(prior.dim_z).at[
+        b = jnp.zeros(prior.dim_b).at[
             np.asarray(prior.free_b_columns)].set(sites["b_free"])
     else:
         a, b = sites["a"], sites["b"]
@@ -417,14 +419,14 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
 
     if not prior.pin_discrepancy:
         sites["a"] = numpyro.sample("a", dist.Normal(0.0, prior.sigma_a)
-                                    .expand([prior.dim_z]).to_event(1))
+                                    .expand([prior.dim_a]).to_event(1))
         if prior.pin_b_columns:
             sites["b_free"] = numpyro.sample(
                 "b_free", dist.Normal(0.0, prior.sigma_b)
                 .expand([len(prior.free_b_columns)]).to_event(1))
         else:
             sites["b"] = numpyro.sample("b", dist.Normal(0.0, prior.sigma_b)
-                                        .expand([prior.dim_z]).to_event(1))
+                                        .expand([prior.dim_b]).to_event(1))
 
     if prior.n_beta:
         sites["beta_raw"] = numpyro.sample(

@@ -55,7 +55,13 @@ class Mechanism:
 
     L_R: jnp.ndarray            # (P, P), R = L_R L_R'
     z: jnp.ndarray              # (N, P) frozen common random numbers, eq:crn
-    Z: jnp.ndarray              # (M, D) readout design, eq:disc
+    # eq:disc's two designs. A location offset and a spread factor have no
+    # reason to be indexed the same way: an assay can put the centre in the
+    # right place and the dispersion in the wrong one. Z_b is deliberately the
+    # coarser of the two, since 17 scale rows cannot identify what 121 location
+    # rows can.
+    Z_a: jnp.ndarray            # (M, Da) readout design for a
+    Z_b: jnp.ndarray            # (M, Db) readout design for b
     readouts: Tuple[str, ...]   # M readout names, the row order of Z
     n_species: int              # Q
     n_scenarios: int            # S
@@ -193,7 +199,7 @@ def readout_cloud(mu, omega, beta_free, mech: Mechanism, log_R=None) -> jnp.ndar
         {(s, n): mech.extra_fn(vartheta, s, n) for s, n in mech.extra_at})
 
 
-def apply_map(x, a, b, c_row, Z) -> jnp.ndarray:
+def apply_map(x, a, b, c_row, Z_a, Z_b) -> jnp.ndarray:
     """eq:disc for one cohort: ``kappa_r (x - c) + c + gamma_r``.
 
     ``c`` is that cohort's own level, so the offset applied is
@@ -201,7 +207,7 @@ def apply_map(x, a, b, c_row, Z) -> jnp.ndarray:
     Pivoting there is what keeps ``kappa`` a pure spread term: against a global
     pivot it moved location rows by up to 84 sd per unit of ``log kappa``.
     """
-    return jnp.exp(Z @ b) * (x - c_row) + c_row + (Z @ a)
+    return jnp.exp(Z_b @ b) * (x - c_row) + c_row + (Z_a @ a)
 
 
 def reference_levels(mu_0, omega_0, mech: Mechanism, *, log_R_0=None) -> jnp.ndarray:
@@ -233,7 +239,8 @@ def cohort_columns(specs_by_cohort, readouts) -> Dict[str, Tuple[int, ...]]:
 def cohort_cloud(x, cols, a, b, refs, mech: Mechanism):
     """One cohort's mapped readouts, ``(N, |cols|)``: eq:disc on its own columns."""
     idx = np.asarray(cols)
-    return apply_map(x[:, idx], a, b, jnp.asarray(refs)[idx], mech.Z[idx])
+    return apply_map(x[:, idx], a, b, jnp.asarray(refs)[idx],
+                     mech.Z_a[idx], mech.Z_b[idx])
 
 
 def quantile_mass_table(specs_by_cohort, n_cloud: int) -> Dict[Tuple, jnp.ndarray]:

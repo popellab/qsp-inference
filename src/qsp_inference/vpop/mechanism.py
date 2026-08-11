@@ -702,6 +702,47 @@ def _attr(target: Mapping[str, Any], name: str) -> Optional[str]:
     return ((target.get("observable") or {}).get("readout") or {}).get(name)
 
 
+def build_Z_from_labels(readouts, label_of, *, reference=None,
+                        intercept: bool = True,
+                        min_support: int = 3) -> ZDesign:
+    """A design from one explicit per-readout label. eq:disc's coarse side.
+
+    ``build_Z`` crosses quantity kind against assay modality, which is the right
+    structure for a location offset. A spread factor is a different question and
+    the corpus answers far less of it: 17 scale rows against 121 location ones.
+    Eight columns fitted on three to five readouts each is what that produces,
+    and it does not identify.
+
+    So ``b`` takes its own design, built from a single labelling the caller
+    chooses. The corpus knows which labelling; this only turns one into columns.
+    Levels below ``min_support`` fold into the reference rather than carrying a
+    column no data can move, and the largest level is the reference unless one
+    is named.
+    """
+    readouts = tuple(readouts)
+    labels = [label_of.get(r) for r in readouts]
+    counts: Dict[str, int] = {}
+    for v in labels:
+        if v is not None:
+            counts[v] = counts.get(v, 0) + 1
+    if reference is None and counts:
+        reference = max(sorted(counts), key=lambda k: counts[k])
+
+    keep = sorted(v for v, n in counts.items()
+                  if v != reference and n >= min_support)
+    dropped = tuple(sorted(v for v, n in counts.items()
+                           if v != reference and n < min_support))
+
+    cols = [np.ones(len(readouts))] if intercept else []
+    names = ["intercept"] if intercept else []
+    for v in keep:
+        cols.append(np.array([1.0 if l == v else 0.0 for l in labels]))
+        names.append(f"b:{v}")
+    Z = np.column_stack(cols) if cols else np.zeros((len(readouts), 0))
+    return ZDesign(Z=Z, columns=tuple(names), readouts=readouts,
+                   dropped=dropped)
+
+
 def build_Z(
     targets: Mapping[str, Dict[str, Any]],
     *,

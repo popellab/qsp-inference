@@ -68,7 +68,10 @@ def mech():
     z = jnp.asarray(np.random.default_rng(0).standard_normal((N, P)))
     return Mechanism(
         L_R=jnp.eye(P), z=z,
-        Z=jnp.array([[1.0, 0.0], [1.0, 1.0]]),
+        # deliberately different widths: eq:disc's offset and its spread carry
+        # their own designs, and a test that shares one cannot see them swap
+        Z_a=jnp.array([[1.0, 0.0, 0.0], [1.0, 1.0, 0.0]]),
+        Z_b=jnp.array([[1.0, 0.0], [1.0, 1.0]]),
         readouts=(LEVEL, RATIO), n_species=2, n_scenarios=2,
         beta_species=jnp.zeros(0, dtype=int), g_fn=_g, h_fn=_h,
     )
@@ -82,7 +85,7 @@ def prior():
         omega_0=jnp.array([0.5, 0.3, 0.4]),
         tau_s=0.3, tau_u=0.085,
         sigma_a=0.5, sigma_b=0.5,
-        tau_beta=0.15, n_beta=0, dim_z=2,
+        tau_beta=0.15, n_beta=0, dim_a=3, dim_b=2,
         log_R_0=jnp.zeros(0), sigma_R=jnp.zeros(0),
         pin_discrepancy=False, pin_aux=False, pin_b_columns=(),
     )
@@ -115,7 +118,8 @@ def observed(prior, problem):
     """Rows at the prior centre, so the model is not being asked to move far."""
     from qsp_inference.vpop.predict import tau_all
 
-    taus = tau_all(prior.mu_0, prior.omega_0, jnp.zeros(2), jnp.zeros(2),
+    taus = tau_all(prior.mu_0, prior.omega_0,
+                   jnp.zeros(prior.dim_a), jnp.zeros(prior.dim_b),
                    jnp.zeros(0), problem.plans, problem.specs_by_cohort,
                    problem.refs, problem.mech)
     return [np.asarray(t) for t in taus]
@@ -161,16 +165,16 @@ class TestPinnedBColumns:
 
     def test_the_site_is_renamed_and_narrower(self, prior):
         spec = dict((n, jnp.shape(v)) for n, v, _ in site_spec(self._pinned(prior)))
-        assert "b" not in spec and spec["b_free"] == (prior.dim_z - 1,)
+        assert "b" not in spec and spec["b_free"] == (prior.dim_b - 1,)
         assert dict((n, jnp.shape(v)) for n, v, _ in site_spec(prior))["b"] \
-            == (prior.dim_z,)
+            == (prior.dim_b,)
 
     def test_the_pinned_column_is_exactly_zero(self, prior):
         pinned = self._pinned(prior)
         sites = {n: v for n, v, _ in site_spec(pinned)}
         sites["b_free"] = jnp.array([3.0])          # anything
         _, _, _, b, _, _ = phi_from_sites(sites, pinned)
-        assert b.shape == (pinned.dim_z,)
+        assert b.shape == (pinned.dim_b,)
         assert float(b[0]) == 0.0 and float(b[1]) == 3.0
 
     def test_the_model_still_reports_a_full_width_b(self, prior, problem, V_chol):
@@ -181,7 +185,7 @@ class TestPinnedBColumns:
             trace = numpyro.handlers.trace(population_model).get_trace(
                 pinned, problem, V_chol)
         assert trace["b"]["type"] == "deterministic"
-        assert jnp.shape(trace["b"]["value"]) == (prior.dim_z,)
+        assert jnp.shape(trace["b"]["value"]) == (prior.dim_b,)
         assert float(trace["b"]["value"][0]) == 0.0
 
     def test_site_spec_still_matches_what_the_model_samples(
@@ -215,7 +219,7 @@ class TestPinnedBColumns:
                     num_samples=10, num_chains=1, progress_bar=False)
         mcmc.run(jax.random.PRNGKey(0), pinned, problem, V_chol, observed)
         d = mcmc.get_samples()
-        assert d["b_free"].shape == (10, prior.dim_z - 1)
+        assert d["b_free"].shape == (10, prior.dim_b - 1)
         assert np.all(np.asarray(d["b"])[:, 0] == 0.0)
 
     def test_degeneracies_are_refused(self, prior):
@@ -228,7 +232,7 @@ class TestPinnedBColumns:
         with pytest.raises(ValueError, match="assert the same thing twice"):
             replace(prior, pin_discrepancy=True, pin_b_columns=(0,))
         with pytest.raises(ValueError, match="written the long way"):
-            replace(prior, pin_b_columns=tuple(range(prior.dim_z)))
+            replace(prior, pin_b_columns=tuple(range(prior.dim_b)))
 
 
 class TestPhiFromSites:

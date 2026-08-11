@@ -242,15 +242,16 @@ def statistic_diffs(
             f"the two evaluations must cover the same patients and readouts; "
             f"got {x_emu.shape} and {x_sim.shape}"
         )
-    zero = jnp.zeros(mech.Z.shape[1])
+    zero_a = jnp.zeros(mech.Z_a.shape[1])
+    zero_b = jnp.zeros(mech.Z_b.shape[1])
     args = (plans, specs_by_cohort, refs, mech)
     kw = dict(designs=designs, mass_table=mass_table)
 
     out = []
     for _ in range(n_draw):
         idx = jnp.asarray(rng.integers(0, x_emu.shape[0], n_cloud))
-        te = tau_from_readouts(x_emu[idx], zero, zero, *args, **kw)
-        ts = tau_from_readouts(x_sim[idx], zero, zero, *args, **kw)
+        te = tau_from_readouts(x_emu[idx], zero_a, zero_b, *args, **kw)
+        ts = tau_from_readouts(x_sim[idx], zero_a, zero_b, *args, **kw)
         out.append(np.concatenate([np.asarray(e) - np.asarray(s)
                                    for e, s in zip(te, ts)]))
     return np.array(out)

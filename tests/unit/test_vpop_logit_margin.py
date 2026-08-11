@@ -32,7 +32,7 @@ OMEGA = jnp.full(P, 0.35)
 
 def _mech(z, logit=LOGIT):
     return Mechanism(
-        L_R=jnp.eye(P), z=jnp.asarray(z), Z=jnp.zeros((1, 1)), readouts=("r",),
+        L_R=jnp.eye(P), z=jnp.asarray(z), Z_a=jnp.zeros((1, 1)), Z_b=jnp.zeros((1, 1)), readouts=("r",),
         n_species=1, n_scenarios=1, beta_species=jnp.array([], int),
         g_fn=lambda v, s: v, h_fn=lambda *a: a, logit=logit,
     )

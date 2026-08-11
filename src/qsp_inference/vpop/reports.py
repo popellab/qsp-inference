@@ -211,8 +211,8 @@ def row_jacobians(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = N
     point = {
         "mu": jnp.asarray(prior.mu_0),
         "omega": jnp.asarray(prior.omega_0),
-        "a": jnp.zeros(prior.dim_z),
-        "b": jnp.zeros(prior.dim_z),
+        "a": jnp.zeros(prior.dim_a),
+        "b": jnp.zeros(prior.dim_b),
         "beta": jnp.zeros(n_beta),
         "log_R": (jnp.asarray(prior.log_R_0) if prior.n_aux else jnp.zeros(0)),
     }
@@ -550,7 +550,7 @@ def _tau_at(prior, problem, *, omega=None):
     n_beta = int(np.asarray(problem.mech.beta_species).shape[0])
     return tau_all(jnp.asarray(prior.mu_0),
                    jnp.asarray(prior.omega_0 if omega is None else omega),
-                   jnp.zeros(prior.dim_z), jnp.zeros(prior.dim_z),
+                   jnp.zeros(prior.dim_a), jnp.zeros(prior.dim_b),
                    jnp.zeros(n_beta),
                    problem.plans, problem.specs_by_cohort, problem.refs,
                    problem.mech,
@@ -628,18 +628,22 @@ def dbar_absorption(E_means: Sequence, V_chol, problem) -> tuple[float, List[str
     """
     from scipy.linalg import solve_triangular
 
-    Z = np.asarray(problem.mech.Z, dtype=float)
+    # a moves a location row and cancels on a scale row; b scales a spread and
+    # leaves a location alone. Since the two carry their own designs, the two
+    # blocks are no longer the same width.
+    Za = np.asarray(problem.mech.Z_a, dtype=float)
+    Zb = np.asarray(problem.mech.Z_b, dtype=float)
     at = {r: i for i, r in enumerate(problem.mech.readouts)}
-    dim_z = Z.shape[1]
+    dim_a, dim_b = Za.shape[1], Zb.shape[1]
 
     rows_g, rows_k, dbar = [], [], []
     for i, plan in enumerate(problem.plans):
         G, K = [], []
         for c in plan.cohort_ids:
             for spec in problem.specs_by_cohort[c]:
-                z_r = Z[at[spec.target_id]]
-                G.append(np.zeros(dim_z) if spec.is_scale else z_r)
-                K.append(z_r if spec.is_scale else np.zeros(dim_z))
+                j = at[spec.target_id]
+                G.append(np.zeros(dim_a) if spec.is_scale else Za[j])
+                K.append(Zb[j] if spec.is_scale else np.zeros(dim_b))
         L = np.asarray(V_chol[i])
         rows_g.append(solve_triangular(L, np.array(G), lower=True))
         rows_k.append(solve_triangular(L, np.array(K), lower=True))

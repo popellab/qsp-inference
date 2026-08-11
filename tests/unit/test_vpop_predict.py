@@ -60,7 +60,8 @@ def mech():
     z = jnp.asarray(np.random.default_rng(0).standard_normal((N, 2)))
     return Mechanism(
         L_R=jnp.eye(2), z=z,
-        Z=jnp.array([[1.0, 0.0], [1.0, 1.0]]),
+        Z_a=jnp.array([[1.0, 0.0], [1.0, 1.0]]),
+        Z_b=jnp.array([[1.0, 0.0], [1.0, 1.0]]),
         readouts=(LEVEL, RATIO), n_species=2, n_scenarios=2,
         beta_species=jnp.array([0, 1]), g_fn=_g, h_fn=_h,
     )
@@ -96,7 +97,8 @@ class TestPatientCloud:
         rho = 0.6
         L = jnp.linalg.cholesky(jnp.array([[1.0, rho], [rho, 1.0]]))
         z = jnp.asarray(np.random.default_rng(1).standard_normal((N, 2)))
-        m = Mechanism(L_R=L, z=z, Z=jnp.eye(2), readouts=(LEVEL, RATIO),
+        m = Mechanism(L_R=L, z=z, Z_a=jnp.eye(2), Z_b=jnp.eye(2),
+                      readouts=(LEVEL, RATIO),
                       n_species=2, n_scenarios=2, beta_species=jnp.array([0]),
                       g_fn=_g, h_fn=_h)
         v = patient_cloud(MU, jnp.ones(2), m)
@@ -140,30 +142,30 @@ class TestApplyMap:
     def test_no_discrepancy_is_the_identity(self):
         x = jnp.asarray(np.random.default_rng(2).standard_normal((50, 2)))
         for c in (jnp.zeros(2), jnp.array([3.0, -7.0])):
-            assert np.allclose(apply_map(x, ZERO2, ZERO2, c, self.Z), x)
+            assert np.allclose(apply_map(x, ZERO2, ZERO2, c, self.Z, self.Z), x)
 
     def test_kappa_leaves_the_pivot_fixed(self):
         c = jnp.array([2.0, -1.0])
         x = jnp.broadcast_to(c, (5, 2))
-        assert np.allclose(apply_map(x, ZERO2, jnp.array([0.3, 0.2]), c, self.Z), x)
+        assert np.allclose(apply_map(x, ZERO2, jnp.array([0.3, 0.2]), c, self.Z, self.Z), x)
 
     def test_kappa_scales_deviations_from_the_pivot(self):
         c = jnp.array([2.0, -1.0])
         out = apply_map(c + jnp.array([[1.0, 1.0]]), ZERO2,
-                        jnp.array([np.log(2.0), 0.0]), c, self.Z)
+                        jnp.array([np.log(2.0), 0.0]), c, self.Z, self.Z)
         assert np.allclose(out - c, [[2.0, 2.0]])
 
     def test_gamma_is_Z_a_and_shifts(self):
         out = apply_map(jnp.zeros((3, 2)), jnp.array([0.5, 0.25]), ZERO2,
-                        jnp.zeros(2), self.Z)
+                        jnp.zeros(2), self.Z, self.Z)
         assert np.allclose(out, [[0.5, 0.75]] * 3)
 
     def test_the_map_preserves_order(self):
         """Why the sort may be hoisted above eq:disc: kappa > 0."""
         x = jnp.asarray(np.random.default_rng(3).standard_normal((200, 2)))
         a, b, c = jnp.array([0.3, -0.2]), jnp.array([0.4, 0.1]), jnp.array([1.0, -0.5])
-        assert jnp.array_equal(jnp.sort(apply_map(x, a, b, c, self.Z), axis=0),
-                               apply_map(jnp.sort(x, axis=0), a, b, c, self.Z))
+        assert jnp.array_equal(jnp.sort(apply_map(x, a, b, c, self.Z, self.Z), axis=0),
+                               apply_map(jnp.sort(x, axis=0), a, b, c, self.Z, self.Z))
 
 
 class TestReferenceLevels:
@@ -194,7 +196,7 @@ class TestCohortColumns:
         x = readout_cloud(MU, OMEGA, ZERO2, mech)
         refs = reference_levels(MU, OMEGA, mech)
         a, b = jnp.array([0.2, -0.1]), jnp.array([0.3, 0.15])
-        full = apply_map(x, a, b, refs, mech.Z)
+        full = apply_map(x, a, b, refs, mech.Z_a, mech.Z_b)
         cut = cohort_cloud(x, (1,), a, b, refs, mech)
         assert np.allclose(cut[:, 0], full[:, 1], rtol=1e-12)
 
@@ -309,8 +311,9 @@ class TestTauAll:
         """
         x = readout_cloud(MU, OMEGA, ZERO2, mech)
         refs = reference_levels(MU, OMEGA, mech)
-        a = jnp.asarray([0.3, -0.2]) if mech.Z.shape[1] == 2 else jnp.zeros(mech.Z.shape[1])
-        b = 0.4 * jnp.ones(mech.Z.shape[1])
+        a = (jnp.asarray([0.3, -0.2]) if mech.Z_a.shape[1] == 2
+             else jnp.zeros(mech.Z_a.shape[1]))
+        b = 0.4 * jnp.ones(mech.Z_b.shape[1])
         mapped_then_sorted = jnp.sort(cohort_cloud(x, (0,), a, b, refs, mech), axis=0)
         sorted_then_mapped = cohort_cloud(jnp.sort(x, axis=0), (0,), a, b, refs, mech)
         assert np.allclose(mapped_then_sorted, sorted_then_mapped, rtol=1e-12)
