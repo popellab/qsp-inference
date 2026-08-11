@@ -147,6 +147,19 @@ def laplace_inverse_mass(prior, problem, V_chol, **kw):
     it wrong is the one way this fails quietly, so the blocks are permuted into
     sorted order here rather than assumed to already be in it.
     """
+    # numpyro's inverse_mass_matrix is read in the UNCONSTRAINED space, and
+    # laplace_blocks differentiates phi_from_sites in the space the sites are
+    # sampled in. Those coincide only while every site's support is the whole
+    # line, which was true until eq:auxprior gained a bound. A truncated site
+    # puts a bijector between the two and the block for it would then be a metric
+    # for a coordinate numpyro is not moving: finite, plausible, and wrong for
+    # exactly one direction. Refused rather than approximated.
+    if getattr(prior, "log_R_low", None) is not None and not prior.pin_aux:
+        raise ValueError(
+            "log_R is bounded below, so numpyro samples it through a bijector "
+            "and its Laplace block would describe the wrong coordinate. Run the "
+            "bounded model with --mass dense or --adapt-mass on, or pin the "
+            "auxiliary, until laplace_blocks composes the transform.")
     names, dims, prior_sd, blocks, _ = laplace_blocks(prior, problem, V_chol, **kw)
     order = sorted(range(len(names)), key=lambda i: names[i])
     names = [names[i] for i in order]

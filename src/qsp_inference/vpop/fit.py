@@ -58,6 +58,7 @@ class PopulationPrior:
     log_R_0: jnp.ndarray         # eq:auxprior; zeros(0) declares no auxiliaries
     sigma_R: jnp.ndarray
 
+
     # The falsifiable baseline. With eq:disc off, a mismatch has nowhere to hide
     # and shows up as residual structure that can be read; with it on, 18 free
     # parameters can absorb most of one, so a good fit says little. The cost is
@@ -110,6 +111,22 @@ class PopulationPrior:
     # visible instead of being quietly priced into a width. The fix is eq:elig's
     # log Z(mu, omega), and when that lands this pin is what tests it: release it
     # and see whether the width stays put.
+    # Lower bound on each auxiliary, or None for an unbounded eq:auxprior.
+    #
+    # An auxiliary is a declared observation operator, and some of them have a
+    # support the operator's own definition fixes. total_to_free is the case:
+    # the homogenate reads total = free + intracellular + bound, so the ratio is
+    # at least 1 and log R is at least 0. auxiliary_config states that in prose
+    # and nothing enforced it, while the prior N(ln 10, 1.2) puts 2.75% of its
+    # mass below zero and the sampler went there: chains reached log R = -2.687,
+    # a free interstitial pool larger than the total tissue it is part of.
+    #
+    # Bounded here rather than by a factor of -inf outside the support, for the
+    # reason apply_margins gives: a leapfrog step into an excluded region gives
+    # infinite energy error and NUTS discards the whole trajectory. A support the
+    # coordinate cannot leave has no wall to hit.
+    log_R_low: Optional[jnp.ndarray] = None
+
     fix_omega: Tuple[int, ...] = ()
 
     # Hold the global width level at omega_0, so eq:omegaassumed carries only the
@@ -297,6 +314,20 @@ class PopulationPrior:
             )
 
 
+def aux_distribution(prior: PopulationPrior):
+    """eq:auxprior, truncated where the operator's definition bounds it.
+
+    One place, so the model, the metric and any report cannot disagree about
+    what the prior on an auxiliary is.
+    """
+    loc = jnp.asarray(prior.log_R_0)
+    scale = jnp.asarray(prior.sigma_R)
+    if prior.log_R_low is None:
+        return dist.Normal(loc, scale).to_event(1)
+    return dist.TruncatedNormal(loc, scale,
+                                low=jnp.asarray(prior.log_R_low)).to_event(1)
+
+
 def centres_with_complement(mu_c, prior: PopulationPrior, rng) -> np.ndarray:
     """``mu`` draws with the subspace's complement restored, ``(n, P)``.
 
@@ -405,8 +436,12 @@ def site_spec(prior: "PopulationPrior"):
     if prior.n_beta:
         out.append(("beta_raw", jnp.zeros(prior.n_beta), 1.0))
     if prior.n_aux and not prior.pin_aux:
-        out.append(("log_R", jnp.asarray(prior.log_R_0),
-                    np.asarray(prior.sigma_R)))
+        # Started inside the support: log_R_0 is the untruncated centre and can
+        # sit below the bound, which would put the initial point outside.
+        start = jnp.asarray(prior.log_R_0)
+        if prior.log_R_low is not None:
+            start = jnp.maximum(start, jnp.asarray(prior.log_R_low) + 1e-6)
+        out.append(("log_R", start, np.asarray(prior.sigma_R)))
     return out
 
 
@@ -555,9 +590,7 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
             "beta_raw", dist.Normal(0.0, 1.0).expand([prior.n_beta]).to_event(1))
 
     if prior.n_aux and not prior.pin_aux:
-        sites["log_R"] = numpyro.sample(
-            "log_R", dist.Normal(jnp.asarray(prior.log_R_0),
-                                 jnp.asarray(prior.sigma_R)).to_event(1))
+        sites["log_R"] = numpyro.sample("log_R", aux_distribution(prior))
 
     # Every site is sampled above and nothing is derived from one there: the map
     # from sites to phi is phi_from_sites, which the Laplace metric and the
