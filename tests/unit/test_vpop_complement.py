@@ -96,3 +96,48 @@ class TestItRestoresWhatTheFitHeldAtZero:
                                      np.random.default_rng(9))
         assert mu.std(axis=0).min() > 0
         assert np.abs(np.corrcoef(mu[:-1, 0], mu[1:, 0])[0, 1]) < 0.1
+
+
+class TestAuxiliarySupport:
+    """eq:auxprior is truncated where the observation operator bounds it."""
+
+    def _p(self, low):
+        import jax.numpy as jnp
+        return _prior(P=4).__class__(
+            **{**{f.name: getattr(_prior(P=4), f.name)
+                  for f in __import__("dataclasses").fields(_prior(P=4))},
+               "log_R_0": jnp.asarray([2.3026]),
+               "sigma_R": jnp.asarray([1.2]),
+               "log_R_low": low})
+
+    def test_unbounded_is_a_plain_normal(self):
+        from qsp_inference.vpop.fit import aux_distribution
+        import numpyro.distributions as dist
+        d = aux_distribution(self._p(None))
+        assert isinstance(d.base_dist, dist.Normal)
+
+    def test_bounded_declares_the_support_and_never_leaves_it(self):
+        import jax, jax.numpy as jnp
+        import numpy as np
+        from numpyro.distributions.transforms import biject_to
+        from qsp_inference.vpop.fit import aux_distribution
+        d = aux_distribution(self._p(jnp.zeros(1)))
+        # The bound binds through the bijector NUTS samples in, not through a
+        # -inf density: numpyro does not mask outside the support unless
+        # validation is on, and a wall is what apply_margins argues against.
+        assert np.asarray(d.support.base_constraint.lower_bound).ravel()[0] == 0.0
+        x = d.sample(jax.random.PRNGKey(0), (4000,))
+        assert float(np.asarray(x).min()) >= 0.0
+        # and every real number maps to a point inside it
+        t = biject_to(d.support)
+        for u in (-40.0, -3.0, 0.0, 3.0, 40.0):
+            assert float(np.asarray(t(jnp.asarray([u])))[0]) >= 0.0
+
+    def test_site_spec_starts_inside_the_support(self):
+        import jax.numpy as jnp
+        import numpy as np
+        from qsp_inference.vpop.fit import site_spec
+        # a centre below the bound would put the initial point outside it
+        p = self._p(jnp.asarray([3.0]))
+        start = dict((n, v) for n, v, _ in site_spec(p))["log_R"]
+        assert float(np.asarray(start)[0]) >= 3.0

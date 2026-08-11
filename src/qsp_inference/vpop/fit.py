@@ -320,6 +320,11 @@ def aux_distribution(prior: PopulationPrior):
     One place, so the model, the metric and any report cannot disagree about
     what the prior on an auxiliary is.
     """
+    # Imported here rather than at module scope, like population_model does:
+    # numpyro pulls in the whole inference stack and this module is imported by
+    # callers that only want the prior dataclass.
+    import numpyro.distributions as dist
+
     loc = jnp.asarray(prior.log_R_0)
     scale = jnp.asarray(prior.sigma_R)
     if prior.log_R_low is None:
