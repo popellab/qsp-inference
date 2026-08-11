@@ -1,0 +1,471 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+% expansion=false: TinyTeX's default fonts are not scalable, and auto expansion
+% is a fatal error there rather than a downgrade.
+\usepackage[expansion=false]{microtype}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\tr}{\operatorname{tr}}
+\newcommand{\muraw}{\theta}
+\newcommand{\Sig}{\Sigma_1}
+
+\title{Subspaces, whitening, and what a corpus can tell you\\
+\large Linear algebra behind the VPop dimension reduction}
+\author{}
+\date{2026-08-11}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+These are working notes on the linear algebra used to decide that the pdac
+corpus constrains roughly fifteen directions rather than 271 parameters, to
+build a basis for those directions, and to carry the discarded uncertainty
+forward without introducing bias. Everything reduces to three ideas: put the
+problem in coordinates where both the prior and the noise are isotropic, take
+an SVD there, and notice that the singular values are signal-to-noise ratios.
+The rest follows.
+\end{abstract}
+
+\section{The object we are decomposing}
+
+The model is a map from parameters to predicted data,
+\[
+  \tau : \R^{P} \longrightarrow \R^{K},
+  \qquad P = 271 \text{ parameters}, \quad K = 138 \text{ rows}.
+\]
+Each row is one number a paper printed (a median, an IQR, a quantile). The
+Jacobian $J = \partial\tau/\partial\mu \in \R^{K\times P}$ says how each printed
+number responds to each parameter.
+
+$J$ on its own is nearly useless, because its entries carry units. Row $i$ might
+be a cell density in cells/mm$^2$ and row $i'$ a dimensionless fraction; column
+$j$ might be a rate in day$^{-1}$ and column $j'$ a volume. Comparing entries of
+$J$ compares apples to volts. Every step below is, at bottom, about choosing the
+right units so that comparison becomes meaningful.
+
+\subsection{Prior coordinates: making the input isotropic}
+
+The prior on the parameter centre is Gaussian and correlated,
+\[
+  \mu \sim \mathcal N(\mu_0, \Sig), \qquad \Sig = L L^{\top},
+\]
+where $L$ is a Cholesky factor. Rather than sample $\mu$ directly, the model
+samples a standard normal $\muraw$ and maps it forward:
+\[
+  \mu = \mu_0 + L\muraw, \qquad \muraw \sim \mathcal N(0, I_P).
+\]
+This is a change of variables that makes the prior isotropic: a unit step in any
+direction of $\muraw$ is one prior standard deviation, and all directions are
+equally likely a priori. It is the input-side whitening.
+
+By the chain rule, the Jacobian in these coordinates is
+\begin{equation}
+  A \;=\; \frac{\partial \tau}{\partial \muraw}
+    \;=\; \frac{\partial \tau}{\partial \mu}\,
+          \frac{\partial \mu}{\partial \muraw}
+    \;=\; J L .
+  \label{eq:A}
+\end{equation}
+The columns of $A$ now all mean the same thing: ``move one prior standard
+deviation along this direction, and the rows move by this much.''
+
+\medskip
+\noindent\textbf{Why not just scale each column by its marginal prior sd?}
+That is what one does instinctively, and it is what we did at first. Scaling
+column $j$ by $\mathrm{sd}(\mu_j)$ is the same as replacing $L$ by
+$\operatorname{diag}(\mathrm{sd})$, which is correct only when $\Sig$ is
+diagonal. Ours is not: 66 parameters sit in a copula block from jointly-fitted
+submodel posteriors. Using $L$ keeps those correlations; using the marginal sds
+silently discards them.
+
+\subsection{Data coordinates: making the output isotropic}
+
+The likelihood is Gaussian on the residual $r = y - \tau$ with block covariance
+$V$,
+\[
+  -2\log p \;=\; r^{\top} V^{-1} r + \text{const}.
+\]
+So the natural geometry on the output side is not Euclidean; distance is
+measured by $V^{-1}$. Factor $V = L_V L_V^{\top}$ and define $\tilde r = L_V^{-1} r$.
+Then
+\[
+  r^{\top} V^{-1} r \;=\; \tilde r^{\top} \tilde r,
+\]
+and in the tilde coordinates the problem is ordinary least squares. This is the
+output-side whitening. Applying it to the Jacobian gives the object we actually
+decompose:
+\begin{equation}
+  \boxed{\;S \;=\; L_V^{-1} A \;=\; L_V^{-1} J L \;\in\; \R^{K\times P}.\;}
+  \label{eq:S}
+\end{equation}
+
+$S$ is dimensionless in both directions. Entry $S_{ij}$ answers: \emph{if
+parameter direction $j$ moves one prior standard deviation, by how many noise
+standard deviations does row $i$ move?} That is a signal-to-noise ratio, and it
+is the only quantity in this problem that can be compared across rows and across
+parameters at once.
+
+\medskip
+\noindent\textbf{The mistake worth avoiding.} Dividing each row of $A$ by its own
+standard deviation $\sqrt{V_{ii}}$ whitens only the \emph{diagonal} of $V$. Our
+$V$ has substantial off-diagonal structure (rows of one readout are correlated;
+blocks run to 68 rows). Section~\ref{sec:bias} shows that this distinction is
+not cosmetic: it decides whether the reduction is unbiased.
+
+\section{The SVD, and why singular values are the answer}
+
+Take the singular value decomposition
+\begin{equation}
+  S \;=\; U \Sigma V^{\top},
+  \qquad U^{\top}U = I, \quad V^{\top}V = I,
+  \qquad \Sigma = \operatorname{diag}(\sigma_1 \ge \sigma_2 \ge \cdots).
+  \label{eq:svd}
+\end{equation}
+Read the three factors as follows.
+
+\begin{itemize}
+  \item $v_j \in \R^{P}$: a \emph{direction in parameter space}, in units of
+        prior standard deviations. It is generally a combination of many
+        parameters, not a single one.
+  \item $u_j \in \R^{K}$: the \emph{pattern across the data rows} that moving
+        along $v_j$ produces, in units of noise standard deviations.
+  \item $\sigma_j$: how many noise sds of signal you get per prior sd of
+        parameter movement. A pure signal-to-noise ratio.
+\end{itemize}
+
+\subsection{The formula that makes ``identifiability'' precise}
+
+Take the linear-Gaussian case, which is what the local analysis approximates:
+prior $\muraw \sim \mathcal N(0, I)$, data $\tilde y = S\muraw + \varepsilon$
+with $\varepsilon \sim \mathcal N(0, I)$. Completing the square gives the
+posterior precision
+\[
+  \Lambda_{\text{post}} \;=\; \underbrace{I}_{\text{prior}}
+    \;+\; \underbrace{S^{\top}S}_{\text{data}} ,
+\]
+and $S^{\top}S = V \Sigma^2 V^{\top}$ is diagonal in the $v_j$ basis. So along
+direction $v_j$,
+\begin{equation}
+  \boxed{\;
+    \frac{\text{posterior variance}}{\text{prior variance}}
+    \;=\; \frac{1}{1+\sigma_j^{2}} \; }
+  \label{eq:shrink}
+\end{equation}
+
+This single formula is the whole identifiability story:
+
+\begin{center}
+\begin{tabular}{ccl}
+  \toprule
+  $\sigma_j$ & variance ratio & reading \\
+  \midrule
+  $10$   & $0.01$ & the data essentially determine this direction \\
+  $3$    & $0.10$ & strongly informed \\
+  $1$    & $0.50$ & the data are worth as much as the prior \\
+  $0.3$  & $0.92$ & barely moved \\
+  $0.1$  & $0.99$ & posterior $=$ prior; invisible \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+A direction with $\sigma_j \ll 1$ is one where moving a full prior standard
+deviation produces less than one noise standard deviation of signal. No amount
+of sampling recovers it, because there is nothing to recover: the likelihood is
+flat there and the posterior is the prior. Chains disagree about such a
+direction not because the sampler is bad but because there is no information to
+agree on.
+
+\medskip
+\noindent\textbf{Effective number of parameters.} Summing the per-direction
+information gives the standard ridge-regression quantity
+\begin{equation}
+  P_{\text{eff}} \;=\; \sum_j \frac{\sigma_j^{2}}{1+\sigma_j^{2}},
+  \label{eq:peff}
+\end{equation}
+the ``effective degrees of freedom''. It counts directions weighted by how much
+each was actually learned, and it needs no arbitrary cutoff. If you remember one
+number from a spectrum, remember this one.
+
+\subsection{The cruder measures we quoted, and their caveat}
+
+In practice we reported cumulative Frobenius variance,
+\[
+  \frac{\sum_{j \le k}\sigma_j^{2}}{\sum_j \sigma_j^{2}},
+\]
+answering ``what fraction of $\|S\|_F^2$ do the first $k$ directions carry''
+(90\% at $k=12$, 95\% at $k=16$), and the participation ratio
+\[
+  \mathrm{PR} \;=\; \frac{\big(\sum_j \sigma_j^2\big)^2}{\sum_j \sigma_j^4},
+\]
+a cutoff-free measure of how many terms the spectrum is spread over
+($\mathrm{PR} = 1$ for a single spike, $= n$ for $n$ equal values). We measured
+$\mathrm{PR} \approx 5.6$.
+
+These are \emph{not} the same question as \eqref{eq:peff}. Frobenius weighting
+counts $\sigma^2$, so it is dominated by directions you already know well;
+$P_{\text{eff}}$ saturates at 1 per direction no matter how large $\sigma$ gets.
+A long tail of small $\sigma_j$ contributes almost nothing to Frobenius variance
+and almost nothing to $P_{\text{eff}}$, but as Section~\ref{sec:prop} shows, it
+can still contribute a great deal to the \emph{predictive variance} of the rows.
+That is exactly the asymmetry we ran into.
+
+\section{Two ways to pick a reduced set}
+
+\subsection{SVD: the best $k$-dimensional subspace}
+
+The Eckart--Young theorem says the truncated SVD is optimal: among all rank-$k$
+matrices, $S_k = \sum_{j\le k}\sigma_j u_j v_j^{\top}$ minimises
+$\|S - S_k\|$ in both the Frobenius and spectral norms. So if you want the best
+$k$-dimensional \emph{subspace}, the leading right singular vectors are it, and
+there is nothing to argue about.
+
+The cost is interpretability: $v_j$ is a combination. ``Direction 1 is
+$-0.80\,k_{\text{CD8\_T\_pro}} + 0.23\,k_{\text{CD8\_basal\_exh}} + \cdots$'' is
+a real statement about the model, but it is not a parameter you can look up.
+
+\subsection{QR with column pivoting: picking actual parameters}
+
+If you want genuine parameters, you are asking for \emph{subset selection}:
+choose $k$ columns of $S$ whose span best approximates the column space. That
+problem is NP-hard in general. Column-pivoted QR is the standard greedy
+heuristic:
+\[
+  S \Pi \;=\; QR, \qquad \Pi \text{ a permutation},
+\]
+where at each step the algorithm picks the remaining column with the largest
+residual norm after projecting out the columns already chosen, then
+orthogonalises against them. So it greedily takes ``the most informative column
+that is most orthogonal to what I already have'', which is precisely what you
+want from a representative subset.
+
+Two properties worth knowing. The pivot order is a deterministic property of $S$,
+so the resulting list is reproducible rather than hand-picked, which matters if a
+reviewer asks how the parameters were chosen. And it is suboptimal: our first 20
+pivots reproduced 91.7\% of $\|S\|_F^2$ where the SVD's first 20 directions
+capture 97.4\% by construction. You pay for interpretability.
+
+\section{Restricting to a subspace}
+
+Let $B \in \R^{P\times k}$ have orthonormal columns, $B^{\top}B = I_k$. Two
+standard objects:
+\[
+  \Pi \;=\; BB^{\top} \quad (\text{projector onto } \operatorname{span} B),
+  \qquad
+  \Pi^{\perp} \;=\; I - BB^{\top}.
+\]
+Both are symmetric and idempotent ($\Pi^2 = \Pi$), which is what makes the
+algebra below collapse so cleanly.
+
+The reduction is: instead of sampling $\muraw \in \R^{P}$, sample coefficients
+$c \in \R^{k}$ and set
+\begin{equation}
+  \muraw \;=\; Bc, \qquad c \sim \mathcal N(0, I_k).
+  \label{eq:restrict}
+\end{equation}
+
+\subsection{Why $B$ must be orthonormal}
+
+Under \eqref{eq:restrict},
+\[
+  \Cov(\muraw) \;=\; B\,\Cov(c)\,B^{\top} \;=\; BB^{\top} \;=\; \Pi .
+\]
+That is exactly the prior $\mathcal N(0, I)$ restricted to the span: unit
+variance in every direction inside it, zero outside. If $B$ were not
+orthonormal, $BB^{\top}$ would be some other ellipsoid, and the implied prior
+would be a distribution nobody chose and no one would notice. This is why the
+code checks $\|B^{\top}B - I\|_\infty$ and refuses rather than proceeding.
+
+\subsection{Why subspaces work where fixing coordinates fails}
+
+The instinct is to hold uninformative parameters at their prior means. Setting
+$\muraw_j = 0$ gives
+\[
+  \mu_j \;=\; \mu_{0,j} + \sum_{m} L_{jm}\,\muraw_m ,
+\]
+which equals $\mu_{0,j}$ \emph{only if} $L_{jm} = 0$ for all $m \ne j$, i.e.\ if
+row $j$ of $\Sig$ has no off-diagonal. Otherwise the free parameters drag the
+``held'' one through the correlation and it is not held at all. On our corpus
+this blocks the majority of the parameters one would want to fix.
+
+A subspace restriction makes no claim about any individual coordinate. It says
+$\muraw \in \operatorname{span}(B)$, and $L$ then maps that forward with all
+correlations intact. This is why $\mu$ still moved in 270 of 271 coordinates in
+a fit that sampled only 16 numbers.
+
+\section{Propagating the discarded uncertainty}
+\label{sec:prop}
+
+Restricting to the span discards the complement, which under the prior had
+distribution $\mathcal N(0, \Pi^{\perp})$. Holding it at zero rather than
+integrating over it throws away real epistemic uncertainty. The linear
+propagation of uncertainty (the delta method) puts it back.
+
+For a differentiable map $y = f(x)$ with $x \sim \mathcal N(m, C)$,
+\[
+  y \approx f(m) + \nabla f\,(x-m)
+  \quad\Longrightarrow\quad
+  \Cov(y) \approx \nabla f \; C \; \nabla f^{\top}.
+\]
+Here $\nabla f = A$ from \eqref{eq:A} and $C = \Pi^{\perp}$, so the discarded
+directions contribute
+\begin{equation}
+  V_{\text{trunc}}
+    \;=\; A\,\Pi^{\perp}\,\Pi^{\perp\top} A^{\top}
+    \;=\; A\,(I - BB^{\top})\,A^{\top},
+  \label{eq:trunc}
+\end{equation}
+using idempotence and symmetry to collapse the two projectors into one. Add this
+to $V$ and the reduced model reports intervals that admit the dropped directions
+were never measured, instead of intervals belonging to a model that knows them
+exactly.
+
+Note $A$ here, not $S$: the term is added to $V$, which lives in the rows' own
+units, so it must not be whitened.
+
+\medskip
+\noindent\textbf{Asserted versus dropped.} One subtlety with real consequences.
+A direction dropped for economy is one nobody measured, and its prior variance
+belongs in $V$. But a parameter held deliberately because it is a
+\emph{conditioning input} the data are not entitled to infer (for us,
+\texttt{initial\_tumour\_diameter}, which sets when each patient is observed) is
+\emph{asserted}. Inflating $V$ for it would claim uncertainty about a number the
+model states. Those coordinates are therefore excluded from $\Pi^{\perp}$ before
+forming \eqref{eq:trunc}.
+
+\medskip
+\noindent\textbf{Magnitude.} A small share of the \emph{spectrum} can be a large
+share of the \emph{predictive variance}. At $k=16$ the discarded directions were
+4.6\% of $\|S\|_F^2$ but inflated the median row standard deviation by 27\%,
+with a maximum of $3.3\times$. There are 255 discarded directions; each is
+individually negligible and they add.
+
+\section{Bias, and why the metric decides it}
+\label{sec:bias}
+
+Inflating $V$ widens intervals. It says nothing about whether the centre is in
+the right place. Truncation is a form of \textbf{omitted-variable bias}, and it
+deserves separate treatment.
+
+Split the Jacobian into retained and discarded parts,
+\[
+  A_{\parallel} = A\Pi, \qquad A_{\perp} = A\Pi^{\perp}, \qquad
+  A = A_{\parallel} + A_{\perp}.
+\]
+Suppose the truth is $r = A_{\parallel}c_{\parallel} + A_{\perp}c_{\perp} + \varepsilon$
+but we fit only $c_{\parallel}$, by weighted least squares with weight matrix
+$W$. Then
+\[
+  \hat c_{\parallel}
+    = (A_{\parallel}^{\top} W A_{\parallel})^{-1} A_{\parallel}^{\top} W r,
+  \qquad
+  \E[\hat c_{\parallel}]
+    = c_{\parallel}
+    + \underbrace{(A_{\parallel}^{\top} W A_{\parallel})^{-1}
+       A_{\parallel}^{\top} W A_{\perp}}_{\text{bias}}\, c_{\perp}.
+\]
+The retained directions absorb whatever the discarded ones would have explained.
+The bias vanishes exactly when
+\begin{equation}
+  A_{\parallel}^{\top}\,W\,A_{\perp} \;=\; 0 .
+  \label{eq:nobias}
+\end{equation}
+
+Now the payoff. The likelihood's weight is $W = V^{-1}$. Using $S = L_V^{-1}A$
+and its SVD \eqref{eq:svd} with $B = V_k$ (the leading right singular vectors),
+\[
+  S\Pi = U_k \Sigma_k V_k^{\top}\!\cdot\!(\text{restricted}),
+  \qquad
+  S\Pi^{\perp} = U_{>k}\Sigma_{>k}V_{>k}^{\top}\!\cdot\!(\text{restricted}),
+\]
+and therefore
+\[
+  A_{\parallel}^{\top} V^{-1} A_{\perp}
+    = (L_V^{-1}A_{\parallel})^{\top}(L_V^{-1}A_{\perp})
+    = (S\Pi)^{\top}(S\Pi^{\perp})
+    \;\propto\; \Sigma_k\, U_k^{\top} U_{>k}\, \Sigma_{>k}
+    \;=\; 0,
+\]
+because the columns of $U$ are orthonormal. \textbf{The SVD taken in the
+whitened metric makes the omitted directions orthogonal to the retained ones in
+observation space, so the omitted-variable bias is exactly zero at first order.}
+
+This is the reason the metric matters, and it is not a refinement. Take the SVD
+in any other metric and \eqref{eq:nobias} holds only approximately. Under
+row-standard-deviation scaling it holds to the extent $V$ is diagonal, which
+ours is not. And note that coordinate selection (QR, or holding parameters)
+enjoys no such protection at all: retained and dropped \emph{columns} are not
+generally orthogonal in any metric, so subset selection biases at first order
+while the subspace does not. That is an argument for the SVD basis independent
+of everything else.
+
+\subsection{What survives}
+
+The cancellation is first order. The model is nonlinear, so
+$\E[\tau(\mu)] \ne \tau(\E[\mu])$, and a second-order expansion gives
+\[
+  \E[\tau(\mu)] \;\approx\; \tau(\bar\mu) + \tfrac12 \tr\!\big(H\,C\big),
+\]
+with $H$ the Hessian of $\tau$. Removing the complement changes $C$ from $I$ to
+$\Pi$, shifting the predicted mean by $-\tfrac12\tr(H\,\Pi^{\perp})$. Equation
+\eqref{eq:trunc} does not capture this. It is small when the discarded variance
+is small, but it is an approximation and should be stated as one rather than
+claimed as an identity.
+
+\section{Summary of the pipeline}
+
+\begin{enumerate}
+  \item Compute $J = \partial\tau/\partial\mu$ by automatic differentiation.
+  \item Right-multiply by $L$ (prior Cholesky) to get $A = JL$: input whitening,
+        so a unit step is one prior sd and correlations are respected.
+  \item Left-multiply by $L_V^{-1}$ (noise Cholesky, block by block) to get
+        $S = L_V^{-1}A$: output whitening, so a unit response is one noise sd.
+  \item SVD $S = U\Sigma V^{\top}$. The $\sigma_j$ are signal-to-noise ratios;
+        \eqref{eq:shrink} converts them into how much each direction is learned.
+  \item Keep $B = V_k$ for a $k$ chosen from the spectrum. Sample
+        $c\in\R^k$ with $\muraw = Bc$.
+  \item Add $A(I-BB^{\top})A^{\top}$ to $V$ so the discarded directions widen the
+        error bars instead of vanishing, excluding any coordinate that is
+        asserted rather than dropped.
+  \item Bias is zero at first order by construction, \emph{because} step 3 used
+        the likelihood's own metric.
+\end{enumerate}
+
+\section{Where this sits in the literature}
+
+None of this is new, and the names are worth knowing for the write-up.
+
+\begin{itemize}
+  \item \textbf{Likelihood-informed subspace (LIS).} Cui, Martin, Marzouk,
+        Solonen and Spantini (2014), \emph{Likelihood-informed dimension
+        reduction for nonlinear inverse problems}, Inverse Problems 30(11).
+        This is essentially the method above: whiten by the prior, whiten by the
+        noise, take the dominant eigendirections of the resulting operator.
+  \item \textbf{Optimal low-rank posterior approximation.} Spantini et al.\
+        (2015), SIAM J.\ Sci.\ Comput.\ 37(6), proves in what sense the leading
+        directions of \eqref{eq:svd} are the optimal reduction, which is the
+        rigorous version of the hand-waving in Section~3.
+  \item \textbf{Active subspaces.} Constantine (2015). Closely related but
+        prior-driven rather than likelihood-driven: it averages
+        $\nabla f \nabla f^{\top}$ over an input distribution. The distinction
+        matters, since a direction can be influential and still unidentified.
+  \item \textbf{Ridge regression and effective degrees of freedom.} Hastie,
+        Tibshirani and Friedman, \emph{ESL}, §3.4. Equation \eqref{eq:peff} is
+        the same quantity; a Gaussian prior is Tikhonov regularisation, and
+        \eqref{eq:shrink} is the shrinkage factor.
+  \item \textbf{Column-pivoted QR and subset selection.} Golub and Van Loan,
+        \emph{Matrix Computations}, §5.4.2.
+  \item \textbf{Sloppy models.} Gutenkunst et al.\ (2007), PLoS Comput Biol
+        3(10). The systems-biology observation that these spectra are generically
+        near-exponential, which is exactly what we see, and why the effective
+        rank is small for reasons that are structural rather than a defect of
+        this corpus.
+\end{itemize}
+
+\end{document}
