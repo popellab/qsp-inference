@@ -23,6 +23,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from qsp_inference.vpop.rows import LOGIT_KINDS, logit_link
+
 __all__ = [
     # the surrogate
     "load_arm", "arm_forward", "arm_status_logits", "arm_status_logprob",
@@ -623,6 +625,15 @@ def build_h_fn(
 
     live = sorted({int(i) for s in at.values() for i in s})
 
+    # The channel each readout travels on, from the same declared quantity_kind
+    # that fixes its comparison scale. A bounded kind goes on a log-odds so that
+    # eq:disc, which acts here, cannot push it through its own bound; see
+    # rows.LOGIT_KINDS. Everything else stays on a log.
+    is_logit = np.array(
+        [_attr(targets[r], "quantity_kind") in LOGIT_KINDS for r in readouts],
+        dtype=bool)
+    index_of = {r: i for i, r in enumerate(readouts)}
+
     # Which (scenario, name) the caller has to supply. Declared so the caller
     # evaluates exactly these and no scenario is asked for a column its arm does
     # not emit.
@@ -643,6 +654,10 @@ def build_h_fn(
 
         derived = ({s: _at(y[s]) for s in live} if at else {None: _at(y)})
 
+        def channel(v, r):
+            """``v`` in readout ``r``'s own h_r coordinate."""
+            return logit_link(v, jnp) if is_logit[index_of[r]] else jnp.log(v)
+
         columns = []
         for r in readouts:
             s = at.get(r)
@@ -656,7 +671,7 @@ def build_h_fn(
                     raise UntraceableReadout(
                         f"{r} is precomposed but no value was supplied for {key}"
                     )
-                columns.append(jnp.log(extra[key]))
+                columns.append(channel(extra[key], r))
                 continue
             if s is None:
                 values = {sym: derived[None][sym] for sym in wanted[r]}
@@ -668,13 +683,17 @@ def build_h_fn(
                           for sym in wanted[r]}
             out = compiled[r](jnp.asarray(times[r]), values,
                               target_constants(targets[r], aux))
-            columns.append(jnp.log(out if s is None else out[-1]))
+            columns.append(channel(out if s is None else out[-1], r))
         return jnp.stack(columns, axis=-1)
 
     n_scenarios = 1 + max((int(i) for s in at.values() for i in s), default=1)
     _check_per_patient(h_fn, tuple(readouts), n_scenarios,
                        len(states), len(aux_order), needs_extra=needs_extra)
     h_fn.needs_extra = needs_extra
+    # (M,) bool, in readouts order. The inverse lives in predict.natural_cloud
+    # and has to agree with this column for column, so it is read off the same
+    # object rather than re-derived from the targets by the caller.
+    h_fn.is_logit = is_logit
     return h_fn
 
 # -------------------------------------------------------------------------- Z

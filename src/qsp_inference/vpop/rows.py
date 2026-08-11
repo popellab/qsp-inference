@@ -124,6 +124,25 @@ SCALE_BY_KIND = {
 #: is not a fallback and nothing reaches a fit carrying it by default.
 DEFAULT_SCALE = "raw"
 
+#: Kinds whose h_r CHANNEL is a log-odds rather than a log, so eq:disc acts in a
+#: coordinate the quantity's upper bound cannot be pushed through.
+#:
+#: SCALE_BY_KIND above puts the bound on the scale the RESIDUAL is measured on.
+#: That is not where a fraction leaves the interval. eq:disc is
+#: ``kappa (x - c) + c + gamma`` on the channel, and under a log channel kappa
+#: widens a fraction multiplicatively with no ceiling: on the pdac corpus a
+#: cloud spanning 0.68 to 0.918 about a pivot of 0.76 reaches 1.07 at
+#: ``kappa = 1.85``, and the logit tangent then turns that 7% overshoot into a
+#: 132-sigma residual on one row of stromal_fraction. Under a logit channel the
+#: inverse is a sigmoid, so the same kappa lands inside (0, 1) for every real
+#: argument and the tangent is unreachable.
+#:
+#: Same construction, and same argument, as the logit MARGIN that
+#: ``predict.apply_margins`` gives a parameter bounded on (0, 1): a bound the
+#: coordinate cannot violate has no wall to hit. This is that one level down, on
+#: the readout instead of the parameter.
+LOGIT_KINDS = frozenset(k for k, v in SCALE_BY_KIND.items() if v == "logit")
+
 #: Estimator convention -> numpy's name for it.
 NUMPY_QUANTILE_METHOD = {
     "type2": "averaged_inverted_cdf",
@@ -326,19 +345,25 @@ def to_scale(out, spec: RowSpec, xp):
     if spec.scale == "asinh":
         return xp.arcsinh(out / spec.scale_ref)
     if spec.scale == "logit":
-        return _logit(out, xp)
+        return logit_link(out, xp)
     raise ValueError(f"{spec.label}: unknown scale {spec.scale!r}")
 
 
-#: Where logit hands over to its tangent. Only the UPPER bound is guarded: a
-#: readout is ``exp(h_r)`` and ``h_r`` returns logs, so ``x > 0`` is structural
-#: and 0 is unreachable except by underflow, while ``x >= 1`` is reachable and
-#: means the model is asserting a fraction above 100%. 1e-3 sits far above the
-#: largest fraction this corpus prints (0.886), so nothing real is extrapolated.
+#: Where logit hands over to its tangent. Only the UPPER bound is guarded, and
+#: the asymmetry is not an oversight: ``x >= 1`` means the model is asserting a
+#: fraction above 100%, while small fractions are ordinary here. This corpus
+#: prints them down to 5e-4, so any floor large enough to guard would sit above
+#: real data and bend rows that are perfectly well posed. 1e-3 sits far above the
+#: largest fraction the corpus prints away from the boundary (0.886).
+#:
+#: A non-positive argument therefore still gives a NaN. That exposure is
+#: unchanged by ``logit_link`` also being the h_r channel for a LOGIT_KINDS
+#: readout: ``to_scale`` already applied it to whatever the observable body
+#: composed, so the channel adds no case that was not already reachable.
 LOGIT_MARGIN = 1e-3
 
 
-def _logit(x, xp):
+def logit_link(x, xp):
     """``log(x / (1-x))``, continued by its tangent at ``1 - LOGIT_MARGIN``.
 
     Not a clip. A clip invents a value AND flattens the gradient, and a flat
@@ -348,10 +373,10 @@ def _logit(x, xp):
     stays differentiable and reports itself as a large residual instead of
     killing the chain.
 
-    Extrapolating is not endorsing. A fraction above 1 contradicts the
-    ``quantity_kind`` its target declared, and the structural fix is upstream:
-    an emulator that predicts ``logit(fraction)`` rather than ``log(fraction)``
-    cannot leave the interval at all.
+    :func:`natural_from_logit` is the inverse, and the pair is exact below
+    ``1 - LOGIT_MARGIN``, which is where a declared fraction lives. Above it the
+    two do NOT round-trip, on purpose: the inverse is a plain sigmoid so that
+    eq:disc cannot put a fraction outside (0, 1) whatever ``kappa`` it applies.
     """
     hi = 1.0 - LOGIT_MARGIN
     slope = 1.0 / (hi * (1.0 - hi))
@@ -362,6 +387,21 @@ def _logit(x, xp):
     safe = xp.minimum(x, hi)
     inside = xp.log(safe) - xp.log1p(-safe)
     return xp.where(x < hi, inside, at_hi + (x - hi) * slope)
+
+
+def natural_from_logit(x, xp):
+    """A logit-channel readout back in the units the source printed, in (0, 1).
+
+    Plain sigmoid, with no continuation to match :func:`logit_link`'s tangents.
+    That asymmetry is the point of the pair: this is what eq:disc's output passes
+    through, and a sigmoid is onto (0, 1) for every real argument, so no
+    ``kappa`` and no ``gamma`` can produce a fraction outside its own bound.
+    """
+    # exp(-|x|) is bounded by 1, so neither branch can overflow and neither
+    # carries an inf into the gradient. Writing it as 1/(1+exp(-x)) instead is
+    # correct in value and gives inf/inf at large negative x under reverse mode.
+    z = xp.exp(-xp.abs(x))
+    return xp.where(x >= 0.0, 1.0 / (1.0 + z), z / (1.0 + z))
 
 
 def by_cohort(specs: Sequence[RowSpec]) -> Dict[str, List[RowSpec]]:

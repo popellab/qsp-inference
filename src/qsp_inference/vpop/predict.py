@@ -33,10 +33,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from qsp_inference.vpop.rows import quantile_mass, tau_row
+from qsp_inference.vpop.rows import (natural_from_logit, quantile_mass,
+                                     tau_row)
 
 __all__ = ["Mechanism", "apply_margins", "logit_median_coords", "patient_cloud",
-           "readout_cloud", "apply_map", "reference_levels", "cohort_cloud",
+           "readout_cloud", "apply_map", "natural_cloud", "reference_levels",
+           "cohort_cloud",
            "quantile_mass_table", "cohort_columns", "tau_rows", "tau_block",
            "tau_from_readouts", "tau_all"]
 
@@ -75,6 +77,13 @@ class Mechanism:
     # (P,) bool, or None for all-lognormal. True where the margin is bounded on
     # (0, 1) and omega is a log-odds sd. See patient_cloud.
     logit: Optional[jnp.ndarray] = None
+    # (M,) bool, or None for an all-log channel. True where h_r returns a
+    # log-odds rather than a log, so :func:`natural_cloud` inverts with a sigmoid
+    # and eq:disc cannot move that readout outside (0, 1). Set from
+    # ``build_h_fn``'s own ``is_logit``, never re-derived: a mask that disagreed
+    # with the channel would invert one readout under the other's link and every
+    # number downstream would stay finite and plausible.
+    logit_readout: Optional[np.ndarray] = None
     # eq:elig. ``w_fn(vartheta) -> (N,)`` is P(ok) from the status head; None
     # leaves the cloud unweighted, which is bit-for-bit the old path.
     w_fn: Optional[Callable] = None
@@ -210,6 +219,33 @@ def apply_map(x, a, b, c_row, Z_a, Z_b) -> jnp.ndarray:
     return jnp.exp(Z_b @ b) * (x - c_row) + c_row + (Z_a @ a)
 
 
+def natural_cloud(x, mech: Mechanism, cols=None) -> jnp.ndarray:
+    """h_r-coordinate readouts back in the units the source printed.
+
+    ``exp`` on a log channel, ``sigmoid`` on a log-odds one. A row functional has
+    to run in the units the source printed: the reported number is a mean or an
+    IQR of cells/mm^2 or of a fraction, and neither commutes with the link.
+
+    ``cols`` selects the readout columns ``x`` carries, since a cohort reports a
+    handful of the M and is mapped on those alone.
+    """
+    mask = mech.logit_readout
+    if mask is None:
+        return jnp.exp(x)
+    m = np.asarray(mask) if cols is None else np.asarray(mask)[np.asarray(cols)]
+    if not m.any():
+        return jnp.exp(x)
+    if m.all():
+        return natural_from_logit(x, jnp)
+    # exp() sees a zero wherever the sigmoid branch is selected. Both branches
+    # evaluate under tracing, and exp of a log-odds a wide kappa has pushed to
+    # several hundred overflows to inf, whose reverse-mode tangent times the
+    # discarded branch's zero cotangent is the NaN this avoids.
+    sel = jnp.asarray(m)[None, :]
+    return jnp.where(sel, natural_from_logit(x, jnp),
+                     jnp.exp(jnp.where(sel, 0.0, x)))
+
+
 def reference_levels(mu_0, omega_0, mech: Mechanism, *, log_R_0=None) -> jnp.ndarray:
     """``c_r``: the level each readout sits at, ``(M,)``, at the plug-in.
 
@@ -295,13 +331,14 @@ def tau_block(x, plan, specs_by_cohort, a, b, refs, mech: Mechanism, cols_of,
     out = []
     for c in plan.cohort_ids:
         cols = cols_of[c]
-        # exp, because a row functional has to run in the units the source
-        # printed. h_r returns logs and eq:disc acts there, which is what makes
-        # gamma a multiplicative assay bias, but the reported number is a mean or
-        # an IQR of cells/mm^2 and neither commutes with exp. Quantile rows do
-        # commute, so only the moment and width rows depend on this being here
-        # rather than applied to tau afterwards.
-        x_c = jnp.exp(cohort_cloud(x, cols, a, b, refs, mech))
+        # Inverted here, because a row functional has to run in the units the
+        # source printed: the reported number is a mean or an IQR of cells/mm^2
+        # and neither commutes with the link. Quantile rows do commute, so only
+        # the moment and width rows depend on this being here rather than applied
+        # to tau afterwards. eq:disc acts on the channel, one step above, which
+        # is what makes gamma a multiplicative assay bias on a log readout and an
+        # odds-ratio bias on a log-odds one.
+        x_c = natural_cloud(cohort_cloud(x, cols, a, b, refs, mech), mech, cols)
         w_c = None if w is None else w[:, jnp.asarray(cols)]
         column_of = {mech.readouts[col]: k for k, col in enumerate(cols)}
         out.append(tau_rows(specs_by_cohort[c], x_c, mech, designs,
