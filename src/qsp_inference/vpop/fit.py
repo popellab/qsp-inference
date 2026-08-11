@@ -297,6 +297,51 @@ class PopulationPrior:
             )
 
 
+def centres_with_complement(mu_c, prior: PopulationPrior, rng) -> np.ndarray:
+    """``mu`` draws with the subspace's complement restored, ``(n, P)``.
+
+    A ``mu_basis`` fit samples ``c`` and reports
+    ``mu = mu_0 + L_sigma_1 B c``, which holds the complement at zero. That is
+    the right centre to CONDITION on, and it is the model whose likelihood was
+    evaluated, so the fit itself is consistent. It is the wrong thing to REPORT.
+
+    The complement was not learned; it was declared unmeasured, and its variance
+    was moved into ``V`` by :func:`blocks.truncation_V` so the rows would stop
+    pulling as though it were known. Nothing in that operation gave ``mu`` back
+    its uncertainty. Reporting the fitted ``mu`` alone therefore prints a
+    credible interval of zero width along 255 of 271 directions, which is the
+    overconfidence the truncation term exists to prevent, reappearing one step
+    later.
+
+    So the posterior of the centre is the pushforward of ``c`` times the prior on
+    the complement, which the data left untouched::
+
+        mu = mu_0 + L_sigma_1 (B c + (I - B B') xi),   xi ~ N(0, I_P)
+
+    Drawing ``xi`` fresh per draw is what makes this the posterior rather than a
+    slice of it. This is a coherent shift of the whole population, not extra
+    between-patient spread: ``omega`` is untouched, and a virtual patient's
+    spread about any given centre is still ``omega``'s alone.
+
+    ``rng`` is a ``numpy.random.Generator``, taken rather than made so a caller
+    can reproduce a population.
+    """
+    if prior.mu_basis is None:
+        raise ValueError(
+            "there is no complement to restore: this fit sampled mu_raw in full")
+    mu_c = np.atleast_2d(np.asarray(mu_c, dtype=float))
+    B = np.asarray(prior.mu_basis, dtype=float)
+    if mu_c.shape[1] != B.shape[1]:
+        raise ValueError(
+            f"mu_c has {mu_c.shape[1]} coefficients against the basis's "
+            f"{B.shape[1]}")
+    xi = rng.standard_normal((mu_c.shape[0], B.shape[0]))
+    # xi - (xi B) B' is the projection, and it never forms the P x P projector.
+    perp = xi - (xi @ B) @ B.T
+    raw = mu_c @ B.T + perp
+    return np.asarray(prior.mu_0) + raw @ np.asarray(prior.L_sigma_1).T
+
+
 def build_omega(s, u_raw, prior: PopulationPrior):
     """eq:omegaassumed. ``u`` is centred, so the global level lives in ``s`` alone.
 

@@ -341,6 +341,69 @@ def study_effect(
     return out
 
 
+def truncation_V(A: np.ndarray, B: np.ndarray, sizes: Sequence[int],
+                 held: Sequence[int] = ()) -> List[np.ndarray]:
+    """What the directions a basis drops would have contributed to the rows.
+
+    ``A`` is ``d tau / d mu_raw``, ``(K, P)`` in the rows' own units, and ``B``
+    the ``(P, k)`` orthonormal basis the fit restricts ``mu_raw`` to. Since
+    ``mu_raw ~ N(0, I)`` under eq:muprior, the complement's prior contributes
+    ``A (I - B B') A'`` to ``tau``'s covariance, and the projector is idempotent
+    and symmetric so that is already the whole quadratic form.
+
+    Holding a direction at ``mu_0`` is not free: it discards the epistemic
+    uncertainty eq:muprior carries about where the centre sits, while keeping the
+    population spread ``omega`` describes. Without this term a reduced fit reports
+    the intervals of a model that knows the dropped directions exactly. Added to
+    ``V`` it says instead that they were never measured, which is what a prior
+    variance means.
+
+    First order in ``A``, so it is the delta method rather than the exact prior
+    predictive, and it is taken at the plug-in for the same reason the rest of
+    ``V`` is: eq:disc is the identity there and the pivot does not move.
+
+    ``held`` names coordinates that are ASSERTED at ``mu_0`` rather than dropped
+    for economy, and they are excluded. The distinction is the whole point of the
+    term: a direction the basis drops is one nobody measured, so its prior
+    variance belongs in ``V``, while ``initial_tumour_diameter`` is held because
+    it is a conditioning input the corpus is not entitled to infer. Inflating
+    ``V`` for it would say the fit is uncertain about a number the model states,
+    and would widen every row that reads a patient's observation time.
+
+    ``sizes`` gives each block's row count, in ``plans`` order, so the blocks come
+    back aligned with ``v_boot``.
+    """
+    A = np.asarray(A, dtype=float)
+    B = np.asarray(B, dtype=float)
+    if A.shape[1] != B.shape[0]:
+        raise ValueError(
+            f"A is {A.shape} and B is {B.shape}; the basis has to span the "
+            f"columns of the Jacobian")
+    if int(sum(sizes)) != A.shape[0]:
+        raise ValueError(
+            f"blocks total {int(sum(sizes))} rows against the Jacobian's "
+            f"{A.shape[0]}")
+    A_perp = A - (A @ B) @ B.T
+    if len(held):
+        h = np.asarray(held, dtype=int)
+        if h.min() < 0 or h.max() >= A.shape[1]:
+            raise ValueError(
+                f"held index out of range for {A.shape[1]} parameters")
+        if np.abs(B[h]).max(initial=0.0) > 1e-10:
+            raise ValueError(
+                "a held coordinate has a non-zero row in B, so it is inside the "
+                "span and outside it at once. Build the basis with --hold.")
+        # e_j is already orthogonal to every column of B, so removing it needs no
+        # re-orthogonalisation: zeroing the column is the projection.
+        A_perp[:, h] = 0.0
+    out, i = [], 0
+    for n in sizes:
+        blk = A_perp[i:i + n]
+        out.append(blk @ blk.T)
+        i += n
+    return out
+
+
 def assemble_V(
     plans: Sequence[BlockPlan],
     v_boot: Sequence[np.ndarray],
@@ -348,8 +411,14 @@ def assemble_V(
     *,
     ridge: float = 1e-6,
     eta: Optional[Sequence[np.ndarray]] = None,
+    trunc: Optional[Sequence[np.ndarray]] = None,
 ) -> BlockCovariance:
     """eq:Vsplit, ``V_B = V^boot_B + E_B``, plus eq:studymarg's ``eta`` when given.
+
+    ``trunc`` is :func:`truncation_V`, the prior variance of the directions a
+    ``mu_basis`` fit does not sample. It is additive for the same reason ``E`` is:
+    an error the rows carry that the residual cannot separate from sampling
+    noise, so it belongs in the covariance rather than in the mean.
 
     The ridge keeps the Cholesky well behaved when two of a block's readouts are
     nearly collinear, which a shared denominator makes likely.
@@ -372,6 +441,8 @@ def assemble_V(
             V = V + np.asarray(E[i], dtype=float)
         if eta is not None:
             V = V + np.asarray(eta[i], dtype=float)
+        if trunc is not None:
+            V = V + np.asarray(trunc[i], dtype=float)
         d = np.sqrt(np.diag(V))
         if not np.all(d > 0):
             # A row with no sampling variance is the corpus claiming a number
