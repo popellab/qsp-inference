@@ -299,14 +299,57 @@ class BlockCovariance:
     unhonoured: Tuple[str, ...] = ()
 
 
+def study_effect(
+    plans: Sequence[BlockPlan],
+    specs_by_cohort: Mapping[str, Sequence],
+    study_of: Mapping[str, str],
+    tau_eta: float,
+) -> list:
+    """eq:studymarg's ``tau_eta^2 sum_s 1_s 1_s'``, one matrix per block.
+
+    eq:studyeff gives every study a shared level offset and marginalises exactly,
+    since it is Gaussian and additive: what reaches the likelihood is a rank-one
+    block per study rather than a sampled site. So this is the whole of it.
+
+    Location rows only. A width row is untouched, because eta is a level effect
+    and eq:disc already gives widths their own scale term.
+
+    The index is the study, not the cohort: arms of one trial share a lab and a
+    patient stream, so their levels move together. ``study_of`` maps a cohort id
+    onto its study and is the caller's to supply, the corpus knowing which arms
+    belong to which trial.
+
+    ``tau_eta = 0`` returns zeros, which is eq:studyeff switched off and the old
+    ``V`` bit for bit.
+    """
+    from qsp_inference.vpop.rows import SCALE_STATS
+
+    out = []
+    for plan in plans:
+        studies, k = [], 0
+        for cid in plan.cohort_ids:
+            for spec in specs_by_cohort[cid]:
+                studies.append(None if spec.stat in SCALE_STATS
+                               else study_of.get(cid, cid))
+                k += 1
+        M = np.zeros((k, k))
+        if tau_eta:
+            for s in {x for x in studies if x is not None}:
+                ind = np.array([1.0 if x == s else 0.0 for x in studies])
+                M += (tau_eta ** 2) * np.outer(ind, ind)
+        out.append(M)
+    return out
+
+
 def assemble_V(
     plans: Sequence[BlockPlan],
     v_boot: Sequence[np.ndarray],
     E: Optional[Sequence[np.ndarray]] = None,
     *,
     ridge: float = 1e-6,
+    eta: Optional[Sequence[np.ndarray]] = None,
 ) -> BlockCovariance:
-    """eq:Vsplit, ``V_B = V^boot_B + E_B``.
+    """eq:Vsplit, ``V_B = V^boot_B + E_B``, plus eq:studymarg's ``eta`` when given.
 
     The ridge keeps the Cholesky well behaved when two of a block's readouts are
     nearly collinear, which a shared denominator makes likely.
@@ -327,6 +370,8 @@ def assemble_V(
         V = np.asarray(Vb, dtype=float).copy()
         if E is not None:
             V = V + np.asarray(E[i], dtype=float)
+        if eta is not None:
+            V = V + np.asarray(eta[i], dtype=float)
         d = np.sqrt(np.diag(V))
         if not np.all(d > 0):
             # A row with no sampling variance is the corpus claiming a number

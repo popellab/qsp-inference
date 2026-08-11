@@ -136,3 +136,50 @@ class TestEmulatorE:
         plans = block_draw_plan(CohortRegistry(cohorts=[_cohort("a", 5)]), {})
         with pytest.raises(ValueError, match="plans want"):
             emulator_E(plans, np.zeros((10, 5)), {"a": 2})
+
+class TestStudyEffect:
+    """eq:studyeff, marginalised into V by eq:studymarg."""
+
+    class _Plan:
+        cohort_ids = ("li2022_arm_a", "li2022_arm_b", "hiraoka2006")
+
+    class _Spec:
+        def __init__(self, stat):
+            self.stat = stat
+
+    def _specs(self):
+        return {"li2022_arm_a": [self._Spec("quantile"), self._Spec("sd")],
+                "li2022_arm_b": [self._Spec("mean")],
+                "hiraoka2006": [self._Spec("mean")]}
+
+    _STUDY = {"li2022_arm_a": "li2022", "li2022_arm_b": "li2022",
+              "hiraoka2006": "hiraoka2006"}
+
+    def _eta(self, tau):
+        from qsp_inference.vpop.blocks import study_effect
+        return study_effect([self._Plan()], self._specs(), self._STUDY, tau)[0]
+
+    def test_off_is_exactly_zero(self):
+        """Switched off, V is what it was before the term existed."""
+        assert np.array_equal(self._eta(0.0), np.zeros((4, 4)))
+
+    def test_arms_of_one_trial_are_correlated(self):
+        eta = self._eta(0.4)
+        # rows 0 and 2 are location rows of li2022's two arms
+        assert eta[0, 2] == pytest.approx(0.16)
+        assert eta[0, 0] == pytest.approx(0.16)
+
+    def test_a_width_row_is_untouched(self):
+        """eta is a level effect; eq:disc already gives widths their own term."""
+        eta = self._eta(0.4)
+        assert np.all(eta[1] == 0) and np.all(eta[:, 1] == 0)
+
+    def test_separate_studies_do_not_share_an_offset(self):
+        eta = self._eta(0.4)
+        assert eta[0, 3] == 0.0 and eta[2, 3] == 0.0
+
+    def test_it_is_rank_one_per_study(self):
+        """What eq:studymarg says it is: one shared level, not a free matrix."""
+        eta = self._eta(0.4)
+        loc = np.ix_([0, 2], [0, 2])
+        assert np.linalg.matrix_rank(eta[loc]) == 1
