@@ -377,7 +377,10 @@ def z_cost(names: Sequence[str], blocks: Sequence[np.ndarray],
     return values, already standardised.
     """
     by_name = dict(zip(names, blocks))
-    mech = [n for n in ("mu_raw", "s", "u_raw", "u_free")
+    # Every name the centre and the widths can travel under. mu_free and mu_c are
+    # mu_raw restricted -- to coordinates and to a subspace -- so a run using
+    # either was reporting an alias table with no mechanism block in it at all.
+    mech = [n for n in ("mu_raw", "mu_free", "mu_c", "s", "u_raw", "u_free")
             if n in by_name]
     J_mech = np.hstack([by_name[n] for n in mech])
 

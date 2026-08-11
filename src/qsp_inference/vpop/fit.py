@@ -146,6 +146,33 @@ class PopulationPrior:
     # corpus where that stops being true should fail loudly.
     fix_mu: Tuple[int, ...] = ()
 
+    # (P, k) orthonormal columns. The centre moves only inside their span:
+    # ``mu_raw = B c`` with ``c ~ N(0, I_k)``, so ``mu`` keeps eq:mu's own
+    # correlation because L_sigma_1 is applied after, not around.
+    #
+    # This is fix_mu's answer to a corpus that constrains directions rather than
+    # coordinates. On pdac the sensitivity matrix has 138 rows against 271
+    # parameters and its spectrum collapses -- 12 directions carry 90% of the
+    # variance, 16 carry 95% -- so most of the vector is in a near-null space and
+    # a fit of all 271 is not posed. Selecting COORDINATES cannot express that:
+    # the informative directions are combinations, and fix_mu is additionally
+    # refused wherever Sigma_1 correlates the held parameter with a free one,
+    # which on pdac blocks 63 of the 241 one would want to hold. A basis has
+    # neither problem, because zeroing the orthogonal complement of an orthonormal
+    # B is a projection of mu_raw and says nothing about any single coordinate.
+    #
+    # What it asserts is that outside the span the centre sits at mu_0. That is
+    # the same claim fix_mu makes, stated on the basis the corpus actually
+    # measures in, and it belongs in a write-up rather than in a caption: the
+    # population's variability along the complement is the prior's, because the
+    # corpus says nothing about it.
+    #
+    # Orthonormality is checked rather than assumed. A non-orthonormal B still
+    # runs and still returns numbers, but c's unit prior is then not mu_raw's
+    # standard normal restricted to the span, and eq:muprior would mean something
+    # nobody chose.
+    mu_basis: Optional[np.ndarray] = None
+
     @property
     def n_params(self) -> int:
         return int(jnp.asarray(self.omega_0).shape[0])
@@ -209,6 +236,32 @@ class PopulationPrior:
                 "corpus to move. Hold the parameters that are not population "
                 "centres, not all of them."
             )
+        if self.mu_basis is not None:
+            B = np.asarray(self.mu_basis)
+            if self.fix_mu:
+                raise ValueError(
+                    "mu_basis and fix_mu both restrict where the centre may go, "
+                    "one as a subspace and one as coordinates. Holding a "
+                    "coordinate that the basis already spans asserts the same "
+                    "thing twice and disagrees about which. Pass one."
+                )
+            if B.ndim != 2 or B.shape[0] != self.n_params:
+                raise ValueError(
+                    f"mu_basis is {B.shape}, expected ({self.n_params}, k)"
+                )
+            if not 1 <= B.shape[1] <= self.n_params:
+                raise ValueError(
+                    f"mu_basis has {B.shape[1]} columns; a basis of the centre "
+                    f"needs between 1 and {self.n_params}"
+                )
+            off = np.abs(B.T @ B - np.eye(B.shape[1])).max()
+            if off > 1e-8:
+                raise ValueError(
+                    f"mu_basis is not orthonormal (max |B'B - I| = {off:.3g}). "
+                    "c's unit prior is mu_raw's standard normal restricted to "
+                    "the span only when it is, so this would silently change "
+                    "eq:muprior."
+                )
         if self.fix_mu:
             # Dropping mu_raw[j] equals conditioning mu on mu_j = mu_0[j] only
             # when Sigma_1's row j is diagonal. See the field.
@@ -278,6 +331,11 @@ def site_spec(prior: "PopulationPrior"):
     # Renamed when a centre is held, for the same reason u_free is.
     if prior.fix_mu:
         out = [("mu_free", jnp.zeros(len(prior.free_mu)), 1.0)]
+    elif prior.mu_basis is not None:
+        # Its own name, and its own length, for the reason b_free and u_free have
+        # theirs: a site whose shape changes with configuration under one name is
+        # what a mass matrix cannot notice.
+        out = [("mu_c", jnp.zeros(np.asarray(prior.mu_basis).shape[1]), 1.0)]
     else:
         out = [("mu_raw", jnp.zeros(prior.n_params), 1.0)]
     if not prior.fix_s:
@@ -317,6 +375,8 @@ def phi_from_sites(sites: Mapping[str, jnp.ndarray], prior: "PopulationPrior"):
     if prior.fix_mu:
         mu_raw = jnp.zeros(prior.n_params).at[
             np.asarray(prior.free_mu)].set(sites["mu_free"])
+    elif prior.mu_basis is not None:
+        mu_raw = jnp.asarray(prior.mu_basis) @ sites["mu_c"]
     else:
         mu_raw = sites["mu_raw"]
     mu = jnp.asarray(prior.mu_0) + jnp.asarray(prior.L_sigma_1) @ mu_raw
@@ -377,6 +437,12 @@ def population_model(prior: PopulationPrior, problem: Problem, V_chol,
             dist.Normal(0.0, 1.0).expand([len(prior.free_mu)]).to_event(1))}
         mu_raw = jnp.zeros(P).at[np.asarray(prior.free_mu)].set(
             sites["mu_free"])
+    elif prior.mu_basis is not None:
+        B = jnp.asarray(prior.mu_basis)
+        sites = {"mu_c": numpyro.sample(
+            "mu_c",
+            dist.Normal(0.0, 1.0).expand([B.shape[1]]).to_event(1))}
+        mu_raw = B @ sites["mu_c"]
     else:
         sites = {"mu_raw": numpyro.sample(
             "mu_raw", dist.Normal(0.0, 1.0).expand([P]).to_event(1))}
