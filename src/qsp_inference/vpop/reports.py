@@ -92,7 +92,28 @@ def _jacfwd(fn, argnum: int):
     return jax.jit(jax.jacfwd(fn, argnums=argnum))
 
 
-def laplace_blocks(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = None):
+def _bijector_scale(prior, name: str, value):
+    """``d value / d unconstrained coordinate`` at ``value``, else ``None``.
+
+    ``None`` where the two coincide, which is every site whose support is the
+    whole line. Only ``log_R`` can be bounded here, and only when eq:auxprior
+    carries a floor.
+    """
+    if name != "log_R" or getattr(prior, "log_R_low", None) is None:
+        return None
+    from numpyro.distributions.transforms import biject_to
+
+    from qsp_inference.vpop.fit import aux_distribution
+
+    t = biject_to(aux_distribution(prior).support)
+    u = t.inv(jnp.asarray(value))
+    # elementwise, so the Jacobian is diagonal and its diagonal is the scale
+    return np.diag(np.atleast_2d(np.asarray(jax.jacfwd(lambda z: t(z))(u))))
+
+
+def laplace_blocks(prior, problem, V_chol, *,
+                   at: Optional[Mapping[str, Any]] = None,
+                   unconstrained: bool = False):
     """Whitened ``d tau / d site``, one array per site, in the model's coordinates.
 
     NOT standardised coordinates. The sites here are exactly the sites the model
@@ -101,6 +122,12 @@ def laplace_blocks(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = 
 
     ``at`` is the point to linearise about, as site values; the default is the
     prior centre, which is where ``V`` was frozen.
+
+    ``unconstrained`` composes each site's bijector into its block and its prior
+    width, giving the metric in the coordinates numpyro moves. For a site whose
+    support is the whole line that is the identity; for a bounded one it is the
+    chain rule, ``G_u = D G_theta D`` with ``D = d theta / d u``, which is the
+    same first-order approximation the Gauss-Newton form already makes.
 
     Returns ``(names, dims, prior_sd, blocks, labels)``.
     """
@@ -131,6 +158,13 @@ def laplace_blocks(prior, problem, V_chol, *, at: Optional[Mapping[str, Any]] = 
         dims.append(Jw.shape[1])
         labels += [nm if Jw.shape[1] == 1 else f"{nm}[{j}]"
                    for j in range(Jw.shape[1])]
+    if unconstrained:
+        for k, nm in enumerate(names):
+            d = _bijector_scale(prior, nm, init[k])
+            if d is None:
+                continue
+            blocks[k] = blocks[k] * np.asarray(d, dtype=float)[None, :]
+            prior_sd[k] = np.asarray(prior_sd[k], dtype=float) / np.asarray(d)
     return names, dims, prior_sd, blocks, labels
 
 
@@ -152,17 +186,10 @@ def laplace_inverse_mass(prior, problem, V_chol, **kw):
     # numpyro's inverse_mass_matrix is read in the UNCONSTRAINED space, and
     # laplace_blocks differentiates phi_from_sites in the space the sites are
     # sampled in. Those coincide only while every site's support is the whole
-    # line, which was true until eq:auxprior gained a bound. A truncated site
-    # puts a bijector between the two and the block for it would then be a metric
-    # for a coordinate numpyro is not moving: finite, plausible, and wrong for
-    # exactly one direction. Refused rather than approximated.
-    if getattr(prior, "log_R_low", None) is not None and not prior.pin_aux:
-        raise ValueError(
-            "log_R is bounded below, so numpyro samples it through a bijector "
-            "and its Laplace block would describe the wrong coordinate. Run the "
-            "bounded model with --mass dense or --adapt-mass on, or pin the "
-            "auxiliary, until laplace_blocks composes the transform.")
-    names, dims, prior_sd, blocks, _ = laplace_blocks(prior, problem, V_chol, **kw)
+    # line, which was true until eq:auxprior gained a bound, so the bijector is
+    # composed in rather than assumed away.
+    names, dims, prior_sd, blocks, _ = laplace_blocks(
+        prior, problem, V_chol, unconstrained=True, **kw)
     order = sorted(range(len(names)), key=lambda i: names[i])
     names = [names[i] for i in order]
     dims = [dims[i] for i in order]

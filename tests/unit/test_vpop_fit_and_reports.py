@@ -502,3 +502,67 @@ class TestTheRestrictedModelIsTheFullModelOnItsSpan:
         A = np.asarray(bf[nf.index("mu_raw")])
         Ab = np.asarray(bs[ns.index("mu_c")])
         assert Ab == pytest.approx(A @ B, rel=1e-7, abs=1e-9)
+
+
+class TestTheMetricIsInTheCoordinatesNumpyroMoves:
+    """A bounded site puts a bijector between the site value and the coordinate.
+
+    laplace_blocks differentiates phi_from_sites in site values; numpyro reads
+    inverse_mass_matrix in the unconstrained space. Those coincide for every
+    normal site, so the composition is invisible until eq:auxprior carries a
+    floor, and then it is wrong for exactly one direction.
+    """
+
+    def _bounded(self, prior):
+        return dataclasses.replace(
+            prior, log_R_0=jnp.zeros(1), sigma_R=jnp.full(1, 1.2),
+            log_R_low=jnp.zeros(1))
+
+    def test_an_unbounded_site_is_left_alone(self, prior, problem, V_chol):
+        from qsp_inference.vpop.reports import _bijector_scale
+        for nm in ("mu_raw", "s", "u_raw", "a", "b"):
+            assert _bijector_scale(prior, nm, jnp.zeros(2)) is None
+
+    def test_the_scale_is_the_bijector_derivative(self, prior):
+        from qsp_inference.vpop.reports import _bijector_scale
+        from qsp_inference.vpop.fit import site_spec
+        p = self._bounded(prior)
+        start = dict((n, v) for n, v, _ in site_spec(p))["log_R"]
+        d = _bijector_scale(p, "log_R", start)
+        # theta = softplus(u), so dtheta/du = sigmoid(u) and u = softplus_inv
+        u = np.log(np.expm1(np.asarray(start, dtype=float)))
+        assert d == pytest.approx(1.0 / (1.0 + np.exp(-u)), rel=1e-6)
+        assert 0.0 < float(d[0]) < 1.0
+
+    def test_composing_scales_the_block_and_the_width(
+            self, prior, problem, V_chol):
+        from qsp_inference.vpop.reports import laplace_blocks, _bijector_scale
+        from qsp_inference.vpop.fit import site_spec
+        p = self._bounded(prior)
+        start = dict((n, v) for n, v, _ in site_spec(p))["log_R"]
+        d = np.asarray(_bijector_scale(p, "log_R", start), dtype=float)
+
+        n0, _, sd0, b0, _ = laplace_blocks(p, problem, V_chol)
+        n1, _, sd1, b1, _ = laplace_blocks(p, problem, V_chol,
+                                           unconstrained=True)
+        i = n0.index("log_R")
+        assert np.asarray(b1[i]) == pytest.approx(np.asarray(b0[i]) * d,
+                                                  rel=1e-9, abs=1e-12)
+        assert np.asarray(sd1[i]) == pytest.approx(np.asarray(sd0[i]) / d,
+                                                   rel=1e-9)
+        # and nothing else moved
+        for j, nm in enumerate(n0):
+            if nm == "log_R":
+                continue
+            assert np.asarray(b1[j]) == pytest.approx(np.asarray(b0[j]))
+
+    def test_the_bounded_model_gets_a_metric_at_all(
+            self, prior, problem, V_chol):
+        # It used to be refused rather than approximated. The refusal was the
+        # thing standing between the bounded model and --mass laplace.
+        p = self._bounded(prior)
+        (M,) = laplace_inverse_mass(p, problem, V_chol).values()
+        M = np.asarray(M)
+        assert np.all(np.isfinite(M))
+        assert M == pytest.approx(M.T, rel=1e-10)
+        assert np.linalg.eigvalsh(M).min() > 0
