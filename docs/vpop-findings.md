@@ -318,21 +318,37 @@ softplus are inert and the comparison is clean.
 | `map/on` | 4 | 178 | 255, 100% at the cap | ~3900s |
 | `map/off`, 3000 draws | 3 | 11768 | 63 | ~3800s |
 
-Two things follow. numpyro's adaptation is unusable at this size: given a
-500-draw window against 304 coordinates it returned a metric worse than the
-Gauss-Newton it replaced, cost `omega` an order of magnitude of n_eff and pinned
-every chain at the depth cap. And ten times the draws buys `mu_c` nothing, 4 to
-3, while `omega` scales linearly, 1361 to 11768. A chain diffusing along a ridge
-would show n_eff growing; flat n_eff at about the chain count is confinement.
+numpyro's adaptation is unusable at this size: given a 500-draw window against
+304 coordinates it returned a metric worse than the Gauss-Newton it replaced,
+cost `omega` an order of magnitude of n_eff and pinned every chain at the depth
+cap.
 
-That is not a contradiction with one optimum, it is an entropic barrier. An
-optimiser walks downhill and every start reaches the same bottom; a sampler has
-to pass through the neck's volume and does not. It also carries the rest of the
-pattern: no divergences, because the chains never probe the tight region; step
-sizes differing 3.5x between regions; and one seed of four running at 103
-leapfrog steps with 10% cap saturation where its siblings sit at 63 and 0%.
+**n_eff cannot answer the second question.** Its estimator floors near half the
+chain count whenever between-chain variance dominates within, and it floors
+there for a confined chain and a slowly diffusing one alike; on synthetic
+diffusing chains it *falls* with more draws, 10.5 to 6.1 to 2.6 across 100x.
+The `mu_c` column above is at that floor and is a restatement of R-hat, not an
+independent measurement.
 
-More draws will not fix this, and neither will a better linear metric.
+Within-chain spread against a prefix of the same chains does answer it.
+Diffusion grows it as sqrt(N); confinement leaves it flat.
+
+| prefix | `mu_c` within sd | between sd | B/W | R-hat | n_eff |
+| --- | --- | --- | --- | --- | --- |
+| 100 | 0.278 | 0.399 | 2.05 | 2.15 | 2.6 |
+| 300 | 0.282 | 0.399 | 1.97 | 2.09 | 2.6 |
+| 1000 | 0.312 | 0.397 | 2.03 | 2.12 | 2.5 |
+| 3000 | 0.327 | 0.400 | 2.02 | 2.13 | 2.5 |
+
+Thirty times the draws grows the within-chain spread 1.16x where diffusion
+predicts 5.5x, and the between-chain sd does not move at the fourth decimal.
+The chains are confined. `omega` over the same prefixes is stationary at 0.110
+with B/W 0.08 and R-hat 1.00, which is what the contrast should look like.
+
+The two spreads are the same order, 0.33 within against 0.40 between, so this is
+not four chains in four distant modes. Each chain covers about two thirds of a
+target roughly 0.52 wide and cannot reach the rest, which is consistent with the
+single optimum every multistart finds. More draws will not fix it.
 
 ## Support audits
 
