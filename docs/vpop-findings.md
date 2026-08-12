@@ -252,9 +252,19 @@ spread over 741 to 907, which is the mechanism behind eq:disc being load-bearing
 for the sampler: it offers a smooth direction to relieve tension that otherwise
 has to be found by pushing `mu` through the surrogate.
 
-R-hat has therefore been reporting mode disagreement, not sampling error, and
-every convergence comparison here is weaker than its table suggests. Results
-computed at a point are unaffected.
+The optima are separated, not roughness. Profiling the posterior along the
+straight segment between the best two, which differ by 7.5 in depth, gives a
+barrier of 127.9 with one interior maximum and a mean second difference of 0.048,
+so roughness is 0.14% of the barrier; the best-to-worst segment gives 0.09%. A
+250-member cloud and a five-arm MLP were the obvious suspects and neither is
+implicated: a larger `n_cloud` or a smoother surrogate would merge nothing. The
+barrier is a straight-line upper bound, since the minimum-energy path is curved,
+so it bounds the separation rather than measuring it.
+
+That makes 22 explanations of one corpus a statement about what the corpus can
+identify, not about the sampler. R-hat has therefore been reporting mode
+disagreement, not sampling error, and every convergence comparison here is weaker
+than its table suggests. Results computed at a point are unaffected.
 
 ## Support audits
 
