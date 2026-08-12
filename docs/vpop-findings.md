@@ -305,7 +305,7 @@ metric was therefore frozen at a Gauss-Newton linearised at the prior centre
 and never re-estimated, and `--mass-at map` linearised 800 Adam steps from the
 prior mode, which is not a converged point on this objective.
 
-## One chain in 1e-27 of the mass held every diagnostic down
+## One chain held every diagnostic down, and it is not droppable
 
 Three arms at k=16, everything but the metric held to the sweep's settings.
 `prior/off` reproduces the sweep column for column, so the `log_R` bound and the
@@ -334,15 +334,25 @@ which is what separates an outlier from picking the inconvenient chain:
 | drop 2 | 2.35 | 5.20 | 2 | 23 / 271 | 7400 |
 | drop 3 | 1.02 | 1.05 | 314 | 271 / 271 | 13972 |
 
-Dropping a good chain makes the numbers worse. Dropping chain 3 converges the
-fit. `-log p` at the four chain means is 346.65, 360.09, 350.42 and **408.69**:
-chain 3 sits 62 nats down, a relative posterior weight near 1e-27. Along the
-straight line to it the profile rises 299 nats with one interior maximum, while
-the lines between the other three fall monotonically over distances of 0.35 to
-0.57 with no interior maximum at either grid spacing. The barrier is
-path-dependent and proves nothing on its own; the 62 nats do not depend on the
-path. All four started from the same point under `--init median`, so chain 3 was
-thrown there during warmup rather than having walked.
+Dropping a good chain makes the numbers worse. Dropping chain 3 makes every
+number converge. `-log p` at the four chain means is 346.65, 360.09, 350.42 and
+**408.69**, so chain 3 sits 62 nats down at a distance of 9.468 while the other
+three lie within 0.6 of each other. Along the straight line to it the profile
+rises 299 nats with one interior maximum, where the lines between the other
+three fall monotonically with none at either grid spacing.
+
+**None of that licenses dropping it**, and an earlier version of this section
+said it did. Two reasons. A 62-nat density gap is not a mass: mass is density
+times volume, and at 304 dimensions a volume factor of e^60 is unremarkable, so
+the region's weight was never measured. And a straight-line barrier in 304
+dimensions is not a minimum-energy path, so a curved single basin produces one
+too. Per Betancourt, a chain behaving differently is evidence of a region the
+other chains have not reached yet, and the fit is suspect until they all agree.
+Chain 3 is inside the support on every coordinate (max 2.00 prior sd against
+1.61 to 1.64 for the others, nothing past 3), so it is not the emulator
+extrapolating. It differs by 1 to 2 prior sd across twenty-odd parameters at
+once, a direction rather than a point, and it moved 9.468 for 62 nats where the
+prior alone charges about 45. The likelihood is nearly flat along it.
 
 Two estimator notes, both of which cost time here. n_eff floors near half the
 chain count whenever between-chain variance dominates within, and it floors
@@ -353,6 +363,67 @@ pooled posterior covariance over chains that disagree measures the disagreement:
 `mu_c` pools to a widest direction of 3.33 prior sd, which splits into 0.19
 within and 14.53 between, and within a chain all 16 directions come in under 0.9.
 Decompose by chain before reading any pooled statistic.
+
+## The model recovers phi* from its own data
+
+`workflows/campaign/synthetic.py` draws phi*, pushes it through tau to make
+rows, adds noise from the same V, and refits with identical settings. The
+machinery for the comparison, `summarise_recovery` and `print_recovery`, was
+already written and had never been called.
+
+phi* drawn from eq:pop, four chains:
+
+| site | n | pass 1.01 | R-hat max | n_eff med |
+| --- | --- | --- | --- | --- |
+| `mu_c` | 16 | 16 | 1.00 | 5015 |
+| `u_free` | 270 | 270 | 1.00 | 15356 |
+| `mu` | 271 | 271 | 1.00 | 3846 |
+| `omega` | 271 | 271 | 1.00 | 12991 |
+
+Leave-one-out gives 1.00 on every drop, and no chain diverged. Recovery:
+
+| block | n | identified | z med | z max | cover id | cover un | shrink med |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `mu_c` | 16 | 16 | 0.59 | 2.22 | 88% | | 0.37 |
+| `u_free` | 270 | 6 | 0.32 | 0.44 | 100% | 87% | 1.00 |
+
+So `mu_c` is identified in all 16 directions, shrinks to 0.37 of prior, and
+covers phi* at 88% against a nominal 90%. The flat direction chain 3 found on
+the real corpus is not a property of the model and prior alone. `u_free` is
+identified in 6 of 270 coordinates at shrink 1.00, the same picture the real fit
+gives.
+
+The MAP is -80.55 on this data and 346 to 379 on the real corpus, over the same
+138 rows with the same V.
+
+At phi* set to the mean of the three real chains that agreed, the same code
+diverges: 6, 60 and 326 over three chains where the prior arm gave four zeros.
+A posterior mean is not a draw and can sit where nothing visits, so an arm at a
+single draw of chain 0 is what separates that from the geometry.
+
+## What the corpus determines
+
+Per-coordinate shrinkage understates it, and the eigenvalues of the posterior
+covariance in prior-standardised coordinates are the statement. Over chains 0-2
+of the 3000-draw fit:
+
+| site | n | marginal sd / prior, med | eigen sd / prior, tightest | directions under 0.9 |
+| --- | --- | --- | --- | --- |
+| `mu_c` | 16 | 0.503 | 0.081 | 15 / 16 |
+| `u_free` | 270 | 0.999 | 0.323 | 83 / 270 |
+| `b_free` | 8 | 0.597 | 0.159 | 7 / 8 |
+| `a` | 9 | 0.711 | 0.149 | 7 / 9 |
+
+Every `omega` marginal is its own prior to three decimals while 83 combinations
+are constrained, so the corpus reaches the widths only in rotations. That is
+what cohort IQRs over many parameters should do.
+
+One exception carries a claim. `u_free[174]` is `k_CD8_exh_death`, whose
+posterior mean is +2.857 against `tau_u` = 0.3, so 9.52 prior sd out, with a
+posterior sd of 0.0775, 0.26 of prior. All three agreeing chains put it at
+2.849, 2.857 and 2.867. In natural units its fitted population width is 17.5x
+`omega_0`, against a median of 1.026 over the other 270 and only one other
+parameter past 3x.
 
 ## Support audits
 
