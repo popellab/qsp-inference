@@ -430,6 +430,49 @@ posterior sd of 0.0775, 0.26 of prior. All three agreeing chains put it at
 `omega_0`, against a median of 1.026 over the other 270 and only one other
 parameter past 3x.
 
+## The forward model cannot produce the corpus
+
+`workflows/campaign/residuals.py` whitens the residual, `z_B = L_B^-1 (y_B -
+tau_B(phi_hat))`. On synthetic data those are standard normal at the truth by
+construction, so the synthetic arms are a null that was generated rather than
+assumed. `sum z^2` at phi* comes out 125.5 at both n_cloud 24 and 250, which it
+must, since at the truth the residual is the noise draw itself.
+
+| fit | `sum z^2`, 138 rows | sd | \|z\|>3, expect 0.4 |
+| --- | --- | --- | --- |
+| synthetic, prior phi*, at phi_hat | 127.8 | 0.97 | 0 |
+| synthetic, consensus phi*, at phi* | 125.5 | 0.95 | 0 |
+| synthetic, consensus phi*, at phi_hat | 219.9 | 1.27 | 4 |
+| real corpus, at phi_hat | **1097.4** | 2.81 | 30 |
+
+Eight times the residual sum of squares the rows can carry, and 30 rows past
+3 sd. The consensus arm is the contrast that makes it readable: there the
+posterior sits 6.5 sd from phi* in `mu_c` and still fits at 219.9, so a wrong
+phi with nearly the right predictions costs 1.6x. The corpus costs 8x, and no
+phi reaches it.
+
+The misfit is structured. By statistic, `mean` runs +1.56 and `se` -1.84, so
+the model puts the location low and the dispersion high at once. The rows:
+
+| z | row | n |
+| --- | --- | --- |
+| +9.21 | `cd8_density_baseline_jansen2021_dog1neg/mean` | 368 |
+| -9.16 | `cd8_density_baseline_jansen2021_dog1neg/se` | 368 |
+| -8.74 | `cd8_fc_nonLA_gvax_nivo_d21/quantile` | 10 |
+| -7.32 | `cd8_fc_nonLA_gvax_d21/quantile` | 6 |
+| -7.06 | `cd8_fc_nonLA_gvax_d21/quantile` | 6 |
+| -6.16 | `cd8_fc_nonLA_gvax_nivo_d21/quantile` | 10 |
+
+The first two are one target: the observed CD8 density is far above what the
+model can reach and far tighter than it can make, and no population satisfies
+both. Four of the next are CD8 fold change under GVAX and nivolumab, all
+negative, so the treatment response is over-predicted.
+
+This is upstream of everything else in this document. The chain that will not
+agree, the flat direction, the metric and the sampler comparisons are all
+downstream of a mean map that cannot reach the data, and the aliasing is the
+smaller effect by a factor of five.
+
 ## Support audits
 
 `auxiliary_config` declares the total:free ratio `>= 1`, so `log R >= 0`, and
