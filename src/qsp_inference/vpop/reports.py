@@ -50,7 +50,7 @@ __all__ = [
     # whether the width evidence is reachable
     "width_gate", "dbar_absorption",
     # the two spaces, and the objective on the second of them
-    "constrain", "unconstrain", "potential_fn",
+    "constrain", "unconstrain", "potential_fn", "constrain_fn",
     # recovery against a known phi*
     "map_estimate", "RecoveryRow", "summarise_recovery", "print_recovery",
 ]
@@ -759,6 +759,15 @@ def constrain(model: Callable, model_args: Sequence[Any],
 def potential_fn(model: Callable, model_args: Sequence[Any], *, seed: int = 0):
     """``-log p`` as a function of the unconstrained coordinates."""
     return _model_info(model, model_args, seed).potential_fn
+
+
+def constrain_fn(model: Callable, model_args: Sequence[Any], *, seed: int = 0):
+    """:func:`constrain` as a reusable function, for callers in a loop.
+
+    ``constrain`` traces the model on every call, which is the wrong shape for
+    a per-draw transform.
+    """
+    return _model_info(model, model_args, seed).postprocess_fn
 
 
 # ------------------------------------------------ recovery against a known phi*
