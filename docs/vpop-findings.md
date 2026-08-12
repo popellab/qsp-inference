@@ -438,35 +438,49 @@ construction, so the synthetic arms are a null that was generated rather than
 assumed. `sum z^2` at phi* comes out 125.5 at both n_cloud 24 and 250, which it
 must, since at the truth the residual is the noise draw itself.
 
+Every number below is the n_cloud 250 pass. The smoke pass at n_cloud 24 prints
+the same table with different numbers, and reading it as the result is an easy
+mistake to make once.
+
 | fit | `sum z^2`, 138 rows | sd | \|z\|>3, expect 0.4 |
 | --- | --- | --- | --- |
 | synthetic, prior phi*, at phi_hat | 127.8 | 0.97 | 0 |
 | synthetic, consensus phi*, at phi* | 125.5 | 0.95 | 0 |
 | synthetic, consensus phi*, at phi_hat | 219.9 | 1.27 | 4 |
-| real corpus, at phi_hat | **1097.4** | 2.81 | 30 |
+| real corpus, at phi_hat | **753.2** | 2.28 | 19 |
 
-Eight times the residual sum of squares the rows can carry, and 30 rows past
-3 sd. The consensus arm is the contrast that makes it readable: there the
-posterior sits 6.5 sd from phi* in `mu_c` and still fits at 219.9, so a wrong
-phi with nearly the right predictions costs 1.6x. The corpus costs 8x, and no
-phi reaches it.
+Five and a half times the residual sum of squares the rows can carry, and 19
+rows past 3 sd where 0.4 are expected. The consensus arm is the contrast that
+makes it readable: there the posterior sits 6.5 sd from phi* in `mu_c` and
+still fits at 219.9, so a wrong phi with nearly the right predictions costs
+1.6x. The corpus costs 5.5x and no phi reaches it.
 
-The misfit is structured. By statistic, `mean` runs +1.56 and `se` -1.84, so
-the model puts the location low and the dispersion high at once. The rows:
+The misfit is concentrated and it groups by kind, not by assay:
 
-| z | row | n |
-| --- | --- | --- |
-| +9.21 | `cd8_density_baseline_jansen2021_dog1neg/mean` | 368 |
-| -9.16 | `cd8_density_baseline_jansen2021_dog1neg/se` | 368 |
-| -8.74 | `cd8_fc_nonLA_gvax_nivo_d21/quantile` | 10 |
-| -7.32 | `cd8_fc_nonLA_gvax_d21/quantile` | 6 |
-| -7.06 | `cd8_fc_nonLA_gvax_d21/quantile` | 6 |
-| -6.16 | `cd8_fc_nonLA_gvax_nivo_d21/quantile` | 10 |
+| by eq:disc design | n | mean z | mean z^2 | \|z\|>2 |
+| --- | --- | --- | --- | --- |
+| `intercept+kind:foldchange` | 12 | -3.40 | 23.5 | 10 |
+| `intercept+kind:fraction+assay:ihc` | 3 | -1.30 | 22.8 | 2 |
+| `intercept+assay:digital_histopathology` | 4 | -1.84 | 6.6 | 2 |
+| `intercept+kind:fraction` | 55 | -0.14 | 3.7 | 15 |
 
-The first two are one target: the observed CD8 density is far above what the
-model can reach and far tighter than it can make, and no population satisfies
-both. Four of the next are CD8 fold change under GVAX and nivolumab, all
-negative, so the treatment response is over-predicted.
+| by target | n | mean z | mean z^2 |
+| --- | --- | --- | --- |
+| `treg_fraction_baseline_PDAC_deriv001` | 1 | -7.61 | 57.9 |
+| `cd8gzmb_fc_nonLA_gvax_d21` | 3 | -4.37 | 36.5 |
+| `cd8gzmb_fc_nonLA_gvax_nivo_d21` | 3 | -1.97 | 24.3 |
+| `cd8_fc_nonLA_gvax_d21` | 3 | -3.89 | 19.1 |
+| `cd8_fc_nonLA_gvax_nivo_d21` | 3 | -3.39 | 14.3 |
+| `cd8cd137_pct_inTLA_gvax_d21` | 3 | +3.13 | 13.6 |
+| `cd8gzmb_pct_baseline_li2022` | 3 | -2.58 | 10.4 |
+| `cd8_density_baseline_jansen2021_dog1neg` | 2 | -2.15 | 9.9 |
+| the other 46 | 117 | -0.19 | 2.7 |
+
+Eight targets carry it and forty-six sit near the null. The fold changes are
+all negative, total CD8 and GzmB+ CD8 alike, so the treatment expansion is
+over-predicted across separate studies rather than in one of them. By cohort
+the three `li2022` arms move together, 59 rows at mean z^2 5.9 to 8.9. By scale
+it is flat, asinh 6.6, log 5.2, logit 4.5, so it is not a transform artifact.
 
 This is upstream of everything else in this document. The chain that will not
 agree, the flat direction, the metric and the sampler comparisons are all
