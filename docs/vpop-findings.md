@@ -203,6 +203,75 @@ Direction 1 of `S`, sigma 36.4 against 24.6 for the next, is
 `k_CD8_T_pro -0.80`. The corpus's loudest statement is about the compartment it
 fits worst.
 
+## A subspace fit, and what the k sweep says
+
+`mu_basis` restricts `mu_raw` to an orthonormal span, so `L_sigma_1` is applied
+after and the stage-1 correlation is kept. That is what `--fix-mu` cannot do:
+holding a coordinate equals conditioning only where `Sigma_1`'s row is diagonal,
+and the copula's 66-name list understates the correlated set, so a pin list built
+from it still hits the guard.
+
+Truncation is paid for twice, in `V` and in the reported centre. `truncation_V`
+adds `A (I - B B') A'`, which at k=16 is 4.6% of the sensitivity spectrum and
+41% of a median row's sd, because 255 discarded directions are individually
+negligible and add. `centres_with_complement` puts the same variance back into
+`mu` for reporting, since moving it into `V` stops the rows pulling and never
+gives the centre its own uncertainty.
+
+The basis is built in the whitened metric `L_V^-1 A`, not `A / row_sd`. Only
+there are the retained and dropped directions `V^-1`-orthogonal, which is what
+makes the truncation unbiased at first order rather than merely tidy. See
+`docs/subspace-notes.tex`.
+
+The sweep does not support a choice of k:
+
+| k | `mu_c` pass 1.01/1.05/1.10/1.30 | n_eff med | row sd inflation |
+| --- | --- | --- | --- |
+| 12 | 0 / 1 / 1 / 2 | 2 | x1.671 |
+| 16 | 0 / 1 / 1 / 2 | 2 | x1.410 |
+| 20 | 6 / 15 / 20 / 20 | 204 | x1.279 |
+| 24 | 0 / 0 / 0 / 1 | 2 | x1.217 |
+| 28 | 0 / 0 / 0 / 2 | 2 | x1.157 |
+
+k=20 is an isolated spike, not the start of a stable region. The inflation curve
+is monotone and the convergence column is not, so the spectrum does not choose k.
+
+## The posterior is multimodal, and that reframes the rest
+
+At every failing k the sampled sites fail together, `mu_c` with `a`, `b_free`,
+`log_R`, `u_free` and `omega`. `log_R` is one scalar and reached R-hat 5.07: a
+scalar has no geometry, conditioning or rank problem, so four chains disagreeing
+about it are in different places. Its per-chain draw ranges are disjoint at k=16
+and k=24.
+
+Multi-start MAP, 24 dispersed starts on the fitted model, returns **22 distinct
+optima**, from -log p 389.43 to 1914.68 with fourteen of them inside 389 to 490.
+Two competing explanations would give two tight clusters; a near-continuum of
+local dents is a rough surface. The pinned model is worse, 12 of 12 distinct and
+spread over 741 to 907, which is the mechanism behind eq:disc being load-bearing
+for the sampler: it offers a smooth direction to relieve tension that otherwise
+has to be found by pushing `mu` through the surrogate.
+
+R-hat has therefore been reporting mode disagreement, not sampling error, and
+every convergence comparison here is weaker than its table suggests. Results
+computed at a point are unaffected.
+
+## Support audits
+
+`auxiliary_config` declares the total:free ratio `>= 1`, so `log R >= 0`, and
+nothing enforced it: eq:auxprior's `N(ln 10, 1.2)` puts 2.75% of its mass below
+zero and chains reached -2.687, a free interstitial pool larger than the total
+tissue containing it. Now truncated, through the bijector rather than a wall.
+
+Three parameters are bounded on (0, 1) and carry a log margin.
+`omega_priors.csv` argues that below a median of about 0.1 the two margins agree,
+which holds for `f_apCAF_of_total` at 0.08. `f_iCAF_of_non_apCAF` at 0.20 and
+`f_nTreg` at 0.25 are above that threshold, and by the file's own table the log
+margin asserts CV 0.361 where logit gives 0.257. `f_iCAF_of_non_apCAF` is the
+2nd most influential parameter of 271 and the worst-converging `mu` coordinate.
+Unchanged: it contradicts a documented decision and moves the `omega_0` hash the
+pool is keyed on.
+
 ## Open
 
 Sixteen `mu` coordinates past R-hat 1.3 at `fixs_08e/c1`, twenty-one at
