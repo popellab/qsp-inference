@@ -423,3 +423,82 @@ class TestHeldCentres:
         assert "mu_free" in init[0].z
         assert "mu_raw" not in init[0].z
         assert np.asarray(init[0].z["mu_free"]).shape == (P - 1,)
+
+
+class TestTheRestrictedModelIsTheFullModelOnItsSpan:
+    """Compose the basis with the model, rather than checking each in isolation.
+
+    Every other mu_basis test is a property of one piece: that B is orthonormal,
+    that the centre lands in the span, that truncation_V is the projected
+    quadratic form. All of them can hold while the composition is wrong, which
+    is how a subspace fit could report a posterior that belongs to a different
+    model. The claim here is the one that ties them together: restricting the
+    centre to a span must not change the posterior anywhere on that span.
+    """
+
+    def _sites(self, prior, k, seed=0):
+        rng = np.random.default_rng(seed)
+        return {"s": jnp.asarray(rng.standard_normal()),
+                "u_raw": jnp.asarray(rng.standard_normal(3)),
+                "a": jnp.asarray(rng.standard_normal(prior.dim_a)),
+                "b": jnp.asarray(rng.standard_normal(prior.dim_b))}
+
+    def _basis(self, P, k, seed=1):
+        Q, _ = np.linalg.qr(np.random.default_rng(seed).standard_normal((P, P)))
+        return Q[:, :k]
+
+    @pytest.mark.parametrize("k", [1, 2, 3])
+    def test_the_potential_agrees_with_the_full_model_on_the_span(
+            self, prior, problem, V_chol, observed, k):
+        from qsp_inference.vpop.reports import potential_fn
+
+        B = self._basis(3, k)
+        sub = dataclasses.replace(prior, mu_basis=B)
+        args_f = (prior, problem, V_chol, observed)
+        args_s = (sub, problem, V_chol, observed)
+        pot_f = potential_fn(population_model, args_f)
+        pot_s = potential_fn(population_model, args_s)
+
+        rng = np.random.default_rng(7)
+        for _ in range(5):
+            c = rng.standard_normal(k)
+            rest = self._sites(prior, k, seed=int(rng.integers(1 << 30)))
+            here = float(pot_s({**rest, "mu_c": jnp.asarray(c)}))
+            there = float(pot_f({**rest, "mu_raw": jnp.asarray(B @ c)}))
+            # B is orthonormal, so |B c| = |c| and the quadratic part matches.
+            # What is left is the normaliser of the 3 - k standard normal
+            # dimensions the restricted model no longer has, which is a constant
+            # in every site and cannot tilt a posterior. Asserted at its
+            # predicted value rather than subtracted, so a real discrepancy
+            # cannot hide inside it.
+            gap = 0.5 * (3 - k) * np.log(2 * np.pi)
+            assert there - here == pytest.approx(gap, rel=1e-9, abs=1e-9)
+
+    def test_a_full_rank_rotation_is_only_a_change_of_coordinates(
+            self, prior, problem, V_chol, observed):
+        from qsp_inference.vpop.reports import potential_fn
+
+        B = self._basis(3, 3, seed=4)
+        sub = dataclasses.replace(prior, mu_basis=B)
+        pot_f = potential_fn(population_model, (prior, problem, V_chol, observed))
+        pot_s = potential_fn(population_model, (sub, problem, V_chol, observed))
+        rng = np.random.default_rng(11)
+        x = rng.standard_normal(3)
+        rest = self._sites(prior, 3, seed=5)
+        assert float(pot_s({**rest, "mu_c": jnp.asarray(B.T @ x)})) == \
+            pytest.approx(float(pot_f({**rest, "mu_raw": jnp.asarray(x)})),
+                          rel=1e-9, abs=1e-9)
+
+    @pytest.mark.parametrize("k", [1, 2])
+    def test_the_metric_sees_the_basis(self, prior, problem, V_chol, k):
+        # The mass matrix is built from these blocks, so if the basis reaches the
+        # model but not the metric the sampler gets a metric for another model.
+        from qsp_inference.vpop.reports import laplace_blocks
+
+        B = self._basis(3, k)
+        sub = dataclasses.replace(prior, mu_basis=B)
+        nf, _, _, bf, _ = laplace_blocks(prior, problem, V_chol)
+        ns, _, _, bs, _ = laplace_blocks(sub, problem, V_chol)
+        A = np.asarray(bf[nf.index("mu_raw")])
+        Ab = np.asarray(bs[ns.index("mu_c")])
+        assert Ab == pytest.approx(A @ B, rel=1e-7, abs=1e-9)
