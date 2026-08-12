@@ -275,8 +275,35 @@ n_cloud 24 to 1 at 250: cloud size does induce corrugation, and nothing here
 shows 250 is enough.
 
 Truncating `log_R` also made `R` = `exp(exp(u))` in the coordinate NUTS moves in,
-where before it was `exp(u)`. No fit has run since, so no convergence result is
-affected, and the bound wants a parameterisation that is not `exp`.
+where before it was `exp(u)`. No fit ran under it. The bound now reaches its
+floor by softplus, which is the identity to 5e-5 by `u` = 10.
+
+Re-run on the repaired probes, the answer is that it is one optimum. Twelve
+prior draws, 6000 Adam steps with a decaying step, give a spread of 43.7 against
+162.3 for the same starts at 800 steps and 1525.2 for the broken run. Separated
+optima would plateau at the gap between them however hard the optimiser works;
+a spread that falls every time the budget rises is one basin approached from
+twelve directions, and the best `-log p` is still improving at 6000 steps
+(378.99 against 395.54). The three points with the smallest gradients rank in
+gradient order, `|grad|` 2.66, 6.77 and 9.55 giving 378.99, 392.69 and 403.04:
+deeper is more converged, which is what one basin looks like and three do not.
+`log_R` sits within 1.5 prior sd of `ln 10` at every start.
+
+Nothing here reaches `|grad| < 1`, so this rules multimodality out rather than
+proving unimodality. What it leaves is a single optimum that is expensive to
+reach, and that agrees with what the sampler reports independently: zero
+divergences, 127 leapfrog steps per draw with the depth cap unsaturated, and
+n_eff 2 from 300 draws, which is an autocorrelation time near 150. Clean
+integration and unforced trajectory length alongside that autocorrelation is a
+long thin ridge, where NUTS turns at the ridge's width and random-walks its
+length.
+
+Every fit in this document used `--warmup 300 --samples 300 --max-tree-depth 8
+--mass laplace --mass-at prior --adapt-mass off --init median`, so the
+comparisons between them are sound and all of them share those settings. The
+metric was therefore frozen at a Gauss-Newton linearised at the prior centre
+and never re-estimated, and `--mass-at map` linearised 800 Adam steps from the
+prior mode, which is not a converged point on this objective.
 
 ## Support audits
 
