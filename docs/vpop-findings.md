@@ -305,7 +305,7 @@ metric was therefore frozen at a Gauss-Newton linearised at the prior centre
 and never re-estimated, and `--mass-at map` linearised 800 Adam steps from the
 prior mode, which is not a converged point on this objective.
 
-## The chains are confined, not slow
+## One chain in 1e-27 of the mass held every diagnostic down
 
 Three arms at k=16, everything but the metric held to the sweep's settings.
 `prior/off` reproduces the sweep column for column, so the `log_R` bound and the
@@ -323,32 +323,36 @@ numpyro's adaptation is unusable at this size: given a 500-draw window against
 cost `omega` an order of magnitude of n_eff and pinned every chain at the depth
 cap.
 
-**n_eff cannot answer the second question.** Its estimator floors near half the
+**Every other number in that table is one chain.** Leave-one-out over all four,
+which is what separates an outlier from picking the inconvenient chain:
+
+| chains | `mu_c` R-hat med | max | n_eff | `mu` under 1.10 | `omega` n_eff |
+| --- | --- | --- | --- | --- | --- |
+| all 4 | 2.13 | 4.72 | 3 | 23 / 271 | 11768 |
+| drop 0 | 2.37 | 5.29 | 2 | 22 / 271 | 7761 |
+| drop 1 | 2.38 | 5.35 | 2 | 23 / 271 | 8077 |
+| drop 2 | 2.35 | 5.20 | 2 | 23 / 271 | 7400 |
+| drop 3 | 1.02 | 1.05 | 314 | 271 / 271 | 13972 |
+
+Dropping a good chain makes the numbers worse. Dropping chain 3 converges the
+fit. `-log p` at the four chain means is 346.65, 360.09, 350.42 and **408.69**:
+chain 3 sits 62 nats down, a relative posterior weight near 1e-27. Along the
+straight line to it the profile rises 299 nats with one interior maximum, while
+the lines between the other three fall monotonically over distances of 0.35 to
+0.57 with no interior maximum at either grid spacing. The barrier is
+path-dependent and proves nothing on its own; the 62 nats do not depend on the
+path. All four started from the same point under `--init median`, so chain 3 was
+thrown there during warmup rather than having walked.
+
+Two estimator notes, both of which cost time here. n_eff floors near half the
 chain count whenever between-chain variance dominates within, and it floors
 there for a confined chain and a slowly diffusing one alike; on synthetic
-diffusing chains it *falls* with more draws, 10.5 to 6.1 to 2.6 across 100x.
-The `mu_c` column above is at that floor and is a restatement of R-hat, not an
-independent measurement.
-
-Within-chain spread against a prefix of the same chains does answer it.
-Diffusion grows it as sqrt(N); confinement leaves it flat.
-
-| prefix | `mu_c` within sd | between sd | B/W | R-hat | n_eff |
-| --- | --- | --- | --- | --- | --- |
-| 100 | 0.278 | 0.399 | 2.05 | 2.15 | 2.6 |
-| 300 | 0.282 | 0.399 | 1.97 | 2.09 | 2.6 |
-| 1000 | 0.312 | 0.397 | 2.03 | 2.12 | 2.5 |
-| 3000 | 0.327 | 0.400 | 2.02 | 2.13 | 2.5 |
-
-Thirty times the draws grows the within-chain spread 1.16x where diffusion
-predicts 5.5x, and the between-chain sd does not move at the fourth decimal.
-The chains are confined. `omega` over the same prefixes is stationary at 0.110
-with B/W 0.08 and R-hat 1.00, which is what the contrast should look like.
-
-The two spreads are the same order, 0.33 within against 0.40 between, so this is
-not four chains in four distant modes. Each chain covers about two thirds of a
-target roughly 0.52 wide and cannot reach the rest, which is consistent with the
-single optimum every multistart finds. More draws will not fix it.
+diffusing chains it *falls* with more draws, 10.5 to 6.1 to 2.6 across 100x. It
+is a restatement of R-hat in that regime, not an independent measurement. And a
+pooled posterior covariance over chains that disagree measures the disagreement:
+`mu_c` pools to a widest direction of 3.33 prior sd, which splits into 0.19
+within and 14.53 between, and within a chain all 16 directions come in under 0.9.
+Decompose by chain before reading any pooled statistic.
 
 ## Support audits
 
