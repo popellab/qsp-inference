@@ -503,7 +503,39 @@ margin asserts CV 0.361 where logit gives 0.257. `f_iCAF_of_non_apCAF` is the
 Unchanged: it contradicts a documented decision and moves the `omega_0` hash the
 pool is keyed on.
 
+## WALNUTS does not help, and the test is confounded
+
+`workflows/campaign/alt_sampler.py` runs the same posterior under walnutpie,
+whose claim is within-orbit step refinement where a global step size cannot
+serve both a tight and a wide region. On the k=16 corpus fit, 4 chains, 1000
+draws, no early termination and its own controller stuck at R-hat 4.22:
+
+| chains | `mu_c` pass 1.01/1.05/1.10/1.30 | R-hat med | max |
+| --- | --- | --- | --- |
+| all 4 | 0 0 0 0 | 3.24 | 7.73 |
+| drop 0 | 0 2 5 6 | 1.60 | 4.68 |
+| drop 1 | 0 0 0 1 | 3.44 | 8.59 |
+| drop 2 | 0 0 0 0 | 3.39 | 7.78 |
+| drop 3 | 0 0 0 0 | 3.37 | 7.78 |
+
+Worse than numpyro, and not through one chain: dropping the worst leaves 1.60
+where numpyro's leaves 1.02. But walnutpie's metric is diagonal only and the
+numpyro arms carry a dense Gauss-Newton, so this compares a diagonal metric with
+within-orbit refinement against a dense metric with a global step. The posterior
+runs 0.081 to 0.637 in prior-standardised units with real off-diagonal
+structure, which a diagonal metric cannot represent. walnutpie has no dense
+option, so the two cannot be separated, and the comparison should not be read as
+a verdict on within-orbit adaptation.
+
+It is also moot. The mean map misses the corpus by 5.5x in `sum z^2`, so how
+well a sampler explores that posterior is a second-order question.
+
 ## Open
+
+Whether dropping the fold changes converges the fit. `--drop-target` takes a
+glob over `target_id` and is keyed into the build cache. Three arms at four
+chains: `*_fc_*`, `treg_fraction_baseline*`, and both. It separates whether the
+response dynamics strain the geometry as well as the fit.
 
 Whether the real corpus's chains agree. Chain 3 of the 3000-draw fit is not
 droppable and is not explained: inside the support on every coordinate, off by
