@@ -443,10 +443,29 @@ pool is keyed on.
 
 ## Open
 
+Whether the real corpus's chains agree. Chain 3 of the 3000-draw fit is not
+droppable and is not explained: inside the support on every coordinate, off by
+1 to 2 prior sd across twenty-odd parameters at once, and reached for 62 nats
+where the prior alone charges 45. The synthetic arms bound the answer. At a
+prior phi* the same code converges everywhere with no divergences, so the model
+and prior are not the cause. At the mean of the agreeing chains it diverges. An
+arm at a single posterior draw separates the geometry from the fact that a mean
+is not a draw.
+
+Whether `k_CD8_exh_death` at 17.5x its prior population width is a claim about
+PDAC or a place the fit puts misfit it cannot put elsewhere. It is the one
+`omega` coordinate the corpus determines sharply and far from its prior, so it
+carries weight in the application paper either way.
+
+The failure rate of a chain. One in four in the 3000-draw fit; an eight-chain
+run at the same settings is what measures it.
+
 Sixteen `mu` coordinates past R-hat 1.3 at `fixs_08e/c1`, twenty-one at
 `logit_08e/c1`. Four explanations have been tested: inert parameters do not
 exist, the fraction channel helps `omega` and hurts `mu`, removing eq:disc is
-worse, and `s` is inert either way. Rank deficiency is the one that survives.
+worse, and `s` is inert either way. Rank deficiency survived those, and the
+synthetic prior arm now argues against it: 16 of 16 `mu_c` directions are
+identified there, on the same 138 rows.
 
 `initial_tumour_diameter` is varied and conditioned on, not varied and inferred,
 and is declared with the inferred parameters. Held out of the basis it costs
