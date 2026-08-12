@@ -738,6 +738,7 @@ def potential_fn(model: Callable, model_args: Sequence[Any], *, seed: int = 0):
 
 def map_estimate(model: Callable, model_args: Sequence[Any], *,
                  steps: int = 600, lr: float = 5e-2,
+                 lr_final: Optional[float] = None,
                  init: Optional[Mapping[str, jnp.ndarray]] = None,
                  template: Optional[Mapping[str, jnp.ndarray]] = None,
                  unconstrained: bool = False,
@@ -754,6 +755,12 @@ def map_estimate(model: Callable, model_args: Sequence[Any], *,
     ``unconstrained=True`` to get the latents in the space ``potential_fn`` and
     the mass matrix use instead, which is what a caller evaluating the potential
     at a point of its own needs.
+
+    ``lr_final`` cosine-decays the step to that value. Adam moves each
+    coordinate by about ``lr`` whatever the gradient is, so at a fixed step the
+    iterate orbits an optimum at that scale and the gradient norm plateaus
+    rather than falling. A caller that needs to tell "arrived" from "still
+    moving" has to decay.
     """
     from jax.flatten_util import ravel_pytree
     from numpyro.infer.util import initialize_model, unconstrain_fn
@@ -782,11 +789,17 @@ def map_estimate(model: Callable, model_args: Sequence[Any], *,
     step = jax.jit(jax.value_and_grad(lambda w: neg_lp(unravel(w))))
     m = s = jnp.zeros_like(v)
     b1, b2, eps = 0.9, 0.999, 1e-8
+    if lr_final is None:
+        schedule = np.full(steps, lr, dtype=float)
+    else:
+        k = np.arange(steps) / max(steps - 1, 1)
+        schedule = lr_final + 0.5 * (lr - lr_final) * (1 + np.cos(np.pi * k))
     for t in range(1, steps + 1):
         _, g = step(v)
         m = b1 * m + (1 - b1) * g
         s = b2 * s + (1 - b2) * g ** 2
-        v = v - lr * (m / (1 - b1 ** t)) / (jnp.sqrt(s / (1 - b2 ** t)) + eps)
+        v = v - schedule[t - 1] * (m / (1 - b1 ** t)) \
+            / (jnp.sqrt(s / (1 - b2 ** t)) + eps)
     # After the loop, not from inside it: the value from the last iteration
     # belongs to the point before that iteration's update, and a caller ranking
     # unconverged runs against each other would be ranking mismatched pairs.
