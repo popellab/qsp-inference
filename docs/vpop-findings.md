@@ -305,6 +305,35 @@ metric was therefore frozen at a Gauss-Newton linearised at the prior centre
 and never re-estimated, and `--mass-at map` linearised 800 Adam steps from the
 prior mode, which is not a converged point on this objective.
 
+## The chains are confined, not slow
+
+Three arms at k=16, everything but the metric held to the sweep's settings.
+`prior/off` reproduces the sweep column for column, so the `log_R` bound and the
+softplus are inert and the comparison is clean.
+
+| arm | `mu_c` n_eff | `omega` n_eff | leapfrog/draw | wall |
+| --- | --- | --- | --- | --- |
+| `prior/off` | 2 | 1120 | 127 | 1298s |
+| `map/off` | 4 | 1361 | 63 | 514s |
+| `map/on` | 4 | 178 | 255, 100% at the cap | ~3900s |
+| `map/off`, 3000 draws | 3 | 11768 | 63 | ~3800s |
+
+Two things follow. numpyro's adaptation is unusable at this size: given a
+500-draw window against 304 coordinates it returned a metric worse than the
+Gauss-Newton it replaced, cost `omega` an order of magnitude of n_eff and pinned
+every chain at the depth cap. And ten times the draws buys `mu_c` nothing, 4 to
+3, while `omega` scales linearly, 1361 to 11768. A chain diffusing along a ridge
+would show n_eff growing; flat n_eff at about the chain count is confinement.
+
+That is not a contradiction with one optimum, it is an entropic barrier. An
+optimiser walks downhill and every start reaches the same bottom; a sampler has
+to pass through the neck's volume and does not. It also carries the rest of the
+pattern: no divergences, because the chains never probe the tight region; step
+sizes differing 3.5x between regions; and one seed of four running at 103
+leapfrog steps with 10% cap saturation where its siblings sit at 63 and 0%.
+
+More draws will not fix this, and neither will a better linear metric.
+
 ## Support audits
 
 `auxiliary_config` declares the total:free ratio `>= 1`, so `log R >= 0`, and
