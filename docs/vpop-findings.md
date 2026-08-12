@@ -139,6 +139,11 @@ the least: `f_iCAF_of_non_apCAF` ranks 2 of 271, `k_myCAF_to_iCAF` 6,
 `f_stroma_max` 9. High leverage and rank deficiency are compatible when the
 leverage is degenerate, and the rank deficiency is the aliasing.
 
+That last sentence is a reading of the spectrum, not a measurement, and the
+synthetic prior arm is against it: on the same 138 rows, all 16 `mu_c`
+directions are identified and cover phi* at 88%. The spectrum's collapse is
+measured; what it implies about the fit is not.
+
 Column-pivoted QR selects 30 parameters spanning 96.8% of `||S||_F^2`, 20 for
 91.7%. Holding those coordinates is refused wherever `Sigma_1` correlates them,
 which is most of them, so the coordinate reading is a record rather than a
