@@ -49,6 +49,8 @@ __all__ = [
     "pivot_offsets",
     # whether the width evidence is reachable
     "width_gate", "dbar_absorption",
+    # the two spaces, and the objective on the second of them
+    "constrain", "unconstrain", "potential_fn",
     # recovery against a known phi*
     "map_estimate", "RecoveryRow", "summarise_recovery", "print_recovery",
 ]
@@ -690,12 +692,55 @@ def dbar_absorption(E_means: Sequence, V_chol, problem) -> tuple[float, List[str
                      "the data constrain.")
     return captured, lines
 
+# ------------------------------------------------------------------ the spaces
+
+# A site's value and the coordinate numpyro moves it in are the same number for
+# every normal site, and a different number for any bounded one. Nothing in a
+# traceback says which one a dict holds, so the conversions live here, named,
+# and callers are expected to use them rather than reach for postprocess_fn and
+# unconstrain_fn themselves. laplace_inverse_mass refuses the mixed case for the
+# same reason.
+
+def _model_info(model: Callable, model_args: Sequence[Any], seed: int = 0):
+    from numpyro.infer.util import initialize_model
+    return initialize_model(jax.random.PRNGKey(seed), model,
+                            model_args=tuple(model_args))
+
+
+def unconstrain(model: Callable, model_args: Sequence[Any],
+                params: Mapping[str, jnp.ndarray], *,
+                seed: int = 0) -> Dict[str, jnp.ndarray]:
+    """Site values to the coordinates ``potential_fn`` reads."""
+    from numpyro.infer.util import unconstrain_fn
+    info = _model_info(model, model_args, seed)
+    return unconstrain_fn(model, tuple(model_args), {},
+                          {k: jnp.asarray(params[k]) for k in info.param_info.z})
+
+
+def constrain(model: Callable, model_args: Sequence[Any],
+              z: Mapping[str, jnp.ndarray], *,
+              seed: int = 0) -> Dict[str, jnp.ndarray]:
+    """Coordinates back to site values, deterministics included.
+
+    ``z`` is filtered to the latent sites, so passing a dict that already
+    carries deterministics is not an error.
+    """
+    info = _model_info(model, model_args, seed)
+    return info.postprocess_fn({k: jnp.asarray(z[k]) for k in info.param_info.z})
+
+
+def potential_fn(model: Callable, model_args: Sequence[Any], *, seed: int = 0):
+    """``-log p`` as a function of the unconstrained coordinates."""
+    return _model_info(model, model_args, seed).potential_fn
+
+
 # ------------------------------------------------ recovery against a known phi*
 
 def map_estimate(model: Callable, model_args: Sequence[Any], *,
                  steps: int = 600, lr: float = 5e-2,
                  init: Optional[Mapping[str, jnp.ndarray]] = None,
                  template: Optional[Mapping[str, jnp.ndarray]] = None,
+                 unconstrained: bool = False,
                  seed: int = 0) -> Tuple[Dict[str, jnp.ndarray], float]:
     """``argmax p(phi | T)`` by Adam on the unconstrained parameters.
 
@@ -703,9 +748,15 @@ def map_estimate(model: Callable, model_args: Sequence[Any], *,
     curvature step along them is fit to rounding. ``template`` fixes the
     parameter shapes, and defaults to a prior draw. Starts at the prior mode,
     so recovery is not seeded with the answer.
+
+    ``init`` is read, and the parameters are returned, in the **constrained**
+    space that :func:`~qsp_inference.vpop.fit.site_spec` states. Pass
+    ``unconstrained=True`` to get the latents in the space ``potential_fn`` and
+    the mass matrix use instead, which is what a caller evaluating the potential
+    at a point of its own needs.
     """
     from jax.flatten_util import ravel_pytree
-    from numpyro.infer.util import initialize_model
+    from numpyro.infer.util import initialize_model, unconstrain_fn
 
     # initialize_model, not a prior draw: it gives the latent sites alone, and a
     # potential in the unconstrained space with the transform Jacobians in it.
@@ -717,19 +768,32 @@ def map_estimate(model: Callable, model_args: Sequence[Any], *,
     flat, unravel = ravel_pytree(template)
 
     neg_lp = info.potential_fn
-    v = jnp.zeros(flat.size) if init is None \
-        else ravel_pytree({k: jnp.asarray(init[k]) for k in template})[0]
+    if init is None:
+        v = jnp.zeros(flat.size)
+    else:
+        # site_spec, and so every caller's init, states a site by its value, not
+        # by its unconstrained coordinate. The two agree for every normal site
+        # and disagree for any bounded one, silently, so the transform is taken
+        # here rather than trusted to the caller.
+        z0 = unconstrain_fn(model, tuple(model_args), {},
+                            {k: jnp.asarray(init[k]) for k in template})
+        v = ravel_pytree({k: z0[k] for k in template})[0]
 
     step = jax.jit(jax.value_and_grad(lambda w: neg_lp(unravel(w))))
     m = s = jnp.zeros_like(v)
     b1, b2, eps = 0.9, 0.999, 1e-8
-    f = jnp.inf
     for t in range(1, steps + 1):
-        f, g = step(v)
+        _, g = step(v)
         m = b1 * m + (1 - b1) * g
         s = b2 * s + (1 - b2) * g ** 2
         v = v - lr * (m / (1 - b1 ** t)) / (jnp.sqrt(s / (1 - b2 ** t)) + eps)
+    # After the loop, not from inside it: the value from the last iteration
+    # belongs to the point before that iteration's update, and a caller ranking
+    # unconverged runs against each other would be ranking mismatched pairs.
+    f = neg_lp(unravel(v))
     # dynamic_args is off, so potential_fn and postprocess_fn close over the args.
+    if unconstrained:
+        return {k: jnp.asarray(x) for k, x in unravel(v).items()}, float(f)
     return info.postprocess_fn(unravel(v)), float(f)
 
 

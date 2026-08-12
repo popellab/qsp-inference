@@ -141,3 +141,94 @@ class TestAuxiliarySupport:
         p = self._p(jnp.asarray([3.0]))
         start = dict((n, v) for n, v, _ in site_spec(p))["log_R"]
         assert float(np.asarray(start)[0]) >= 3.0
+
+    def test_the_bound_is_reached_by_softplus_not_exp(self):
+        import jax.numpy as jnp
+        import numpy as np
+        from numpyro.distributions.transforms import biject_to
+        from qsp_inference.vpop.fit import aux_distribution
+        # log_R is already a log, so an exp bijector would make R = exp(exp(u)).
+        # At u = 10 that is 2.2e4 rather than 10, which is the whole point.
+        t = biject_to(aux_distribution(self._p(jnp.zeros(1))).support)
+        for u in (10.0, 20.0):
+            assert float(np.asarray(t(jnp.asarray([u])))[0]) == \
+                pytest.approx(u, abs=1e-2)
+        assert float(np.asarray(t(jnp.asarray([5.0])))[0]) == \
+            pytest.approx(5.0, abs=1e-2)
+        assert float(np.asarray(t(jnp.asarray([-30.0])))[0]) >= 0.0
+
+    def test_softplus_leaves_the_density_alone(self):
+        import jax, jax.numpy as jnp
+        import numpy as np
+        import numpyro.distributions as dist
+        from qsp_inference.vpop.fit import aux_distribution
+        # Only the coordinate changes. The prior is the same distribution, so a
+        # fit is comparable across the change and eq:auxprior still reads true.
+        d = aux_distribution(self._p(jnp.zeros(1)))
+        ref = dist.TruncatedNormal(jnp.asarray([2.3026]), jnp.asarray([1.2]),
+                                   low=jnp.zeros(1)).to_event(1)
+        xs = jnp.asarray([[0.05], [1.0], [2.3026], [6.0]])
+        assert np.asarray(jax.vmap(d.log_prob)(xs)) == \
+            pytest.approx(np.asarray(jax.vmap(ref.log_prob)(xs)), rel=1e-6)
+
+
+class TestConstrainedAndUnconstrainedDoNotGetSwapped:
+    """A bounded site makes the two spaces differ, which no normal site does.
+
+    Every latent in the vpop model is normal, so the spaces coincide and code
+    that confuses them is correct by accident. These pin the contract against a
+    model that has one bounded site, which is the only way the class of bug is
+    visible at all.
+    """
+
+    def _model(self):
+        import jax.numpy as jnp
+        import numpyro
+        import numpyro.distributions as dist
+        from qsp_inference.vpop.fit import aux_distribution
+        p = TestAuxiliarySupport()._p(jnp.zeros(1))
+
+        def model():
+            numpyro.sample("log_R", aux_distribution(p))
+            numpyro.sample("z", dist.Normal(0.0, 1.0).expand([2]).to_event(1))
+        return model
+
+    def test_init_is_read_as_a_value_not_as_a_coordinate(self):
+        import jax.numpy as jnp
+        import numpy as np
+        import jax
+        from numpyro.infer.util import initialize_model
+        from qsp_inference.vpop.reports import map_estimate
+        model = self._model()
+        init = {"log_R": jnp.asarray([2.3026]), "z": jnp.zeros(2)}
+        # lr 0 freezes the point, so the objective returned is the potential at
+        # exactly the init. It must agree with the potential at the transformed
+        # init, not at the init read straight off as a coordinate.
+        _, f = map_estimate(model, (), steps=1, lr=0.0, init=init)
+        info = initialize_model(jax.random.PRNGKey(0), model, model_args=())
+        raw = float(info.potential_fn({k: jnp.asarray(v)
+                                       for k, v in init.items()}))
+        assert f != pytest.approx(raw, abs=1e-3)      # the bug this replaces
+        from numpyro.infer.util import unconstrain_fn
+        z = unconstrain_fn(model, (), {}, init)
+        assert f == pytest.approx(float(info.potential_fn(z)), abs=1e-3)
+
+    def test_unconstrained_output_round_trips_to_the_constrained_one(self):
+        import jax.numpy as jnp
+        import numpy as np
+        import jax
+        from numpyro.infer.util import initialize_model
+        from qsp_inference.vpop.reports import map_estimate
+        model = self._model()
+        con, f = map_estimate(model, (), steps=40, lr=0.05)
+        unc, g = map_estimate(model, (), steps=40, lr=0.05, unconstrained=True)
+        assert f == pytest.approx(g)
+        info = initialize_model(jax.random.PRNGKey(0), model, model_args=())
+        # the unconstrained return is what potential_fn accepts, and pushing it
+        # forward gives the constrained return
+        assert float(info.potential_fn(unc)) == pytest.approx(f, abs=1e-4)
+        fwd = info.postprocess_fn(unc)
+        assert np.asarray(fwd["log_R"]) == \
+            pytest.approx(np.asarray(con["log_R"]), rel=1e-5)
+        assert float(np.asarray(unc["log_R"])[0]) != \
+            pytest.approx(float(np.asarray(con["log_R"])[0]), abs=1e-3)

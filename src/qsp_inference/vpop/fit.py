@@ -314,6 +314,42 @@ class PopulationPrior:
             )
 
 
+#: Built on first use and cached: numpyro registers every Constraint and
+#: Distribution subclass as a pytree at class creation, so defining these per
+#: call would re-register them on every model build.
+_SOFTPLUS_TRUNCATED = None
+
+
+def _softplus_truncated():
+    """``LeftTruncatedDistribution`` whose support bijects by softplus."""
+    global _SOFTPLUS_TRUNCATED
+    if _SOFTPLUS_TRUNCATED is None:
+        from numpyro.distributions import constraints
+        from numpyro.distributions.truncated import LeftTruncatedDistribution
+        from numpyro.distributions.transforms import (
+            AffineTransform, ComposeTransform, SoftplusTransform, biject_to)
+
+        class SoftplusGreaterThan(constraints._GreaterThan):
+            """``x > low``, reached by softplus rather than exp."""
+
+        @biject_to.register(SoftplusGreaterThan)
+        def _(constraint):
+            return ComposeTransform([
+                SoftplusTransform(),
+                AffineTransform(constraint.lower_bound, 1.0)])
+
+        class SoftplusLeftTruncated(LeftTruncatedDistribution):
+            # Only the support is replaced. The density and the sampler are
+            # numpyro's, so the prior is the same distribution either way and
+            # the choice is purely about the coordinate NUTS moves in.
+            def __init__(self, base_dist, low=0.0, *, validate_args=None):
+                super().__init__(base_dist, low=low, validate_args=validate_args)
+                self._support = SoftplusGreaterThan(low)
+
+        _SOFTPLUS_TRUNCATED = SoftplusLeftTruncated
+    return _SOFTPLUS_TRUNCATED
+
+
 def aux_distribution(prior: PopulationPrior):
     """eq:auxprior, truncated where the operator's definition bounds it.
 
@@ -329,8 +365,13 @@ def aux_distribution(prior: PopulationPrior):
     scale = jnp.asarray(prior.sigma_R)
     if prior.log_R_low is None:
         return dist.Normal(loc, scale).to_event(1)
-    return dist.TruncatedNormal(loc, scale,
-                                low=jnp.asarray(prior.log_R_low)).to_event(1)
+    # Not numpyro's default bijector for a lower bound, which is exp. log_R is
+    # already a log, so exp would make R = exp(exp(u)) and put a total-to-free
+    # ratio of 1e9 within four unconstrained units of the prior mode. softplus
+    # is the identity to within 5e-5 by u = 10 and still cannot cross the bound.
+    return _softplus_truncated()(
+        dist.Normal(loc, scale),
+        low=jnp.asarray(prior.log_R_low)).to_event(1)
 
 
 def centres_with_complement(mu_c, prior: PopulationPrior, rng) -> np.ndarray:

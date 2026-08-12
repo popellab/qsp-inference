@@ -236,35 +236,47 @@ The sweep does not support a choice of k:
 k=20 is an isolated spike, not the start of a stable region. The inflation curve
 is monotone and the convergence column is not, so the spectrum does not choose k.
 
-## The posterior is multimodal, and that reframes the rest
+## Whether the posterior is multimodal is open. Two probes said so and both were wrong
 
-At every failing k the sampled sites fail together, `mu_c` with `a`, `b_free`,
-`log_R`, `u_free` and `omega`. `log_R` is one scalar and reached R-hat 5.07: a
-scalar has no geometry, conditioning or rank problem, so four chains disagreeing
-about it are in different places. Its per-chain draw ranges are disjoint at k=16
-and k=24.
+What stands is one sampler observation. At every failing k the sampled sites fail
+together, `mu_c` with `a`, `b_free`, `log_R`, `u_free` and `omega`, and `log_R` is
+one scalar that reached R-hat 5.07 with per-chain ranges disjoint at k=16 and
+k=24. A scalar has no geometry, conditioning or rank problem, so that is four
+chains sitting in different places. It admits more than one explanation.
 
-Multi-start MAP, 24 dispersed starts on the fitted model, returns **22 distinct
-optima**, from -log p 389.43 to 1914.68 with fourteen of them inside 389 to 490.
-Two competing explanations would give two tight clusters; a near-continuum of
-local dents is a rough surface. The pinned model is worse, 12 of 12 distinct and
-spread over 741 to 907, which is the mechanism behind eq:disc being load-bearing
-for the sampler: it offers a smooth direction to relieve tension that otherwise
-has to be found by pushing `mu` through the surrogate.
+The multi-start and path-profile probes that were read as settling it are
+retracted. `map_estimate` takes `init` in and returns parameters in the
+**constrained** space, and both probes treated them as unconstrained. Every
+latent site here is Normal, so the two spaces coincide and the confusion is
+invisible, with one exception: `log_R` was truncated at zero the same afternoon,
+and `biject_to(greater_than(0))` is `exp`. A constrained `log_R` of `ln 10`
+entering as unconstrained becomes 10, so `R` becomes 22030 rather than 10.
 
-The optima are separated, not roughness. Profiling the posterior along the
-straight segment between the best two, which differ by 7.5 in depth, gives a
-barrier of 127.9 with one interior maximum and a mean second difference of 0.048,
-so roughness is 0.14% of the barrier; the best-to-worst segment gives 0.09%. A
-250-member cloud and a five-arm MLP were the obvious suspects and neither is
-implicated: a larger `n_cloud` or a smoother surrogate would merge nothing. The
-barrier is a straight-line upper bound, since the minimum-energy path is curved,
-so it bounds the separation rather than measuring it.
+The consequences, both measured rather than argued:
 
-That makes 22 explanations of one corpus a statement about what the corpus can
-identify, not about the sampler. R-hat has therefore been reporting mode
-disagreement, not sampling error, and every convergence comparison here is weaker
-than its table suggests. Results computed at a point are unaffected.
+* The path profile evaluates its own endpoints at 2235 and 2137 where the optima
+  it names are at 389.43 and 396.97, and its curve is still falling at t=1.13, so
+  neither stated endpoint is a local minimum. The barriers of 127.9 and 3633.9
+  and the smooth-double-well verdict describe a curve that is not the segment
+  between two optima.
+* The 24 starts all began at `R` = 22030 and ran a fixed 800 Adam steps with no
+  convergence test. Sorting the results by `-log p` sorts them by `log_R`, from
+  2.32 up to 20.73, and 20.73 is 15 prior sd above `ln 10`. The reported spread
+  of 1525 is how far each start got at unwinding its initialisation, and the
+  "22 distinct optima" are points on one descent, not basins.
+
+The roughness statistic was uninformative independently of that. `|diff(v, 2)|`
+on a grid of spacing dt estimates `f''` dt², so at dt = 0.005 a smooth parabola
+of height 127.9 produces 0.026 on its own against the 0.048 observed. The ratio
+falls under grid refinement with the surface unchanged, and the `d2.max() < 0.1 x
+barrier` threshold cannot fail for any function of bounded curvature. The
+scale-free statistic in that probe is the interior maximum count, which went 5 at
+n_cloud 24 to 1 at 250: cloud size does induce corrugation, and nothing here
+shows 250 is enough.
+
+Truncating `log_R` also made `R` = `exp(exp(u))` in the coordinate NUTS moves in,
+where before it was `exp(u)`. No fit has run since, so no convergence result is
+affected, and the bound wants a parameterisation that is not `exp`.
 
 ## Support audits
 
