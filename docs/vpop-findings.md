@@ -505,6 +505,10 @@ pool is keyed on.
 
 ## WALNUTS does not help, and the test is confounded
 
+**Superseded on the 122-row corpus. See "WALNUTS is what makes eq:elig
+samplable" below.** The run recorded here is the pre-GZMB corpus, the one whose
+mean map misses by 5.5x, and its conclusion does not carry over.
+
 `workflows/campaign/alt_sampler.py` runs the same posterior under walnutpie,
 whose claim is within-orbit step refinement where a global step size cannot
 serve both a tight and a wide region. On the k=16 corpus fit, 4 chains, 1000
@@ -529,6 +533,60 @@ a verdict on within-orbit adaptation.
 
 It is also moot. The mean map misses the corpus by 5.5x in `sum z^2`, so how
 well a sampler explores that posterior is a second-order question.
+
+## eq:elig collapses numpyro's step size, and the cause is the sort
+
+With `--eligibility` a numpyro fit runs 511 leapfrog steps at 2.5e-05 against its
+own ungated control's 31 at 1.85e-01, pinned at the depth cap so the trajectories
+are truncated. It reproduces on the Laplace metric taken at the prior, so it is
+not an optimiser that failed to settle.
+
+A weighted row sorts the cloud by its own readout and carries `w` through that
+permutation. Two members crossing swap their masses while their values coincide,
+so the row stays continuous and its derivative steps by
+`(m_k - m_k+1)(xdot_i - xdot_j)`. Unweighted, `m_k` is a function of rank and
+adjacent masses differ by O(1/N). Weighted, `m_k` follows the member's own weight:
+at the fitted phi the median adjacent gap is 0.78 of a member's mass and 3.74 at
+the p99, against exactly zero unweighted. Crossings go as N^2, so they are dense
+rather than isolated, which is why they present as uniform roughness.
+
+Ruled out by measurement: the gate (`_mlp` is SiLU), the Beta kernel (polynomial
+in the cumulative weights), the interpolation (monotone cubic replaced linear in
+`ac29fa6`, no effect on step size), a tilted proposal (moves the adjacent mass
+gap 13-19%), and ESS -- 0.48 at the fitted phi cannot produce 5000x, and the
+plug-in and fitted phi have similar mass gaps with quite different ESS.
+
+`0d5f2f8` takes the 15 `mean` rows off the sort, replacing `E[g(sample mean)]`
+over the frozen design with `g(mu_w) + (1/2) g''(mu_w) sigma_w^2 / n`. Validated
+against a 60000-replicate bootstrap and against the design on the corpus, where
+no row moves more than 0.074 of its own sd, so the converged fit stands. It does
+not move the step size on its own. The 9 `sd` and 6 `se` rows still read the
+ordering and are the remaining target; the 88 quantile rows never needed it.
+
+## WALNUTS is what makes eq:elig samplable
+
+At forced length, 4 chains of 1000 draws on the 122-row corpus:
+
+| arm | `mu_c` pass 1.01/1.05/1.10/1.30 | `mu` (of 271) | wall |
+| --- | --- | --- | --- |
+| ungated | 4 16 16 16 | 153 271 271 271 | 38 min |
+| gated | 6 16 16 16 | 69 271 271 271 | 1h40 |
+
+Every coordinate in both arms is inside R-hat 1.05. The gate costs 2.6x wall
+clock and a third to a half of `n_eff`, and nothing in calibration: the gated
+posterior predictive is 108 of 122 rows inside the 90% interval with 13 extreme
+p-values against 12 expected, where the ungated fit gives 110 and 12.
+
+`--no-early-stop` is the whole difference and is not optional. walnutpie's
+controller stops each chain between the minima and the maxima on an R-hat of its
+own, and it stopped four chains at 54 to 110 draws reporting 1.01 while
+split-Gelman-Rubin over the sites had 8 of 16 `mu_c` outside 1.30. Every arm run
+under the controller compared two undersampled chains, so the parity between
+gated and ungated in those runs said nothing about the gate.
+
+This is not a verdict on the sampler. numpyro reaches far higher `n_eff` on the
+ungated problem, and the diagonal-versus-dense metric confound above is
+unchanged. WALNUTS is the one that tolerates the gate.
 
 ## Open
 

@@ -105,7 +105,12 @@ src/qsp_inference/
 │   │                            #   shared with the pool so the two cannot drift
 │   ├── rows.py                  # what a source printed (hard_row) and the model's
 │   │                            #   expectation of it (tau_row), eq:smoothq, with
-│   │                            #   the frozen bootstrap designs
+│   │                            #   the frozen bootstrap designs. A row that reads
+│   │                            #   the design reads an ORDERING, and under eq:elig
+│   │                            #   a member crossing steps its gradient: that is
+│   │                            #   what collapses the step size when the gate is
+│   │                            #   on. mean rows are off it (mean_row_scaled);
+│   │                            #   sd/se are not
 │   ├── blocks.py                # who is drawn with whom, and V_B: eq:V, eq:Ec,
 │   │                            #   eq:Vsplit
 │   ├── fit.py                   # eq:pop to eq:post as a numpyro model.
