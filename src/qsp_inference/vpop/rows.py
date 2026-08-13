@@ -604,9 +604,17 @@ def extreme_row(x_sorted, n: int, upper: bool):
     return x_sorted @ order_statistic_mass(x_sorted.shape[0], n if upper else 1, n)
 
 
-def mean_row(x_sorted):
-    """A reported mean. ``E[sample mean] = population mean``, so no correction."""
-    return jnp.mean(jnp.asarray(x_sorted))
+def mean_row(x_sorted, w_sorted=None):
+    """A reported mean. ``E[sample mean] = population mean``, so no correction.
+
+    Under eq:elig the population is the eligible one, so the mean is taken
+    against the weights. Self-normalising, like the rest of the weighted path.
+    """
+    x = jnp.asarray(x_sorted)
+    if w_sorted is None:
+        return jnp.mean(x)
+    w = jnp.asarray(w_sorted)
+    return jnp.sum(w * x) / jnp.sum(w)
 
 
 def iqr_row(x_sorted, n: int, convention: str = "type7", log: bool = False,
@@ -654,6 +662,81 @@ def _interp(v_sorted, lo: int, frac: float, n: int):
     return (1.0 - frac) * a + frac * b if frac > 0 else a
 
 
+def _pchip_interp(u, knots, values):
+    """Monotone cubic Hermite (Fritsch-Carlson) at ``u``.
+
+    Linear interpolation is C0 and not C1: the slope jumps whenever a frozen
+    ``u`` crosses a knot, and under eq:elig the knots are cumulative weights that
+    move with ``phi``, so those jumps sweep across the design as the chain moves.
+    Leapfrog cannot conserve energy across a discontinuous gradient. Per-row
+    attribution put a 6-22x roughness lift on exactly the rows that take this
+    path, against 1.2x on the rows that take ``_beta_tail``, which is C-infinity
+    in the weights.
+
+    Monotone cubic is C1 and still preserves the sort, which is the property the
+    linear form was chosen for. Extrapolation matches ``jnp.interp``: constant
+    outside the knots, so the estimand is unchanged there.
+
+    Weights near zero put knots on top of each other, so every division here is
+    guarded in the ``where``-twice form that keeps the gradient finite as well as
+    the value.
+    """
+    u = jnp.asarray(u)
+    k = jnp.asarray(knots)
+    v = jnp.asarray(values)
+    n = k.shape[0]
+    if n < 2:
+        return jnp.broadcast_to(v[0], u.shape)
+
+    h = k[1:] - k[:-1]
+    pos = h > 0
+    safe_h = jnp.where(pos, h, 1.0)
+    delta = jnp.where(pos, (v[1:] - v[:-1]) / safe_h, 0.0)
+
+    if n > 2:
+        # The harmonic mean of the neighbouring secants, weighted by their spans,
+        # written so nothing divides by a secant: a tie in the cloud gives
+        # delta == 0, which is a legitimate flat run and not a singularity.
+        hl, hr = h[:-1], h[1:]
+        dl, dr = delta[:-1], delta[1:]
+        w1 = 2.0 * hr + hl
+        w2 = hr + 2.0 * hl
+        same = dl * dr > 0
+        den = w1 * dr + w2 * dl
+        d_in = jnp.where(same, (w1 + w2) * dl * dr / jnp.where(same, den, 1.0), 0.0)
+
+        def _end(h0, h1, d0, d1):
+            """The one-sided three-point slope, clamped so the end span stays
+            monotone: zero it if it disagrees with the secant, and cap it at
+            three times the secant at a turning point."""
+            tot = h0 + h1
+            s = ((2.0 * h0 + h1) * d0 - h0 * d1) / jnp.where(tot > 0, tot, 1.0)
+            s = jnp.where(jnp.sign(s) != jnp.sign(d0), 0.0, s)
+            over = (jnp.sign(d0) != jnp.sign(d1)) & (jnp.abs(s) > 3.0 * jnp.abs(d0))
+            return jnp.where(over, 3.0 * d0, s)
+
+        d = jnp.concatenate([
+            jnp.atleast_1d(_end(h[0], h[1], delta[0], delta[1])),
+            d_in,
+            jnp.atleast_1d(_end(h[-1], h[-2], delta[-1], delta[-2])),
+        ])
+    else:
+        d = jnp.concatenate([delta, delta])
+
+    shape = u.shape
+    uf = jnp.clip(jnp.ravel(u), k[0], k[-1])
+    i = jnp.clip(jnp.searchsorted(k, uf, side="right") - 1, 0, n - 2)
+    hi = safe_h[i]
+    t = (uf - k[i]) / hi
+    t2 = t * t
+    t3 = t2 * t
+    out = ((2.0 * t3 - 3.0 * t2 + 1.0) * v[i]
+           + (t3 - 2.0 * t2 + t) * hi * d[i]
+           + (-2.0 * t3 + 3.0 * t2) * v[i + 1]
+           + (t3 - t2) * hi * d[i + 1])
+    return out.reshape(shape)
+
+
 def bootstrap_design(key, n: int, n_boot: int = 400):
     """Frozen uniforms for a moment row, shape ``(n_boot, n)``.
 
@@ -689,6 +772,13 @@ def bootstrap_row(x_sorted, u, fn, w_sorted=None):
     # between jumps, which is a potential HMC cannot integrate. Interpolating
     # moves the replicate continuously as the weights move.
     #
+    # Monotone cubic rather than linear. Linear removed the zero gradient but
+    # left a discontinuous one at every knot, and the knots move with phi, so the
+    # jumps sweep the design as the chain steps. That is what the weighted arm's
+    # roughness turned out to be made of: 6-22x the unweighted median on the rows
+    # that come through here, against 1.2x on the rows that go through
+    # _beta_tail. See _pchip_interp.
+    #
     # Member i owns (c_{i-1}, c_i], so its knot is that interval's midpoint. The
     # unweighted path keeps its own lookup above: at equal weights this agrees
     # with it only to the O(1/N) the discretisation is worth, and the
@@ -696,7 +786,7 @@ def bootstrap_row(x_sorted, u, fn, w_sorted=None):
     w = jnp.asarray(w_sorted)
     c = jnp.cumsum(w)
     knots = (c - 0.5 * w) / c[-1]
-    return jnp.mean(jax.vmap(fn)(jnp.interp(u, knots, x_sorted)))
+    return jnp.mean(jax.vmap(fn)(_pchip_interp(u, knots, x_sorted)))
 
 
 def _sample_sd(v):
@@ -761,7 +851,7 @@ def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None, w_sorted=None):
 
     if spec.stat == "mean":
         if spec.scale == "raw":
-            return mean_row(cloud_sorted)
+            return mean_row(cloud_sorted, w_sorted=w_sorted)
         else:
             # E[g(mean)], not g(E[mean]). The Beta kernel gives the order
             # statistics their expectation in closed form and a monotone g

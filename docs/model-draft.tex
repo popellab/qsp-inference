@@ -297,8 +297,14 @@ slice of $[0,1]$ is its own share rather than $1/N$. The rows with no closed for
 take them through the frozen design, by interpolating the weighted quantile
 function rather than looking a member up in it: a lookup is a step function of
 the weights, so the replicate jumps as a member's cumulative weight crosses a
-frozen $u$ and the row is piecewise constant in $\phi$. The uniforms stay frozen
-either way.
+frozen $u$ and the row is piecewise constant in $\phi$. The interpolation is
+monotone cubic. A linear one is continuous but not continuously differentiable,
+and its knots are cumulative weights, so its slope discontinuities sweep across
+the design as $\phi$ moves; differentiating each row along a line in $\mu$ puts a
+$6$--$22\times$ roughness lift on the rows that take this path against
+$1.2\times$ on the rows that take the Beta kernel. Monotone rather than natural
+cubic because the interpolant is a quantile function, and an overshoot would
+print a value the cloud does not contain. The uniforms stay frozen either way.
 
 Two costs. The weighted masses read $\phi$, so they are built inside the gradient
 rather than once; and the effective cloud size falls, with $\mathrm{ESS}/N = 0.42$
