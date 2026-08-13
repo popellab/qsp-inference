@@ -67,7 +67,8 @@ __all__ = [
     # the model side
     "QUANTILE_CONVENTIONS", "order_statistic_mass", "quantile_mass",
     "order_statistic_mass_w", "quantile_mass_w", "weighted_edges",
-    "expected_quantile", "extreme_row", "mean_row", "iqr_row",
+    "expected_quantile", "extreme_row", "mean_row", "mean_row_scaled",
+    "weighted_moments", "iqr_row",
     "bootstrap_design", "bootstrap_row", "sd_row", "se_row", "tau_row",
 ]
 
@@ -610,11 +611,58 @@ def mean_row(x_sorted, w_sorted=None):
     Under eq:elig the population is the eligible one, so the mean is taken
     against the weights. Self-normalising, like the rest of the weighted path.
     """
-    x = jnp.asarray(x_sorted)
-    if w_sorted is None:
-        return jnp.mean(x)
-    w = jnp.asarray(w_sorted)
-    return jnp.sum(w * x) / jnp.sum(w)
+    mu, _ = weighted_moments(x_sorted, w_sorted)
+    return mu
+
+
+def weighted_moments(x, w=None):
+    """``(mean, variance)`` of the cloud, or of the eligible cloud under eq:elig.
+
+    Both are sums, so both are invariant to the order of the cloud. That is the
+    property the scaled mean row is built on, not an incidental one.
+    """
+    x = jnp.asarray(x)
+    if w is None:
+        mu = jnp.mean(x)
+        return mu, jnp.mean((x - mu) ** 2)
+    w = jnp.asarray(w)
+    s = jnp.sum(w)
+    mu = jnp.sum(w * x) / s
+    return mu, jnp.sum(w * (x - mu) ** 2) / s
+
+
+def mean_row_scaled(x_sorted, spec: "RowSpec", w_sorted=None):
+    """``E[g(sample mean)]`` for a mean row whose scale does not commute.
+
+    The row printed a mean of ``n`` patients and eq:obs compares it on ``g``, so
+    tau is ``E[g(mhat)]`` and not ``g(E[mhat])``. That has no closed form, and it
+    used to be taken over the frozen design.
+
+    The design is what dragged the sort in. A replicate is read out of the cloud's
+    quantile function, so the cloud has to be ordered, and eq:elig's weights then
+    travel with that order: when two members cross, their masses swap while their
+    values coincide, the row stays continuous and its derivative steps. Measured
+    over the corpus that is a 6-22x roughness lift on exactly these rows against
+    1.2x on the rows that never leave the Beta kernel, and it is what drives the
+    step size down.
+
+    The second-order expansion needs neither. ``mhat`` has mean ``mu_w`` and
+    variance ``sigma_w^2 / n`` whatever the ordering, so
+
+        E[g(mhat)] = g(mu_w) + (1/2) g''(mu_w) sigma_w^2 / n + O(n^-2)
+
+    and both moments are sums. ``g''`` is taken by autodiff rather than by hand:
+    ``to_scale`` carries four scales and ``logit`` is continued by its tangent,
+    so a hand-written second derivative would have to reproduce that join.
+
+    A raw-scale row has ``g'' = 0`` and this returns ``mu_w`` exactly, which is
+    :func:`mean_row`.
+    """
+    _require_x64()
+    mu, var = weighted_moments(x_sorted, w_sorted)
+    g = lambda v: to_scale(v, spec, jnp)  # noqa: E731
+    g2 = jax.grad(jax.grad(g))
+    return g(mu) + 0.5 * g2(mu) * var / float(spec.n)
 
 
 def iqr_row(x_sorted, n: int, convention: str = "type7", log: bool = False,
@@ -850,17 +898,12 @@ def tau_row(spec: RowSpec, cloud_sorted, design=None, mass=None, w_sorted=None):
         return extreme_row(x, spec.n, spec.stat == "max")
 
     if spec.stat == "mean":
-        if spec.scale == "raw":
-            return mean_row(cloud_sorted, w_sorted=w_sorted)
-        else:
-            # E[g(mean)], not g(E[mean]). The Beta kernel gives the order
-            # statistics their expectation in closed form and a monotone g
-            # passes straight through it, but a mean is not an order statistic
-            # and g does not commute with it, so this row joins the moment rows
-            # on the frozen design.
-            return bootstrap_row(
-                cloud_sorted, _need(design, spec),
-                lambda v: to_scale(jnp.mean(v), spec, jnp), w_sorted=w_sorted)
+        # E[g(mean)], not g(E[mean]): a mean is not an order statistic and g does
+        # not commute with it. Taken as a second-order expansion in the cloud's
+        # weighted moments rather than over the frozen design, so the row reads no
+        # ordering and carries none of the crossing steps the design brings with
+        # it. Raw scale has g'' = 0 and falls back to the population mean exactly.
+        return mean_row_scaled(cloud_sorted, spec, w_sorted=w_sorted)
     elif spec.stat == "iqr":
         return iqr_row(cloud_sorted, spec.n, spec.convention, log=log,
                        u=_need(design, spec) if log else None, w_sorted=w_sorted)

@@ -234,9 +234,12 @@ class TestTauRow:
         gx = np.asarray(st.to_scale(x, specs["quantile"], np))
         assert float(tau_row(specs["quantile"], x)) == pytest.approx(
             float(st.expected_quantile(gx, 0.25, 9)))
-        # A transformed mean does not commute, so it needs the frozen design.
-        with pytest.raises(ValueError, match="needs a bootstrap design"):
-            tau_row(specs["mean"], x)
+        # A transformed mean does not commute, so tau is E[g(mhat)] and not
+        # g(E[mhat]). It takes that as an expansion in the cloud's own moments
+        # rather than over the frozen design, so it needs no design and reads no
+        # ordering -- see mean_row_scaled.
+        assert float(tau_row(specs["mean"], x)) == pytest.approx(
+            float(st.mean_row_scaled(x, specs["mean"])))
         raw = dataclasses.replace(specs["mean"], scale="raw")
         assert float(tau_row(raw, x)) == pytest.approx(float(st.mean_row(x)))
 
